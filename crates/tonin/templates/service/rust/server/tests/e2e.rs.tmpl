@@ -1,0 +1,49 @@
+//! E2E test. Boots the server on a real TCP port, hits it with a real
+//! tonic client. No in-process shortcuts — the wire path is what
+//! production exercises, so that's what we test.
+//!
+//! Uses the published `{{ service_name }}-client` crate (via path dep) for
+//! the client side — same SDK peer services would use.
+
+use {{ service_name_snake }}_client::{ {{ ServiceCamel }}Client, HelloRequest, AuthCtx};
+use {{ service_name_snake }}_server::test_helpers;
+
+#[tokio::test]
+async fn say_hello_over_grpc() {
+    let (addr, _server) = test_helpers::spawn_server().await;
+
+    // Real tonic client, real TCP connection, real HTTP/2 framing.
+    let mut client = {{ ServiceCamel }}Client::connect(format!("http://{addr}"))
+        .await
+        .expect("connect to server");
+
+    let reply = client
+        .say_hello(HelloRequest { name: "world".into() })
+        .await
+        .expect("RPC call")
+        .into_inner();
+
+    // The default scaffold runs `without_auth()` in tests, so the
+    // anonymous greeting comes back.
+    assert!(reply.message.starts_with("hello, world"));
+}
+
+#[tokio::test]
+async fn say_hello_with_auth_header() {
+    let (addr, _server) = test_helpers::spawn_server().await;
+
+    let mut client = {{ ServiceCamel }}Client::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    // Build a request and inject the bearer token via the client's helper.
+    let mut req = tonic::Request::new(HelloRequest { name: "rushit".into() });
+    AuthCtx::from_bearer("test-token").propagate(&mut req);
+
+    // With `without_auth()` the server accepts any token and treats the
+    // call as anonymous (test_helpers default). When a real verifier is
+    // wired, the assertion below changes to check that the auth context
+    // surfaced into the reply.
+    let reply = client.say_hello(req).await.unwrap().into_inner();
+    assert!(reply.message.contains("rushit"));
+}

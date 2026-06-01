@@ -1,0 +1,17 @@
+version: v2
+managed:
+  enabled: true
+plugins:
+  # ts-proto generates both Node (grpc-js) and browser (grpc-web)
+  # compatible bindings in one pass. Use the `outputClientImpl` knob
+  # to switch the active transport per build target.
+  - local: ./node_modules/.bin/protoc-gen-ts_proto
+    out: src/gen
+    opt:
+      - outputServices=grpc-js
+      - esModuleInterop=true
+      - useExactTypes=false
+      - useOptionals=messages
+      - importSuffix=.js
+inputs:
+  - directory: ../proto

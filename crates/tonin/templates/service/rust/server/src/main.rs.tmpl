@@ -1,0 +1,37 @@
+//! {{ service_name }} server entry point.
+//!
+//! Read AGENTS.md first; this file is intentionally short.
+
+use tonin::prelude::*;
+use {{ service_name_snake }}_server::{
+    auth,
+    gen::{{ service_proto_module }}_server::{{ ServiceCamel }}Server,
+    server::{ {{ ServiceCamel }}Impl, {{ ServiceCamel }}ImplMcpAdapter },
+};
+
+#[tokio::main]
+async fn main() -> tonin::Result<()> {
+    // Pre-wired DB + cache. Reads DATABASE_URL / REDIS_URL from env;
+    // missing env → empty state, no connection attempt. The k8s
+    // deployment template (driven by `[database]` / `[cache]` in
+    // tonin.toml) injects those env vars when a backend is configured.
+    let state = State::from_env().await?;
+
+    // The shared handler — both gRPC + MCP dispatch into this one
+    // instance, so auth checks, state access, etc. live in one place.
+    let handler = {{ ServiceCamel }}Impl::new(state);
+
+    // One-line auth wiring. To swap verifiers, edit src/auth.rs.
+    // `enable_mcp_with` registers the MCP adapter that
+    // `#[tonin::mcp_expose]` auto-derived in src/server.rs — one
+    // MCP tool per gRPC method, with the request schema pulled
+    // straight from the proto.
+    let mcp_handler = handler.clone();
+    let svc = Service::new("{{ service_name }}")
+        .with_auth(auth::verifier())
+        .enable_mcp_with(move || {
+            Ok({{ ServiceCamel }}ImplMcpAdapter::new(mcp_handler.clone()))
+        });
+
+    svc.handler({{ ServiceCamel }}Server::new(handler)).run().await
+}

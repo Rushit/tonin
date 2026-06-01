@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tonin",
+    "crates/tonin-client",
+    "crates/tonin-core",
+    "crates/tonin-mcp-macros",
+    "crates/tonin-build",
+    "crates/tonin-config-etcd",
+    "crates/tonin-config-github",
+    "examples/greeter",
+    "examples/orders",
+    "examples/inventory",
+]
+
+[workspace.package]
+version = "0.3.3"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/Rushit/tonin"
+homepage = "https://github.com/Rushit/tonin"
+readme = "README.md"
+keywords = ["microservice", "grpc", "kubernetes", "tonic", "framework"]
+categories = ["network-programming", "web-programming", "development-tools"]
+
+[workspace.dependencies]
+tonin            = { path = "crates/tonin",           version = "0.3.3" }
+tonin-client     = { path = "crates/tonin-client",    version = "0.3.3" }
+tonin-core       = { path = "crates/tonin-core",      version = "0.3.3" }
+tonin-mcp-macros = { path = "crates/tonin-mcp-macros", version = "0.3.3" }
+tonin-build      = { path = "crates/tonin-build",     version = "0.3.3" }
+
+tokio       = { version = "1", features = ["full"] }
+tonic       = "0.12"
+tonic-build = "0.12"
+prost       = "0.13"
+prost-types = "0.13"
+tower       = "0.5"
+hyper       = "1"
+http        = "1"
+async-trait = "0.1"
+thiserror   = "1"
+anyhow      = "1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+toml        = "0.8"
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap        = { version = "4", features = ["derive"] }

@@ -1,0 +1,12 @@
+syntax = "proto3";
+package inventory.v1;
+
+service Inventory {
+  rpc CheckStock  (CheckStockRequest)  returns (CheckStockReply);
+  rpc Reserve     (ReserveRequest)     returns (ReserveReply);
+}
+
+message CheckStockRequest { string sku = 1; }
+message CheckStockReply   { string sku = 1; int32 available = 2; }
+message ReserveRequest    { string sku = 1; int32 qty = 2; }
+message ReserveReply      { bool reserved = 1; string reservation_id = 2; }

@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-flight runs for the same branch + workflow when a new push lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt + clippy + test + doc (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.90 is the declared MSRV (workspace.package.rust-version).
+        # `stable` catches regressions on the latest toolchain.
+        rust: ["1.90", "stable"]
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      # `etcd-client` (a transitive dep of `tonin-config-etcd`) has a
+      # build.rs that compiles bundled .proto files via `prost-build`,
+      # which requires `protoc` on PATH. Ubuntu/macOS/Windows runners
+      # don't ship it preinstalled. arduino/setup-protoc handles all 3.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Keep separate caches per toolchain so stable + MSRV don't stomp each other.
+          key: ${{ matrix.rust }}
+
+      - name: cargo fmt --check
+        run: make fmt-check
+
+      - name: cargo clippy
+        run: make lint
+
+      - name: cargo test
+        run: make test
+
+      - name: cargo doc (deny broken intra-doc links)
+        run: make doc

@@ -1,0 +1,59 @@
+"""{{ service_name }} entry point.
+
+Read ``AGENTS.md`` first; this file is intentionally short.
+
+Run as::
+
+    python -m {{ service_name_snake }}_server.main
+
+or, via the script entry point::
+
+    {{ service_name }}
+
+Async-by-default. The event loop is owned by ``asyncio.run`` so app
+code can ``await`` anything inside the handler.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+import tonin
+
+from {{ service_name_snake }}_server.auth import verifier
+from {{ service_name_snake }}_server.handler import {{ ServiceCamel }}Impl
+from {{ service_name_snake }}_server._pb.{{ service_name_snake }}_pb2_grpc import (
+    add_{{ ServiceCamel }}Servicer_to_server,
+)
+
+
+async def serve() -> None:
+    logging.basicConfig(level=logging.INFO)
+
+    # Pre-wired DB + cache. Reads DATABASE_URL / REDIS_URL from env;
+    # missing env → empty state, no connection attempt. k8s deployment
+    # template (driven by `[database]` / `[cache]` in tonin.toml)
+    # injects those env vars when a backend is configured.
+    state = await tonin.State.from_env()
+
+    svc = (
+        tonin.Service.new("{{ service_name }}")
+        .with_auth(verifier())
+        # In-process MCP listener on :50052. Same asyncio loop as the
+        # gRPC server, shares state + AuthCtx. Currently a /health
+        # stub; real MCP wire protocol (FastMCP-backed) lands in a
+        # follow-up. To disable: drop this line.
+        .enable_mcp()
+        .handler({{ ServiceCamel }}Impl(state), add_{{ ServiceCamel }}Servicer_to_server)
+    )
+    await svc.run()
+
+
+def run() -> None:
+    """Script entry point. Kept sync so ``pyproject.toml`` can wire it."""
+    asyncio.run(serve())
+
+
+if __name__ == "__main__":
+    run()

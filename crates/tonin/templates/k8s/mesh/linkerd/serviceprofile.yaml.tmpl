@@ -1,0 +1,10 @@
+apiVersion: linkerd.io/v1alpha2
+kind: ServiceProfile
+metadata:
+  name: {{ name }}.{{ namespace }}.svc.cluster.local
+  namespace: {{ namespace }}
+spec:
+  retryBudget:
+    retryRatio: 0.2
+    minRetriesPerSecond: 10
+    ttl: 10s

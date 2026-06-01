@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ cache_name }}
+  namespace: {{ cache_namespace }}
+  labels:
+    app: {{ cache_name }}
+    service.identity: {{ cache_name }}.{{ cache_namespace }}
+    micro.io/owned-by: {{ name }}.{{ namespace }}
+spec:
+  serviceName: {{ cache_name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ cache_name }}
+  template:
+    metadata:
+      labels:
+        app: {{ cache_name }}
+        service.identity: {{ cache_name }}.{{ cache_namespace }}
+    spec:
+      containers:
+        - name: {{ cache_engine }}
+          image: redis:7
+          # Persist for restart-survivability; can be removed if cache
+          # is treated as ephemeral.
+          args: ["--save", "60", "1", "--loglevel", "warning"]
+          ports:
+            - containerPort: {{ cache_port }}
+              name: {{ cache_engine }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "500m", memory: "512Mi" }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ cache_size }}

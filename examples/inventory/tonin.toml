@@ -1,0 +1,20 @@
+schema = "v1"
+
+[service]
+name    = "inventory"
+version = "0.1.0"
+codec   = "prost"
+
+[deploy]
+replicas    = 3
+mesh        = "cilium"
+mcp_sidecar = true
+namespace   = "shop"
+
+# Large pod: in-memory SKU cache + indexes.
+[resources]
+cpu    = "500m"
+memory = "1Gi"
+
+[autoscale]
+max_replicas = 8

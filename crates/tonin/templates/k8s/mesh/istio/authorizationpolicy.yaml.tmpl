@@ -1,0 +1,21 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ name }}-ingress
+  namespace: {{ namespace }}
+spec:
+  selector:
+    matchLabels:
+      service.identity: {{ name }}.{{ namespace }}
+  action: ALLOW
+  rules:
+{%- for caller in callers %}
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/{{ caller.namespace }}/sa/{{ caller.name }}"
+{%- endfor %}
+    - from:
+        - source:
+            namespaces: ["observability"]
+            principals: ["cluster.local/ns/observability/sa/otel-collector"]

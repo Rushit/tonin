@@ -1,0 +1,32 @@
+import { useState } from "react";
+import { createPromiseClient } from "@connectrpc/connect";
+import { createGrpcWebTransport } from "@connectrpc/connect-web";
+
+// After `npm run gen`, uncomment:
+// import { {{ ServiceCamel }} } from "./gen/{{ service_name }}/v1/{{ service_name }}_connect";
+
+// In prod, /api/* is proxied to the backend Service by the Ingress; in dev,
+// vite.config.ts proxies it locally. Client code is the same either way.
+const transport = createGrpcWebTransport({ baseUrl: "/api" });
+
+export function App() {
+  const [msg, setMsg] = useState("hello");
+  const [result, setResult] = useState("");
+
+  async function send() {
+    // const client = createPromiseClient({{ ServiceCamel }}, transport);
+    // const r = await client.echo({ message: msg });
+    // setResult(r.message);
+    setResult(`(stub) would send: ${msg}`);
+  }
+
+  return (
+    <main style={{ fontFamily: "system-ui", padding: 24 }}>
+      <h1>{{ service_name }}</h1>
+      <p>Vite + React + Connect-Web client. Edit <code>src/App.tsx</code>.</p>
+      <input value={msg} onChange={(e) => setMsg(e.target.value)} />{" "}
+      <button onClick={send}>Send</button>
+      <pre>{result}</pre>
+    </main>
+  );
+}

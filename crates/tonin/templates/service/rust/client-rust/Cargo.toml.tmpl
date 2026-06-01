@@ -1,0 +1,23 @@
+[package]
+name        = "{{ service_name }}-client"
+version     = "0.1.0"
+edition     = "2021"
+description = "Typed gRPC client for the {{ service_name }} service."
+license     = "Apache-2.0"
+
+[dependencies]
+# Minimal client-side deps. `tonin-client` is the tiny shared crate
+# that carries AuthCtx, retry/circuit-breaker config, and OTel
+# traceparent helpers. It does NOT pull in the server framework — peer
+# services that just consume this client still pay zero server-side
+# cost. schemars is pulled in for MCP schema derivation (build-time
+# attribute on every generated message), still no runtime overhead
+# for non-MCP consumers.
+tonic          = "0.12"
+prost          = "0.13"
+serde          = { version = "1", features = ["derive"] }
+schemars       = "1"
+tonin-client = "0.1"
+
+[build-dependencies]
+tonic-build = "0.12"

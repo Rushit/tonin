@@ -1,0 +1,81 @@
+# Cluster-wide OpenTelemetry Collector. micro services send OTLP/gRPC
+# here on :4317. Rendered once per cluster, not per service.
+#
+# Rendered when running: micro deploy --install-observability
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch: {}
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400
+    exporters:
+      # Default: log spans. Swap for otlp/tempo/jaeger/datadog as needed.
+      debug:
+        verbosity: basic
+    service:
+      pipelines:
+        traces:
+          receivers:  [otlp]
+          processors: [memory_limiter, batch]
+          exporters:  [debug]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: otel-collector } }
+  template:
+    metadata:
+      labels: { app: otel-collector }
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.110.0
+          args: ["--config=/conf/config.yaml"]
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 4318
+              name: otlp-http
+      volumes:
+        - name: config
+          configMap: { name: otel-collector-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318

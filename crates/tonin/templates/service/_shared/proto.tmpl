@@ -1,0 +1,14 @@
+syntax = "proto3";
+package {{ service_name_snake }}.v1;
+
+// Greeter is the scaffolded example. Replace with your real RPCs.
+// Each `rpc` becomes:
+//   - a method on the generated server trait in server/src
+//   - a method on the generated client struct in client-rust/src
+//   - an MCP tool exposed by the `<service>-mcp` sidecar (future)
+service {{ ServiceCamel }} {
+  rpc SayHello (HelloRequest) returns (HelloReply);
+}
+
+message HelloRequest { string name = 1; }
+message HelloReply   { string message = 1; }

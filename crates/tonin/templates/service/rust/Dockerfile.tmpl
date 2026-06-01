@@ -1,0 +1,34 @@
+# Multi-stage Dockerfile that builds the server crate.
+# Run from the service root (../). Context includes proto/, server/,
+# client-rust/, migrations/ — but NOT client-python/, client-ts/, docs/.
+# See .dockerignore for the exclusion list.
+FROM rust:1-bookworm AS build
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
+
+# Copy only what the server build needs. proto + client-rust + server.
+COPY proto       /src/proto
+COPY client-rust /src/client-rust
+COPY server      /src/server
+COPY migrations  /src/migrations
+
+WORKDIR /src/server
+RUN cargo build --release --bin {{ service_name }}
+
+# sqlx-cli for the init-container migration path. Built once, used iff
+# [migrations] is configured in tonin.toml.
+RUN cargo install sqlx-cli --no-default-features --features "postgres,rustls" --root /out --version "^0.8"
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+COPY --from=build /src/server/target/release/{{ service_name }}     /usr/local/bin/{{ service_name }}
+COPY --from=build /out/bin/sqlx                                     /usr/local/bin/sqlx
+COPY --from=build /src/migrations                                   /app/migrations
+
+# 50051 = gRPC. 50052 = in-process MCP listener (enabled by default via
+# `Service::new().enable_mcp()` in main.rs). To disable MCP, edit
+# main.rs to drop `.enable_mcp()` and `EXPOSE 50051` only.
+EXPOSE 50051 50052
+ENTRYPOINT ["/usr/local/bin/{{ service_name }}"]

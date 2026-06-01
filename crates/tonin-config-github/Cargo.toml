@@ -1,0 +1,23 @@
+[package]
+name = "tonin-config-github"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "GitHub-repo-backed Config implementation for the tonin framework. GitOps-style application config from a private repo; polls commit SHA for hot reload."
+
+[dependencies]
+tonin-core = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+base64 = "0.22"
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

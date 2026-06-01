@@ -1,0 +1,67 @@
+//! {{ service_name }} server library.
+//!
+//! `pub use {{ service_name_snake }}_client::proto` re-exports the message
+//! types from the client crate, so handlers and tests share the same
+//! generated structs. The server-side trait (`Greeter`) is generated
+//! locally by this crate's `build.rs`.
+
+pub mod auth;
+pub mod server;
+
+/// Re-export proto messages from the client crate to keep one source of truth.
+pub use {{ service_name_snake }}_client::proto;
+
+/// Server-side generated code (the `{{ ServiceCamel }}` trait + `{{ ServiceCamel }}Server`).
+pub mod gen {
+    tonic::include_proto!("{{ service_name_snake }}.v1");
+}
+
+/// Test helpers exposed for the in-crate `tests/` directory.
+///
+/// Always public so integration tests in `tests/*.rs` can use them.
+/// Outside-the-crate callers don't typically need this — they use the
+/// `<service>-client` crate directly.
+pub mod test_helpers {
+    //! Boots the server on a random local TCP port for e2e tests.
+    //!
+    //! Returns `(SocketAddr, _server_task)`. Drop the task handle to
+    //! shut down (background task is aborted when its JoinHandle is
+    //! dropped). The address is suitable for a real tonic client to
+    //! `connect(format!("http://{addr}")).await`.
+
+    use std::net::SocketAddr;
+    use tokio::net::TcpListener;
+
+    use crate::gen::{{ service_proto_module }}_server::{{ ServiceCamel }}Server;
+    use crate::server::{{ ServiceCamel }}Impl;
+
+    /// Holds the spawned server task. Drop to shut down.
+    pub type ServerHandle = tokio::task::JoinHandle<()>;
+
+    /// Spawn the server on a random port. Returns its bound address + a
+    /// task handle. The default verifier (`without_auth`) is used for
+    /// hermetic testing; tests that need real auth wire their own.
+    pub async fn spawn_server() -> (SocketAddr, ServerHandle) {
+        // Grab a random free port via the OS, then immediately release
+        // the listener — tonic's Service::addr() rebinds it.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let svc = tonin::Service::new("{{ service_name }}-test")
+            .without_auth()
+            .addr(addr);
+        // Empty State: tests don't hit DATABASE_URL / REDIS_URL. The
+        // handler's `state.has_pg()` / `has_redis()` will report false.
+        let handler = {{ ServiceCamel }}Impl::new(tonin::core::State::default());
+        let server = svc.handler({{ ServiceCamel }}Server::new(handler));
+
+        let handle = tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+
+        // Brief settle so connect() doesn't race the bind.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        (addr, handle)
+    }
+}

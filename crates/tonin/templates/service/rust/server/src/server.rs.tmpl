@@ -1,0 +1,77 @@
+//! Server-side handler implementations.
+
+use tonin::prelude::*;
+
+use crate::gen::{{ service_proto_module }}_server::{{ ServiceCamel }};
+use crate::proto::{HelloReply, HelloRequest};
+
+/// `{{ ServiceCamel }}` implementation. Holds the pre-wired [`State`]
+/// (Postgres pool + Redis client, and optionally a `StorageProvider`
+/// when scaffolded with `--with-storage`). For the scaffold, none of
+/// them are queried; the field is here as a starting point — add real
+/// reads/writes in `say_hello` (e.g. `self.state.pg()?` to grab the
+/// pool, `self.state.storage()?.operator()` to grab opendal).
+///
+/// `Clone` is required so the MCP adapter can hold an `Arc<Self>` and
+/// dispatch from owned closures. `State` itself is cheap to clone
+/// (all internal fields are reference-counted), so this is fine.
+#[derive(Clone)]
+pub struct {{ ServiceCamel }}Impl {
+    #[allow(dead_code)]
+    state: State,
+}
+
+impl {{ ServiceCamel }}Impl {
+    pub fn new(state: State) -> Self {
+        Self { state }
+    }
+}
+
+// `#[tonin::mcp_expose]` generates a sibling `{{ ServiceCamel }}ImplMcpAdapter`
+// struct that exposes each gRPC method below as an MCP tool. The
+// adapter delegates straight back into this impl, so handler logic
+// (auth checks, state access, etc.) stays in one place.
+//
+// Wire it into `main.rs` via `Service::enable_mcp_with(...)`.
+//
+// IMPORTANT: `#[mcp_expose]` MUST appear *before* (above) `#[tonic::async_trait]`
+// so it sees the user-written `async fn` signatures rather than the desugared
+// `-> Pin<Box<dyn Future<...>>>` form that async_trait produces.
+#[tonin::mcp_expose]
+#[tonic::async_trait]
+impl {{ ServiceCamel }} for {{ ServiceCamel }}Impl {
+    async fn say_hello(
+        &self,
+        req: Request<HelloRequest>,
+    ) -> std::result::Result<Response<HelloReply>, Status> {
+        let auth = AuthCtx::from(&req);
+        let name = req.into_inner().name;
+
+        // Authorize. Comment this line out for endpoints that genuinely
+        // don't need a scope, but keep it for any state-changing RPCs.
+        // (For the scaffold, anonymous callers are allowed because the
+        //  default scaffold uses `without_auth()` in tests; production
+        //  use should set up real scopes.)
+        if !auth.is_anonymous() {
+            auth.require_scope("{{ service_name_snake }}:hello")?;
+        }
+
+        let greeting = match auth.kind {
+            PrincipalKind::Anonymous => format!("hello, {name}"),
+            _ => format!("hello, {name} (greeted by {})", auth.subject),
+        };
+
+        tracing::info!(
+            target: "{{ service_name }}::greeter",
+            %name,
+            subject = %auth.subject,
+            kind = ?auth.kind,
+            has_pg = self.state.has_pg(),
+            has_redis = self.state.has_redis(),
+            has_storage = self.state.has_storage(),
+            "say_hello"
+        );
+
+        Ok(Response::new(HelloReply { message: greeting }))
+    }
+}

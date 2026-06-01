@@ -1,0 +1,21 @@
+[package]
+name = "tonin-mcp-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Proc-macros for tonin: #[mcp_expose] auto-derives MCP tools from gRPC service implementations."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn   = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+heck  = "0.5"

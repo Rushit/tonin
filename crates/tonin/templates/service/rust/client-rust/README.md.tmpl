@@ -1,0 +1,59 @@
+# {{ service_name }}-client
+
+Typed gRPC client for the `{{ service_name }}` service.
+
+## Add to your project
+
+```toml
+# Cargo.toml
+[dependencies]
+{{ service_name }}-client = { git = "https://github.com/<org>/{{ service_name }}", branch = "main" }
+```
+
+Cargo picks the `client-rust/` subdirectory automatically because that's
+where the `Cargo.toml` with `name = "{{ service_name }}-client"` lives.
+
+Local development (e.g. monorepo, sibling dirs):
+
+```toml
+{{ service_name }}-client = { path = "../{{ service_name }}/client-rust" }
+```
+
+## Use
+
+```rust
+use {{ service_name_snake }}_client::{GreeterClient, HelloRequest, AuthCtx};
+
+let mut client = GreeterClient::connect(
+    "http://{{ service_name }}.default.svc.cluster.local:50051"
+).await?;
+
+let mut req = tonic::Request::new(HelloRequest { name: "world".into() });
+AuthCtx::from_bearer(my_jwt).inject(&mut req);
+
+let reply = client.say_hello(req).await?.into_inner();
+println!("{}", reply.message);
+```
+
+## Auth propagation
+
+The client crate ships a small `AuthCtx` helper that knows how to set
+the `Authorization` header on outbound requests. **It deliberately does
+NOT depend on `tonin`** — callers can be in environments that don't
+use the framework (CLIs, scripts, other services).
+
+If you're inside a `tonin`-based service, the framework's task-local
+auto-injection already handles propagation; you don't need to call
+`AuthCtx::inject` explicitly.
+
+## Updating
+
+When the upstream `.proto` changes:
+
+1. Pull the latest commit of `{{ service_name }}`.
+2. `cargo build` regenerates the bindings.
+3. Bump your peer's pin to the new git ref / tag.
+
+The proto contract is stable per major-version package (`{{ service_name }}.v1`).
+Breaking changes ship as a new package (`v2`) so peers on `v1` keep
+working.

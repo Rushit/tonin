@@ -1,0 +1,28 @@
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: {{ name }}-grpc
+  namespace: {{ namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      service.identity: {{ name }}.{{ namespace }}
+  port: 50051
+  proxyProtocol: gRPC
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ name }}-grpc-allow
+  namespace: {{ namespace }}
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: {{ name }}-grpc
+  requiredAuthenticationRefs:
+{%- for caller in callers %}
+    - kind: ServiceAccount
+      name: {{ caller.name }}
+      namespace: {{ caller.namespace }}
+{%- endfor %}

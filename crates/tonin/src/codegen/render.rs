@@ -1,0 +1,237 @@
+//! Render a `Plan` into a set of YAML files.
+//!
+//! Templates are embedded at compile time so the CLI is a single binary.
+//! Each output file is `RenderedFile { path, contents }` where `path` is
+//! relative (e.g., `deployment.yaml`) — the caller decides where to write.
+
+use include_dir::{Dir, include_dir};
+use serde::Serialize;
+use tera::{Context, Tera};
+
+use super::plan::{Plan, ServiceRef};
+use super::stateful::{CacheEngine, DatabaseEngine};
+
+// Bundled templates. Pulled in at build time from crates/tonin/templates/.
+static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates/k8s");
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("template error: {0}")]
+    Tera(#[from] tera::Error),
+    #[error("template not found: {0}")]
+    Missing(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderedFile {
+    pub path: String,
+    pub contents: String,
+}
+
+/// Render one plan into its YAML files.
+///
+/// Output paths (relative):
+/// - `deployment.yaml`, `service.yaml`, `hpa.yaml`
+/// - `ingress.yaml` (if expose=ingress)
+/// - `db-statefulset.yaml`, `db-service.yaml` (if `[database]` shared=false)
+/// - `db-secret.yaml` (if `[database]` present at all — secret is needed
+///   in either owned or shared mode so the password env var resolves)
+/// - `cache-statefulset.yaml`, `cache-service.yaml` (if `[cache]` shared=false)
+/// - mesh-specific files (cilium networkpolicy etc.)
+pub fn render(plan: &Plan) -> Result<Vec<RenderedFile>, Error> {
+    let mut tera = Tera::default();
+
+    // Render the mesh annotation snippet first; the deployment template inlines it.
+    let mesh_dir = format!("mesh/{}", plan.mesh.as_str());
+    let mesh_pod_annotations = read_template(&format!("{mesh_dir}/pod-annotations.yaml.tmpl"))?;
+
+    let mut ctx = base_context(plan)?;
+    ctx.insert("mesh_pod_annotations", mesh_pod_annotations.trim_end());
+
+    let mut out = Vec::new();
+
+    // ---- Mesh-agnostic core resources ----
+    let mut required: Vec<(&str, &str)> = vec![
+        ("deployment.yaml.tmpl", "deployment.yaml"),
+        ("service.yaml.tmpl", "service.yaml"),
+        ("hpa.yaml.tmpl", "hpa.yaml"),
+    ];
+    if plan.expose.as_deref() == Some("ingress") {
+        required.push(("ingress.yaml.tmpl", "ingress.yaml"));
+    }
+
+    // ---- Stateful: DB / cache / secret ----
+    // Owned DB → render its StatefulSet + Service.
+    // Any DB → render the credentials Secret (envFrom in the deployment
+    // needs the Secret to exist whether the DB pod is owned or shared).
+    let has_database = plan
+        .database
+        .as_ref()
+        .is_some_and(|d| !matches!(d.engine, DatabaseEngine::None));
+    let db_owned = has_database && plan.database.as_ref().is_some_and(|d| !d.shared);
+    if has_database {
+        required.push(("db-secret.yaml.tmpl", "db-secret.yaml"));
+    }
+    if db_owned {
+        required.push(("db-statefulset.yaml.tmpl", "db-statefulset.yaml"));
+        required.push(("db-service.yaml.tmpl", "db-service.yaml"));
+    }
+    let cache_owned = plan
+        .cache
+        .as_ref()
+        .is_some_and(|c| !c.shared && !matches!(c.engine, CacheEngine::None));
+    if cache_owned {
+        required.push(("cache-statefulset.yaml.tmpl", "cache-statefulset.yaml"));
+        required.push(("cache-service.yaml.tmpl", "cache-service.yaml"));
+    }
+
+    for (tmpl_name, out_name) in required {
+        let src = read_template(tmpl_name)?;
+        tera.add_raw_template(tmpl_name, &src)?;
+        let rendered = tera.render(tmpl_name, &ctx)?;
+        out.push(RenderedFile {
+            path: out_name.into(),
+            contents: rendered,
+        });
+    }
+
+    // ---- Mesh-specific resources ----
+    if let Some(dir) = TEMPLATES.get_dir(&mesh_dir) {
+        for entry in dir.files() {
+            let name = entry.path().file_name().unwrap().to_string_lossy();
+            if name == "pod-annotations.yaml.tmpl" || !name.ends_with(".yaml.tmpl") {
+                continue;
+            }
+            let tmpl_key = format!("{mesh_dir}/{name}");
+            let src = std::str::from_utf8(entry.contents()).expect("template is utf8");
+            tera.add_raw_template(&tmpl_key, src)?;
+            let rendered = tera.render(&tmpl_key, &ctx)?;
+            let out_name = name.trim_end_matches(".tmpl").to_string();
+            out.push(RenderedFile {
+                path: out_name,
+                contents: rendered,
+            });
+        }
+    }
+
+    Ok(out)
+}
+
+fn read_template(rel: &str) -> Result<String, Error> {
+    let f = TEMPLATES
+        .get_file(rel)
+        .ok_or_else(|| Error::Missing(rel.into()))?;
+    Ok(std::str::from_utf8(f.contents())
+        .expect("template is utf8")
+        .to_string())
+}
+
+#[derive(Serialize)]
+struct ServiceRefCtx {
+    name: String,
+    namespace: String,
+}
+
+impl From<&ServiceRef> for ServiceRefCtx {
+    fn from(s: &ServiceRef) -> Self {
+        Self {
+            name: s.name.clone(),
+            namespace: s.namespace.clone(),
+        }
+    }
+}
+
+fn base_context(plan: &Plan) -> Result<Context, Error> {
+    let mut ctx = Context::new();
+    ctx.insert("name", &plan.name);
+    ctx.insert("version", &plan.version);
+    ctx.insert("namespace", &plan.namespace);
+    ctx.insert("mesh", plan.mesh.as_str());
+    ctx.insert("replicas", &plan.replicas);
+    ctx.insert("max_replicas", &plan.max_replicas);
+    ctx.insert("mcp_sidecar", &plan.mcp_sidecar);
+    ctx.insert("cpu", &plan.cpu);
+    ctx.insert("memory", &plan.memory);
+    ctx.insert("image", &plan.image);
+
+    // Web vs backend toggles in templates.
+    let is_web = plan.kind.is_web();
+    ctx.insert("kind", plan.kind.as_str());
+    ctx.insert("is_web", &is_web);
+    let port: u32 = match (is_web, plan.web_mode) {
+        (true, Some(wm)) => wm.container_port(),
+        (true, None) => 8080,
+        (false, _) => 50051,
+    };
+    ctx.insert("port", &port);
+    ctx.insert("web_mode", &plan.web_mode.map(|m| m.as_str()).unwrap_or(""));
+    ctx.insert("ingress", &(plan.expose.as_deref() == Some("ingress")));
+
+    let deps: Vec<ServiceRefCtx> = plan.depends_on.iter().map(Into::into).collect();
+    let callers: Vec<ServiceRefCtx> = plan.callers.iter().map(Into::into).collect();
+    ctx.insert("depends_on", &deps);
+    ctx.insert("callers", &callers);
+
+    // ---- Stateful fields ----
+    let has_database = plan
+        .database
+        .as_ref()
+        .is_some_and(|d| !matches!(d.engine, DatabaseEngine::None));
+    ctx.insert("has_database", &has_database);
+    ctx.insert("has_db_secret", &has_database);
+    if let Some(db) = &plan.database {
+        ctx.insert("db_engine", db.engine.as_str());
+        ctx.insert("db_name", &db.name);
+        ctx.insert("db_namespace", &db.namespace);
+        ctx.insert("db_port", &db.port());
+        ctx.insert("db_size", &db.size);
+        ctx.insert("db_image", &db.image());
+        ctx.insert("db_shared", &db.shared);
+    } else {
+        ctx.insert("db_engine", "");
+        ctx.insert("db_name", "");
+        ctx.insert("db_namespace", "");
+        ctx.insert("db_port", &0_u32);
+    }
+
+    let has_cache = plan
+        .cache
+        .as_ref()
+        .is_some_and(|c| !matches!(c.engine, CacheEngine::None));
+    ctx.insert("has_cache", &has_cache);
+    if let Some(c) = &plan.cache {
+        ctx.insert("cache_engine", c.engine.as_str());
+        ctx.insert("cache_name", &c.name);
+        ctx.insert("cache_namespace", &c.namespace);
+        ctx.insert("cache_port", &c.port());
+        ctx.insert("cache_size", &c.size);
+        ctx.insert("cache_shared", &c.shared);
+    } else {
+        ctx.insert("cache_engine", "");
+        ctx.insert("cache_name", "");
+        ctx.insert("cache_namespace", "");
+        ctx.insert("cache_port", &0_u32);
+    }
+
+    // Literal envs the deployment template iterates over (DATABASE_URL,
+    // REDIS_URL, etc.). Tera receives them as a list of (key, value) tuples.
+    let literals: Vec<(String, String)> = plan.emitted_env.literals.to_vec();
+    ctx.insert("stateful_env_literals", &literals);
+
+    // Init container fields for migrations.
+    let has_migrations_init = plan
+        .migrations
+        .as_ref()
+        .is_some_and(|m| matches!(m.run_on, super::stateful::MigrationRunOn::InitContainer));
+    ctx.insert("has_migrations_init", &has_migrations_init);
+    if let Some(m) = &plan.migrations {
+        ctx.insert("migrations_command", &m.command);
+        ctx.insert("migrations_dir", &m.dir);
+    } else {
+        let empty: Vec<String> = Vec::new();
+        ctx.insert("migrations_command", &empty);
+        ctx.insert("migrations_dir", "");
+    }
+
+    Ok(ctx)
+}

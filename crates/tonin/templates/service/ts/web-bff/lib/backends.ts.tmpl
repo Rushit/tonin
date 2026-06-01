@@ -1,0 +1,26 @@
+// Server-side Connect clients for backend micro services.
+//
+// BFF pattern: the Next.js server (this process) talks to backend services
+// over in-cluster gRPC. The browser talks only to /api here — never directly
+// to backends. That's the contract.
+//
+// To add a backend:
+//   1. Add it under [depends_on] in tonin.toml.
+//   2. Import its generated client from "./gen/<svc>/v1/<svc>_connect" below.
+//   3. Add a typed accessor to `backends`.
+
+import { createPromiseClient, type PromiseClient } from "@connectrpc/connect";
+import { createGrpcTransport } from "@connectrpc/connect-node";
+
+function inCluster(service: string, namespace = "default", port = 50051) {
+  return `http://${service}.${namespace}.svc.cluster.local:${port}`;
+}
+
+// Example: import and wire a backend client once `npm run gen` has produced its module.
+// import { Greeter } from "./gen/greeter/v1/greeter_connect";
+// const greeterTransport = createGrpcTransport({ baseUrl: inCluster("greeter"), httpVersion: "2" });
+// export const greeter = createPromiseClient(Greeter, greeterTransport);
+
+export const backends = {
+  // greeter,
+};

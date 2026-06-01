@@ -1,0 +1,17 @@
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("TONIN_SKIP_PROTOC").is_ok() {
+        return Ok(());
+    }
+    // Server-side codegen: emit the Greeter trait + GreeterServer.
+    // Messages and the GreeterClient come from `../client-rust` via the
+    // path dep in Cargo.toml — no duplicate codegen.
+    tonic_build::configure()
+        .build_server(true)
+        .build_client(false)
+        .extern_path(".{{ service_name_snake }}.v1", "::{{ service_name_snake }}_client::proto")
+        .compile_protos(
+            &["../proto/{{ service_name_snake }}.proto"],
+            &["../proto"],
+        )?;
+    Ok(())
+}
