@@ -1,0 +1,27 @@
+[project]
+name = "tonin-client"
+version = "0.1.0"
+description = "Client-side primitives shared between generated tonin service clients in Python: AuthCtx, retry/circuit-breaker config. Tiny dep tree — peer services depend on this without pulling in the server framework."
+requires-python = ">=3.11"
+authors = [{ name = "tonin" }]
+license = { text = "Apache-2.0" }
+
+# grpcio is the only runtime dep — needed for StatusCode constants and
+# the Metadata type AuthCtx.propagate writes into. Peers already have it
+# via the generated stubs; pinning it here makes the typing explicit.
+dependencies = [
+  "grpcio>=1.66",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tonin_client"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/tonin_client" = "tonin_client"

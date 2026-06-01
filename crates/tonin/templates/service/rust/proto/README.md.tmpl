@@ -1,0 +1,29 @@
+# proto/
+
+Wire contract for `{{ service_name }}`. Language-agnostic source of truth.
+
+The actual `.proto` file lives at `{{ service_name_snake }}.proto` in this
+directory. Every client folder (`../client-rust`, `../client-python`,
+`../client-ts`) and the server (`../server`) reads from here via
+their own build step:
+
+- **Rust** — `tonic-build` in `build.rs` reads `../proto/*.proto`.
+- **Python** — `codegen.sh` runs `grpc_tools.protoc` against `../proto`.
+- **TS** — `buf.gen.yaml` lists `../proto` as input.
+
+## Editing the contract
+
+1. Edit `{{ service_name_snake }}.proto`.
+2. Rebuild whichever clients you use; they regenerate stubs automatically.
+3. Update `../docs/capabilities/` if a new capability is added.
+4. Bump the version in each `client-*/Cargo.toml` / `pyproject.toml` /
+   `package.json` if the change is breaking — peers depend on the
+   client packages by git ref, so a tag is how you signal the bump.
+
+## Conventions
+
+- `package = "<service>.v1";` — version in the package name from day one.
+- IDs are `string` (UUIDs in canonical form). Don't model UUIDs as `bytes`.
+- Timestamps are `google.protobuf.Timestamp`.
+- Wrap optional structs in a `message`; proto3 makes message fields
+  optional automatically.

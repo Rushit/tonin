@@ -1,0 +1,15 @@
+[package]
+name = "tonin-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "build.rs helper for tonin services. Wraps tonic-build with tonin conventions."
+
+[dependencies]
+tonic-build = { workspace = true }

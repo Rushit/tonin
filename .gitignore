@@ -1,0 +1,53 @@
+# Rust build artifacts.
+/target
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.
+**/Cargo.lock.bak
+.cargo/
+
+# Incremental compilation / cache.
+**/*.rlib
+**/*.rmeta
+
+# Coverage (cargo-tarpaulin, grcov, llvm-cov).
+*.profraw
+*.profdata
+tarpaulin-report.html
+cobertura.xml
+lcov.info
+coverage/
+
+# Benchmark / profiling output.
+/criterion/
+**/criterion/
+perf.data
+perf.data.old
+flamegraph.svg
+*.dSYM/
+
+# rust-analyzer / rustc artifacts.
+rust-project.json
+
+# IDE / OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code per-user settings.
+.claude/settings.local.json
+
+# Local env files — should never be committed (they often hold secrets
+# or per-developer config). Templates that ship are .env.example etc.
+.env
+.env.*
+!.env.example
+
+# Generated examples — examples/*/k8s/ is rendered output that we'd
+# normally commit, but the examples/ tree is template / scratch space,
+# so the renders here are throwaway.
+examples/*/k8s/

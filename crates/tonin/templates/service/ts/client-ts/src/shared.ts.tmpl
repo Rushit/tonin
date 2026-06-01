@@ -1,0 +1,159 @@
+// Shared client-side primitives matching the Rust + Python sides.
+//
+// Until the cross-language codegen (#119: gen-shared-types from Rust)
+// lands, this file is hand-written. Once codegen ships, this file
+// becomes a thin re-export from `./_generated.ts` and the source of
+// truth is Rust's `tonin-client::auth`.
+
+import type { Metadata } from "@grpc/grpc-js";
+
+export enum PrincipalKind {
+  USER = "user",
+  SERVICE = "service",
+  AGENT = "agent",
+  ANONYMOUS = "anonymous",
+}
+
+export interface RawToken {
+  value: string;
+  /** Conventions: `"bearer-jwt"`, `"api-key"`, `"session-cookie"`, `"basic-auth"`. */
+  kind: string;
+}
+
+export interface AuthCtxInit {
+  subject?: string;
+  issuer?: string;
+  audience?: string;
+  scopes?: string[];
+  kind?: PrincipalKind;
+  rawToken?: string;
+  expiresAt?: number;
+  extra?: Record<string, unknown>;
+}
+
+/**
+ * Identity + claims for an RPC call. The single concrete type that
+ * crosses language boundaries — peer Rust/Python services produce the
+ * same shape from their own interceptors.
+ */
+export class AuthCtx {
+  subject = "";
+  issuer = "";
+  audience = "";
+  scopes: string[] = [];
+  kind: PrincipalKind = PrincipalKind.ANONYMOUS;
+  rawToken = "";
+  expiresAt = 0;
+  extra: Record<string, unknown> = {};
+
+  constructor(init: AuthCtxInit = {}) {
+    Object.assign(this, init);
+  }
+
+  static anonymous(): AuthCtx {
+    return new AuthCtx();
+  }
+
+  static fromBearer(token: string): AuthCtx {
+    return new AuthCtx({ rawToken: token, kind: PrincipalKind.USER });
+  }
+
+  isAnonymous(): boolean {
+    return this.kind === PrincipalKind.ANONYMOUS;
+  }
+
+  /**
+   * Inject the bearer token into outbound gRPC metadata.
+   * Accepts:
+   *   - `@grpc/grpc-js` Metadata (Node): mutates in place via .set()
+   *   - browser-style headers object: sets the `authorization` key
+   */
+  propagate(metadata: Metadata | Record<string, string>): void {
+    if (!this.rawToken) return;
+    const header = `Bearer ${this.rawToken}`;
+    // grpc-js Metadata has a .set method; plain object doesn't.
+    if (typeof (metadata as Metadata).set === "function") {
+      (metadata as Metadata).set("authorization", header);
+    } else {
+      (metadata as Record<string, string>).authorization = header;
+    }
+  }
+
+  requireScope(scope: string): void {
+    if (!this.scopes.includes(scope)) {
+      throw new AuthError("insufficient_scope", `insufficient scope: required ${scope}`);
+    }
+  }
+}
+
+export class AuthError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message);
+    this.name = "AuthError";
+  }
+}
+
+// Retry / breaker config types (parallel to tonin_client.retry /
+// .breaker on the Python side and tonin-client::retry / ::breaker on
+// the Rust side). These describe behavior; the actual interceptor
+// implementation is part of each service's framework runtime.
+
+export enum Backoff {
+  EXPONENTIAL = "exponential",
+  FIXED = "fixed",
+}
+
+export interface RetryPolicy {
+  maxAttempts: number;
+  initialBackoffSecs: number;
+  backoff: Backoff;
+  multiplier: number;
+  maxBackoffSecs: number;
+  /** gRPC status codes (as strings) that count as retryable. */
+  retryableCodes: string[];
+}
+
+export const RetryPolicy = {
+  none(): RetryPolicy {
+    return {
+      maxAttempts: 1,
+      initialBackoffSecs: 0,
+      backoff: Backoff.FIXED,
+      multiplier: 1,
+      maxBackoffSecs: 1,
+      retryableCodes: ["UNAVAILABLE", "DEADLINE_EXCEEDED"],
+    };
+  },
+  exponential(maxAttempts: number): RetryPolicy {
+    return {
+      maxAttempts,
+      initialBackoffSecs: 0.05,
+      backoff: Backoff.EXPONENTIAL,
+      multiplier: 2.0,
+      maxBackoffSecs: 2.0,
+      retryableCodes: ["UNAVAILABLE", "DEADLINE_EXCEEDED"],
+    };
+  },
+};
+
+export interface CircuitBreaker {
+  windowSecs: number;
+  tripThreshold: number;
+  minRequests: number;
+  resetAfterSecs: number;
+  halfOpenProbes: number;
+  failureCodes: string[];
+}
+
+export const CircuitBreaker = {
+  default(): CircuitBreaker {
+    return {
+      windowSecs: 10,
+      tripThreshold: 0.5,
+      minRequests: 20,
+      resetAfterSecs: 30,
+      halfOpenProbes: 3,
+      failureCodes: ["UNAVAILABLE", "DEADLINE_EXCEEDED"],
+    };
+  },
+};

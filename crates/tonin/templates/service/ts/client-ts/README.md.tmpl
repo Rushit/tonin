@@ -1,0 +1,66 @@
+# {{ service_name }}-client
+
+Typed TypeScript gRPC client for the `{{ service_name }}` service.
+
+## Quick start
+
+```sh
+npm install
+npm run gen      # codegen from ../proto/
+npm run build    # tsc → dist/
+```
+
+## Node usage (`@grpc/grpc-js`)
+
+```ts
+import * as grpc from "@grpc/grpc-js";
+import { {{ ServiceCamel }}Client, HelloRequest, AuthCtx } from "{{ service_name }}-client";
+
+const client = new {{ ServiceCamel }}Client(
+  "{{ service_name }}:50051",
+  grpc.credentials.createInsecure(),
+);
+
+const metadata = new grpc.Metadata();
+AuthCtx.fromBearer(myToken).propagate(metadata);
+
+client.sayHello({ name: "world" }, metadata, (err, reply) => {
+  if (err) throw err;
+  console.log(reply.message);
+});
+```
+
+## Browser usage (`grpc-web`)
+
+```sh
+npm install grpc-web      # explicit (optional peer dep)
+```
+
+```ts
+import { {{ ServiceCamel }}Client, HelloRequest, AuthCtx } from "{{ service_name }}-client";
+
+// Browser-side requires an Envoy / Nginx grpc-web proxy in front of
+// the service. The endpoint here points at the proxy, not directly
+// at the gRPC port.
+const client = new {{ ServiceCamel }}Client("http://envoy-proxy/", null);
+
+const metadata: Record<string, string> = {};
+AuthCtx.fromBearer(myToken).propagate(metadata);
+
+client.sayHello(new HelloRequest({ name: "world" }), metadata)
+  .then((reply) => console.log(reply.getMessage()));
+```
+
+## Two transports, one wire format
+
+Both transports speak the same proto. The two-codepath cost lives only
+inside this client crate; service authors and peers see one consistent
+API. Cilium mesh handles east-west traffic between services; Envoy
+handles browser-to-mesh translation.
+
+## Shared client-side primitives
+
+`AuthCtx`, `RetryPolicy`, `CircuitBreaker` are intentionally shaped to
+match the Rust (`tonin-client`) and Python (`tonin_client`)
+equivalents — same field names, same defaults. A request authorized
+in a Python service stays authorized when relayed by a TS BFF.

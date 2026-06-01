@@ -1,0 +1,28 @@
+{
+  "name": "{{ service_name }}",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "gen": "buf generate",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2",
+    "@connectrpc/connect": "^2",
+    "@connectrpc/connect-node": "^2",
+    "@opentelemetry/api": "^1",
+    "@opentelemetry/sdk-node": "^0.55",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.55",
+    "@opentelemetry/auto-instrumentations-node": "^0.50"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1",
+    "@bufbuild/protoc-gen-es": "^2",
+    "@connectrpc/protoc-gen-connect-es": "^1",
+    "@types/node": "^20",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,49 @@
+[project]
+name = "tonin"
+version = "0.1.0"
+description = "Opinionated Python microservice framework. Kubernetes-native, mesh-secured, async-by-default. Sibling to the Rust `tonin` crate."
+requires-python = ">=3.11"
+authors = [{ name = "tonin" }]
+license = { text = "Apache-2.0" }
+
+# ALL I/O is async. grpc.aio for the server, asyncpg for postgres,
+# redis.asyncio for redis, httpx (not requests) for JWKS fetch.
+dependencies = [
+  "tonin-client",        # shared AuthCtx, RetryPolicy, CircuitBreaker
+  "grpcio>=1.66",          # gRPC runtime
+  "pyjwt[crypto]>=2.9",    # JWT signature + claim validation
+  "httpx>=0.27",           # async HTTP for JWKS fetch + minter
+  "asyncpg>=0.30",         # async Postgres pool
+  "redis>=5.1",            # redis.asyncio
+  "mcp>=1.27",             # FastMCP — in-process MCP server runtime
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp>=1.27",
+  "opentelemetry-instrumentation-grpc>=0.48b0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.uv.sources]
+tonin-client = { path = "../tonin-client" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tonin"]
+
+# Editable installs (uv pip install -e / uv sync with `tool.uv.sources
+# path = ...`) use this dir to put a `.pth` rather than copying files
+# into site-packages. Without it, changes to src/tonin/*.py don't
+# show up until you reinstall.
+[tool.hatch.build.targets.wheel.sources]
+"src/tonin" = "tonin"

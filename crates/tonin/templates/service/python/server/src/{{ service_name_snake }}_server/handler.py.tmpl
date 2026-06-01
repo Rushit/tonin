@@ -1,0 +1,71 @@
+"""Server-side handler for ``{{ ServiceCamel }}``.
+
+Owned by you — edit freely. Holds the pre-wired :class:`tonin.State`
+(asyncpg pool + redis client + optional storage provider). Add real
+reads/writes in :meth:`SayHello` (e.g. ``await self.state.require_pg()
+.fetchval(...)``).
+
+Every RPC method is ``async def`` — there is no sync path. asyncpg /
+redis.asyncio / httpx.AsyncClient handle all I/O. Don't introduce
+synchronous calls (psycopg2, ``requests``, ``time.sleep``) into the
+event loop.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import grpc
+from tonin import State, auth as _auth
+from tonin_client.auth import PrincipalKind, AuthError
+
+from {{ service_name_snake }}_server._pb.{{ service_name_snake }}_pb2 import (
+    HelloReply,
+    HelloRequest,
+)
+from {{ service_name_snake }}_server._pb.{{ service_name_snake }}_pb2_grpc import (
+    {{ ServiceCamel }}Servicer,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class {{ ServiceCamel }}Impl({{ ServiceCamel }}Servicer):
+    """Default implementation. Carries :class:`State`; routes RPCs to handlers."""
+
+    def __init__(self, state: State) -> None:
+        self.state = state
+
+    async def SayHello(
+        self,
+        request: HelloRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> HelloReply:
+        # `auth.current()` reads the AuthCtx the inbound interceptor set
+        # for this request. Anonymous when the service is configured
+        # `.without_auth()` (e.g. in tests).
+        ctx = _auth.current()
+        name = request.name
+
+        # Authorize. Comment this out for endpoints that genuinely
+        # don't need a scope, but keep it for any state-changing RPCs.
+        if not ctx.is_anonymous():
+            try:
+                ctx.require_scope("{{ service_name_snake }}:hello")
+            except AuthError as e:
+                await context.abort(e.to_grpc_status_code(), str(e))
+
+        if ctx.kind == PrincipalKind.ANONYMOUS:
+            greeting = f"hello, {name}"
+        else:
+            greeting = f"hello, {name} (greeted by {ctx.subject})"
+
+        logger.info(
+            "say_hello name=%s subject=%s kind=%s has_pg=%s has_redis=%s",
+            name,
+            ctx.subject,
+            ctx.kind.value,
+            self.state.has_pg(),
+            self.state.has_redis(),
+        )
+        return HelloReply(message=greeting)

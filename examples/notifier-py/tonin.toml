@@ -1,0 +1,21 @@
+schema = "v1"
+
+[service]
+name     = "notifier"
+version  = "0.1.0"
+language = "python"     # tells the CLI to skip cargo and use the Dockerfile directly
+codec    = "prost"
+
+[deploy]
+replicas    = 2
+mesh        = "cilium"
+mcp_sidecar = true
+namespace   = "shop"
+
+# Small pod: it just relays events.
+[resources]
+cpu    = "50m"
+memory = "64Mi"
+
+[autoscale]
+max_replicas = 4

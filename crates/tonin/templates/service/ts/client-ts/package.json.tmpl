@@ -1,0 +1,40 @@
+{
+  "name": "{{ service_name }}-client",
+  "version": "0.1.0",
+  "description": "Typed gRPC client for the {{ service_name }} service.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist", "src", "README.md"],
+  "scripts": {
+    "gen": "buf generate ../proto",
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist src/gen"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.11",
+    "google-protobuf": "^3.21"
+  },
+  "peerDependencies": {
+    "grpc-web": "^1.5"
+  },
+  "peerDependenciesMeta": {
+    "grpc-web": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.46",
+    "@protobuf-ts/plugin": "^2.9",
+    "ts-proto": "^2.2",
+    "typescript": "^5.6",
+    "@types/google-protobuf": "^3.15"
+  }
+}

@@ -1,0 +1,16 @@
+// Server component: runs in the Next.js server process. Can call backend
+// services directly via the typed clients in lib/backends.ts.
+import { backends } from "../lib/backends";
+
+export default async function Page() {
+  // Example of server-side backend call (uncomment after wiring a client):
+  // const greeting = await backends.greeter.sayHello({ name: "world" });
+
+  return (
+    <main>
+      <h1>{{ service_name }}</h1>
+      <p>Next.js BFF for micro. Server-side calls live in <code>lib/backends.ts</code>.</p>
+      {/* <p>{greeting.message}</p> */}
+    </main>
+  );
+}

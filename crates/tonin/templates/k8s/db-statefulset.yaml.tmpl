@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ db_name }}
+  namespace: {{ db_namespace }}
+  labels:
+    app: {{ db_name }}
+    service.identity: {{ db_name }}.{{ db_namespace }}
+    micro.io/owned-by: {{ name }}.{{ namespace }}
+spec:
+  serviceName: {{ db_name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ db_name }}
+  template:
+    metadata:
+      labels:
+        app: {{ db_name }}
+        service.identity: {{ db_name }}.{{ db_namespace }}
+    spec:
+      containers:
+        - name: {{ db_engine }}
+          image: {{ db_image }}
+          ports:
+            - containerPort: {{ db_port }}
+              name: {{ db_engine }}
+          env:
+            - name: POSTGRES_DB
+              value: "{{ name }}"
+            - name: POSTGRES_USER
+              value: "{{ name }}"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ name }}-db-credentials
+                  key: DATABASE_PASSWORD
+            # Postgres 18 expects PGDATA on a subpath of the mount to avoid
+            # the "lost+found" directory tripping up initdb on some PVs.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "1",    memory: "1Gi"   }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # storageClassName intentionally omitted — uses cluster default.
+        # Add `storage_class = "fast-ssd"` to [database] in tonin.toml to override.
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ db_size }}

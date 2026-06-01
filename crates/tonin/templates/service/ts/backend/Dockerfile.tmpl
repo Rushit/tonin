@@ -1,0 +1,16 @@
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json tsconfig.json buf.gen.yaml ./
+RUN npm install
+COPY proto/ proto/
+COPY src/ src/
+RUN npm run gen || true
+RUN npm run build
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=build /app/dist /app/dist
+COPY --from=build /app/node_modules /app/node_modules
+COPY --from=build /app/package.json /app/package.json
+EXPOSE 50051
+CMD ["node", "dist/server.js"]

@@ -1,0 +1,9 @@
+syntax = "proto3";
+package notifier.v1;
+
+service Notifier {
+  rpc SendOrderConfirmation (OrderEvent) returns (Ack);
+}
+
+message OrderEvent { string order_id = 1; string customer_id = 2; string sku = 3; int32 qty = 4; }
+message Ack        { bool ok = 1; }

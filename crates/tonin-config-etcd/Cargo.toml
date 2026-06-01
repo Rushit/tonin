@@ -1,0 +1,23 @@
+[package]
+name = "tonin-config-etcd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "etcd v3 Config implementation for the tonin framework. Native server-pushed watch for hot reload, TLS support for in-cluster etcd."
+
+[dependencies]
+tonin-core = { workspace = true }
+etcd-client  = { version = "0.14", features = ["tls"] }
+tokio        = { workspace = true }
+async-trait  = { workspace = true }
+tracing      = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

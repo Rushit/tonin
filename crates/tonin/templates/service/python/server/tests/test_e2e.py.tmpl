@@ -1,0 +1,80 @@
+"""E2E test. Boots the server on a real TCP port, hits it with a real
+grpc.aio client. No in-process shortcuts — the wire path is what
+production exercises, so that's what we test.
+
+Uses the local ``{{ service_name }}-client`` package (via uv.sources path
+dep) for the client side — same SDK peer services would use.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import socket
+
+import grpc
+import pytest
+
+import tonin
+from {{ service_name_snake }}_client import {{ ServiceCamel }}Stub, HelloRequest, AuthCtx
+from {{ service_name_snake }}_server.handler import {{ ServiceCamel }}Impl
+from {{ service_name_snake }}_server._pb.{{ service_name_snake }}_pb2_grpc import (
+    add_{{ ServiceCamel }}Servicer_to_server,
+)
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+async def _spawn_server() -> tuple[int, asyncio.Task]:
+    """Boot the server on a random port. Returns (port, task)."""
+    port = _free_port()
+    state = tonin.State()  # empty State, no DB/Redis needed for the test
+    svc = (
+        tonin.Service.new("{{ service_name }}-test")
+        .without_auth()
+        .addr(f"127.0.0.1:{port}")
+        .handler({{ ServiceCamel }}Impl(state), add_{{ ServiceCamel }}Servicer_to_server)
+    )
+
+    task = asyncio.create_task(svc.run())
+    # Brief settle so connect() doesn't race the bind.
+    await asyncio.sleep(0.2)
+    return port, task
+
+
+@pytest.mark.asyncio
+async def test_say_hello_over_grpc() -> None:
+    port, task = await _spawn_server()
+    try:
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = {{ ServiceCamel }}Stub(channel)
+            reply = await stub.SayHello(HelloRequest(name="world"))
+            # `without_auth()` → anonymous greeting.
+            assert reply.message.startswith("hello, world")
+    finally:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_say_hello_with_auth_header() -> None:
+    port, task = await _spawn_server()
+    try:
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = {{ ServiceCamel }}Stub(channel)
+            metadata: list[tuple[str, str]] = []
+            AuthCtx.from_bearer("test-token").propagate(metadata)
+            reply = await stub.SayHello(
+                HelloRequest(name="rushit"), metadata=metadata
+            )
+            # `without_auth()` accepts any token and stays anonymous in
+            # the AuthCtx; the message still contains the name. When a
+            # real verifier is wired, the assertion below checks the
+            # subject too.
+            assert "rushit" in reply.message
+    finally:
+        task.cancel()

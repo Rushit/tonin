@@ -1,0 +1,12 @@
+syntax = "proto3";
+package orders.v1;
+
+service Orders {
+  rpc PlaceOrder (PlaceOrderRequest) returns (PlaceOrderReply);
+  rpc GetOrder   (GetOrderRequest)   returns (Order);
+}
+
+message PlaceOrderRequest { string sku = 1; int32 qty = 2; string customer_id = 3; }
+message PlaceOrderReply   { string order_id = 1; bool accepted = 2; string reason = 3; }
+message GetOrderRequest   { string order_id = 1; }
+message Order             { string order_id = 1; string sku = 2; int32 qty = 3; string status = 4; }

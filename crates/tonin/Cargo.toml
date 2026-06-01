@@ -1,0 +1,77 @@
+[package]
+name = "tonin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Opinionated Rust microservice framework. Kubernetes-native, mesh-secured, MCP-by-default."
+
+# The crate is dual-purpose:
+#   * Library — `use tonin::prelude::*;` re-exports the framework runtime.
+#   * Binary  — the `tonin` CLI (scaffold services, render k8s manifests).
+#
+# Default features include `cli` so `cargo install tonin` Just Works.
+# Library consumers should set `default-features = false` to skip the CLI
+# dep tree (tera, walkdir, dialoguer, etc.) which is irrelevant at runtime:
+#   tonin = { version = "0.1", default-features = false }
+
+[features]
+default = ["cli"]
+cli = [
+    "dep:clap",
+    "dep:anyhow",
+    "dep:tracing-subscriber",
+    "dep:prost-types",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:toml",
+    "dep:thiserror",
+    "dep:tera",
+    "dep:walkdir",
+    "dep:include_dir",
+    "dep:tempfile",
+    "dep:dialoguer",
+    "dep:convert_case",
+    "dep:heck",
+    "dep:toml_edit",
+]
+
+[[bin]]
+name = "tonin"
+path = "src/bin/tonin.rs"
+required-features = ["cli"]
+
+# Maintainer-internal binary: emit language-shared types from tonin-client.
+# `cargo run --bin gen-shared-types`. Drift gate: `git diff --exit-code` after.
+[[bin]]
+name = "gen-shared-types"
+path = "src/bin/gen_shared_types.rs"
+required-features = ["cli"]
+
+[dependencies]
+# Library (always on)
+tonin-core       = { workspace = true }
+tokio              = { workspace = true }
+
+# CLI (feature-gated)
+clap         = { workspace = true, optional = true }
+anyhow       = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+prost-types  = { workspace = true, optional = true }
+serde        = { workspace = true, optional = true }
+serde_json   = { workspace = true, optional = true }
+toml         = { workspace = true, optional = true }
+thiserror    = { workspace = true, optional = true }
+tera         = { version = "1", optional = true }
+walkdir      = { version = "2", optional = true }
+include_dir  = { version = "0.7", optional = true }
+tempfile     = { version = "3", optional = true }
+dialoguer    = { version = "0.11", default-features = false, optional = true }
+convert_case = { version = "0.6", optional = true }
+heck         = { version = "0.5", optional = true }
+toml_edit    = { version = "0.22", optional = true }

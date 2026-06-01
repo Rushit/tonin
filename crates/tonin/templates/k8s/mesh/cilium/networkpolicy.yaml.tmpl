@@ -1,0 +1,74 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ name }}-ingress
+  namespace: {{ namespace }}
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: {{ name }}.{{ namespace }}
+  ingress:
+{%- for caller in callers %}
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: {{ caller.name }}.{{ caller.namespace }}
+      toPorts:
+        - ports:
+            - { port: "{{ port }}", protocol: TCP }
+{%- if mcp_sidecar %}
+            - { port: "50052", protocol: TCP }
+{%- endif %}
+{%- endfor %}
+{%- if is_web %}
+    # Web services accept traffic from the ingress controller namespace.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ingress-nginx
+      toPorts:
+        - ports:
+            - { port: "{{ port }}", protocol: TCP }
+{%- endif %}
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "{{ port }}", protocol: TCP }
+{%- if mcp_sidecar %}
+            - { port: "50052", protocol: TCP }
+{%- endif %}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+{%- for dep in depends_on %}
+    - toEndpoints:
+        - matchLabels:
+            service.identity: {{ dep.name }}.{{ dep.namespace }}
+      toPorts:
+        - ports:
+            - { port: "50051", protocol: TCP }
+{%- endfor %}
+{%- if has_database %}
+    # Database egress (own service's DB; shared or owned).
+    - toEndpoints:
+        - matchLabels:
+            service.identity: {{ db_name }}.{{ db_namespace }}
+      toPorts:
+        - ports:
+            - { port: "{{ db_port }}", protocol: TCP }
+{%- endif %}
+{%- if has_cache %}
+    # Cache egress (own service's cache; shared or owned).
+    - toEndpoints:
+        - matchLabels:
+            service.identity: {{ cache_name }}.{{ cache_namespace }}
+      toPorts:
+        - ports:
+            - { port: "{{ cache_port }}", protocol: TCP }
+{%- endif %}

@@ -1,0 +1,21 @@
+// {{ service_name }} — micro Node service in TypeScript. Async by default.
+//
+// Run codegen first: `npm install && npm run gen`.
+
+import { createServer } from "node:http2";
+import { connectNodeAdapter, type ConnectRouter } from "@connectrpc/connect-node";
+// import { {{ ServiceCamel }} } from "./gen/{{ service_name }}/v1/{{ service_name }}_connect.js";
+
+// OTel is wired by the sidecar / auto-instrumentation Node loader at runtime.
+// Dev: `node --import @opentelemetry/auto-instrumentations-node/register dist/server.js`
+
+const routes = (router: ConnectRouter) => {
+  // router.service({{ ServiceCamel }}, {
+  //   async echo(req) { return { message: req.message }; },
+  // });
+};
+
+const server = createServer(connectNodeAdapter({ routes }));
+server.listen(50051, "0.0.0.0", () => {
+  console.log("{{ service_name }} listening on :50051");
+});

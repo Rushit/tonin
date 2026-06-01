@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Regenerate Python gRPC stubs from ../proto. Run after editing the
+# .proto file. Output lands in src/{{ service_name_snake }}_client/_pb/.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+# Use the package's `codegen` extra (grpcio-tools) without polluting
+# runtime deps. uv resolves locally.
+uv sync --extra codegen --quiet
+
+PROTO_DIR=../proto
+OUT_DIR=src/{{ service_name_snake }}_client/_pb
+mkdir -p "$OUT_DIR"
+touch "$OUT_DIR/__init__.py"
+
+uv run python -m grpc_tools.protoc \
+  -I "$PROTO_DIR" \
+  --python_out="$OUT_DIR" \
+  --grpc_python_out="$OUT_DIR" \
+  "$PROTO_DIR/{{ service_name_snake }}.proto"
+
+# grpcio-tools generates `<service>_pb2.py` and `<service>_pb2_grpc.py`
+# with import statements like `import <service>_pb2 as ...`. That's
+# only valid if `_pb/` is on sys.path. Patch the grpc one to use a
+# relative import so it works as a package.
+if [[ "$(uname)" == "Darwin" ]]; then
+  sed -i '' -e 's/^import {{ service_name_snake }}_pb2/from . import {{ service_name_snake }}_pb2/' \
+    "$OUT_DIR/{{ service_name_snake }}_pb2_grpc.py"
+else
+  sed -i -e 's/^import {{ service_name_snake }}_pb2/from . import {{ service_name_snake }}_pb2/' \
+    "$OUT_DIR/{{ service_name_snake }}_pb2_grpc.py"
+fi
+
+echo "✓ regenerated stubs in $OUT_DIR/"

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+spec:
+  selector:
+    app: {{ name }}
+  ports:
+{%- if is_web %}
+    - name: http
+      port: 80
+      targetPort: {{ port }}
+{%- else %}
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+{%- if mcp_sidecar %}
+    - name: mcp
+      port: 50052
+      targetPort: 50052
+{%- endif %}
+{%- endif %}

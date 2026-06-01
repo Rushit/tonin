@@ -1,0 +1,9 @@
+# {{ service_name }}/proto
+
+Wire contract. Edit `{{ service_name_snake }}.proto` to declare new RPCs;
+re-run `bash codegen.sh` in `server/` and `client-python/` to regenerate
+the stubs (or `cargo build` + `uv sync` if you're cross-compiling).
+
+This folder is **not a Python package**. It's just .proto files
+consumed by `grpcio-tools` (or `protoc-gen-tonic` on the Rust side, if
+you also have a Rust client).

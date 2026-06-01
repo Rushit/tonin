@@ -1,0 +1,356 @@
+//! `tonin k8s ...` — render, validate, diff, apply, setup.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use crate::codegen::{plan::Plan, render};
+use anyhow::{Context, Result, anyhow, bail};
+use clap::Subcommand;
+
+#[derive(Subcommand)]
+pub enum K8sCmd {
+    /// Render YAML manifests from tonin.toml.
+    ///
+    /// Parses `[service]`, `[deploy]`, `[resources]`, and any capability
+    /// blocks (`[database]`, `[cache]`, `[secrets]`, `[migrations]`,
+    /// `[config]`) and writes Deployment / Service / HPA / Ingress +
+    /// mesh overlays into ./k8s/ (or `--out`). Offline — no cluster
+    /// contact required.
+    #[command(after_long_help = "PREREQUISITES:
+  - tonin.toml in the current dir (or `--path`).
+
+SIDE EFFECTS:
+  Writes files under ./<out>/ (default ./k8s/). Overwrites existing
+  files in that directory.
+
+EXAMPLES:
+  # Render the current service into ./k8s/
+  tonin k8s generate
+
+  # Render every service in a workspace recursively
+  tonin k8s generate --workspace --path ./services
+
+  # Apply the prod overlay for [database.prod] / [cache.prod]
+  tonin k8s generate --env prod
+
+  # Preview to stdout without writing files
+  tonin k8s generate --dry-run
+
+SEE ALSO:
+  docs/12-kubernetes-deploy.md")]
+    Generate(GenerateArgs),
+    /// Validate generated YAML against the cluster via server-side dry-run.
+    ///
+    /// Renders the same YAML as `generate` and submits it via
+    /// `kubectl apply --dry-run=server`. The cluster's admission
+    /// controllers and validators run; nothing is created.
+    #[command(after_long_help = "PREREQUISITES:
+  - kubectl on PATH
+  - A reachable Kubernetes cluster
+  - Current kubectl context points where you want to validate
+  - tonin.toml in the current dir
+
+EXAMPLES:
+  tonin k8s validate
+  tonin k8s validate --env staging
+
+EXIT CODES:
+  0 — every manifest accepted by the apiserver
+  non-zero — at least one manifest rejected; stderr carries the reason")]
+    Validate(GenerateArgs),
+    /// Show what would change if the rendered YAML were applied.
+    ///
+    /// Wraps `kubectl diff -f`. The diff is computed against the cluster's
+    /// current view of the same objects (per `kubectl diff` semantics).
+    #[command(after_long_help = "PREREQUISITES:
+  - kubectl on PATH (the `diff` subcommand specifically)
+  - A reachable Kubernetes cluster
+  - tonin.toml in the current dir
+
+EXAMPLES:
+  tonin k8s diff
+  tonin k8s diff --workspace --path ./services
+
+EXIT CODES:
+  0 — no differences (cluster matches the would-be-applied state)
+  1 — differences exist (per kubectl diff semantics)
+  >1 — error")]
+    Diff(GenerateArgs),
+    /// Render YAML and apply it to the current kubectl context.
+    ///
+    /// Equivalent to `generate` followed by `kubectl apply -f` against
+    /// every rendered file. Use `--context` to override the current
+    /// kubectl context. **This actually creates / updates resources in
+    /// the cluster.**
+    #[command(after_long_help = "PREREQUISITES:
+  - kubectl on PATH
+  - A reachable Kubernetes cluster
+  - Current kubectl context points to your target cluster (unless
+    overridden with `--context`)
+  - tonin.toml in the current dir
+  - For workspace mode, every tonin.toml under `--path` must be valid
+
+SIDE EFFECTS:
+  - Writes files under ./<out>/ (default ./k8s/)
+  - Calls `kubectl apply` — creates / mutates real resources in the
+    target cluster. There is no rollback; review the manifests first
+    or pair with `k8s diff`.
+
+EXAMPLES:
+  # Apply to whatever the current kubectl context points at
+  tonin k8s apply
+
+  # Apply to a named context (e.g. a staging cluster)
+  tonin k8s apply --context staging
+
+  # Apply every service in a workspace
+  tonin k8s apply --workspace --path ./services")]
+    Apply(ApplyArgs),
+    /// Set up a target cluster for tonin (OTel collector, mesh checks).
+    ///
+    /// Stub today — prints the manual install commands that match
+    /// `[deploy].mesh` and the OTel collector defaults. The intent is a
+    /// one-shot post-`kind create cluster` setup; full implementation
+    /// lands when the mesh-install matrix is settled.
+    #[command(after_long_help = "MODES:
+  --mode local   For kind / k3d / minikube. Installs in-cluster defaults
+                 (OTel collector). Assumes the cluster is local-dev disposable.
+  --mode remote  Uses the current kubectl context as-is. Prints commands
+                 rather than running them when destructive.
+
+EXAMPLES:
+  tonin k8s setup --mode local
+  tonin k8s setup --mode remote")]
+    Setup(SetupArgs),
+}
+
+#[derive(clap::Args, Clone)]
+pub struct GenerateArgs {
+    /// Service directory containing tonin.toml. Defaults to current dir.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+    /// Render every tonin.toml under `path` recursively.
+    /// Cross-service `[depends_on]` graph is computed across all services found.
+    #[arg(long)]
+    pub workspace: bool,
+    /// Output directory (relative to each service dir).
+    #[arg(long, default_value = "k8s")]
+    pub out: PathBuf,
+    /// Print to stdout instead of writing files.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Target environment for `[database.<env>]` / `[cache.<env>]` overlay
+    /// resolution. Falls back to `TONIN_ENV` env var, then `dev`.
+    #[arg(long)]
+    pub env: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct ApplyArgs {
+    #[command(flatten)]
+    pub generate: GenerateArgs,
+    /// Override the kubectl context.
+    #[arg(long)]
+    pub context: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct SetupArgs {
+    /// `local` = kind/k3d/minikube (defaults installed in-cluster).
+    /// `remote` = uses current kubectl context; expects credentials already configured.
+    #[arg(long, default_value = "local")]
+    pub mode: String,
+}
+
+pub fn run(cmd: K8sCmd) -> Result<()> {
+    match cmd {
+        K8sCmd::Generate(args) => generate(&args),
+        K8sCmd::Validate(args) => validate(&args),
+        K8sCmd::Diff(args) => diff(&args),
+        K8sCmd::Apply(args) => apply(&args),
+        K8sCmd::Setup(args) => setup(&args),
+    }
+}
+
+// --------------- generate ---------------
+
+fn generate(args: &GenerateArgs) -> Result<()> {
+    let plans = load_plans(&args.path, args.workspace, args.env.as_deref())?;
+    for plan in &plans {
+        let files = render::render(plan).context("rendering plan")?;
+        let target_dir = plan.dir.join(&args.out);
+
+        if args.dry_run {
+            println!("# === {} ({} files) ===", plan.name, files.len());
+            for f in &files {
+                println!("# --- {}/{} ---", target_dir.display(), f.path);
+                println!("{}", f.contents);
+            }
+        } else {
+            std::fs::create_dir_all(&target_dir)
+                .with_context(|| format!("creating {}", target_dir.display()))?;
+            for f in &files {
+                let p = target_dir.join(&f.path);
+                std::fs::write(&p, &f.contents)
+                    .with_context(|| format!("writing {}", p.display()))?;
+            }
+            eprintln!(
+                "wrote {} files for service '{}' → {}",
+                files.len(),
+                plan.name,
+                target_dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+// --------------- validate ---------------
+
+fn validate(args: &GenerateArgs) -> Result<()> {
+    require_kubectl()?;
+    let plans = load_plans(&args.path, args.workspace, args.env.as_deref())?;
+    let tmp = tempfile::tempdir().context("creating temp dir")?;
+    let mut total = 0;
+    let mut fail = 0;
+
+    for plan in &plans {
+        let svc_dir = tmp.path().join(&plan.name);
+        std::fs::create_dir_all(&svc_dir)?;
+        for f in render::render(plan)? {
+            std::fs::write(svc_dir.join(&f.path), f.contents)?;
+            total += 1;
+        }
+        let status = Command::new("kubectl")
+            .args(["apply", "--dry-run=server", "-f"])
+            .arg(&svc_dir)
+            .status()
+            .context("running kubectl apply --dry-run=server")?;
+        if status.success() {
+            eprintln!("✓ {}: valid", plan.name);
+        } else {
+            eprintln!("✗ {}: kubectl reported errors above", plan.name);
+            fail += 1;
+        }
+    }
+    eprintln!(
+        "validated {} files across {} services; {} failed",
+        total,
+        plans.len(),
+        fail
+    );
+    if fail > 0 {
+        bail!("{} service(s) failed validation", fail);
+    }
+    Ok(())
+}
+
+// --------------- diff ---------------
+
+fn diff(args: &GenerateArgs) -> Result<()> {
+    require_kubectl()?;
+    let plans = load_plans(&args.path, args.workspace, args.env.as_deref())?;
+    let tmp = tempfile::tempdir().context("creating temp dir")?;
+    for plan in &plans {
+        let svc_dir = tmp.path().join(&plan.name);
+        std::fs::create_dir_all(&svc_dir)?;
+        for f in render::render(plan)? {
+            std::fs::write(svc_dir.join(&f.path), f.contents)?;
+        }
+        eprintln!("# diff: {}", plan.name);
+        // kubectl diff exits 1 when there is a diff — that's not an error for us.
+        Command::new("kubectl")
+            .args(["diff", "-f"])
+            .arg(&svc_dir)
+            .status()
+            .context("running kubectl diff")?;
+    }
+    Ok(())
+}
+
+// --------------- apply ---------------
+
+fn apply(args: &ApplyArgs) -> Result<()> {
+    require_kubectl()?;
+    // Render to the user's chosen output dir (default ./k8s/) so the YAML
+    // is inspectable after, not buried in a tempdir.
+    generate(&args.generate)?;
+
+    let plans = load_plans(
+        &args.generate.path,
+        args.generate.workspace,
+        args.generate.env.as_deref(),
+    )?;
+    for plan in &plans {
+        let target_dir = plan.dir.join(&args.generate.out);
+        let mut cmd = Command::new("kubectl");
+        if let Some(ctx) = &args.context {
+            cmd.args(["--context", ctx]);
+        }
+        cmd.args(["apply", "-f"]).arg(&target_dir);
+        let status = cmd.status().context("running kubectl apply")?;
+        if !status.success() {
+            bail!("kubectl apply failed for service '{}'", plan.name);
+        }
+        eprintln!("✓ {}: applied", plan.name);
+    }
+    Ok(())
+}
+
+// --------------- setup ---------------
+
+fn setup(args: &SetupArgs) -> Result<()> {
+    // Intentionally stubbed. The setup flow needs a real design pass:
+    //
+    // local mode:
+    //   - detect kind/k3d/minikube, fail with install hint if none.
+    //   - install Cilium with `--set encryption.enabled=true` (or print helm cmd).
+    //   - install OTel collector from templates/k8s/otel-collector.yaml.tmpl.
+    //   - verify `linkerd check` / `cilium status` equivalent.
+    //
+    // remote mode:
+    //   - use current kubectl context; do not modify credentials.
+    //   - check the cluster has the chosen mesh CNI installed; refuse to proceed otherwise.
+    //   - apply OTel collector to `observability` ns if missing.
+    //
+    // Auth: we should NOT bake in cloud-provider auth (gcloud/aws/az). Users own kubectl
+    // context setup. We only call kubectl with --context if provided.
+    eprintln!("tonin k8s setup --mode={} : not yet implemented", args.mode);
+    eprintln!("manual setup for now:");
+    eprintln!("  1. Create cluster (kind/k3d/EKS/GKE/AKS)");
+    eprintln!("  2. Install Cilium (or chosen mesh) per docs/mesh-setup.md");
+    eprintln!("  3. kubectl apply -f templates/k8s/otel-collector.yaml.tmpl");
+    eprintln!("  4. tonin k8s validate --workspace --path examples");
+    Ok(())
+}
+
+// --------------- helpers ---------------
+
+fn load_plans(path: &Path, workspace: bool, env: Option<&str>) -> Result<Vec<Plan>> {
+    let env = crate::codegen::stateful::select_env(env);
+    let plans = if workspace {
+        Plan::load_workspace_with_env(path, &env).context("loading workspace plans")?
+    } else {
+        let toml = path.join("tonin.toml");
+        if !toml.exists() {
+            return Err(anyhow!(
+                "no tonin.toml at {}; pass --workspace to scan recursively",
+                toml.display()
+            ));
+        }
+        vec![Plan::load_with_env(&toml, &env).context("loading plan")?]
+    };
+    if plans.is_empty() {
+        bail!("no services found under {}", path.display());
+    }
+    Ok(plans)
+}
+
+fn require_kubectl() -> Result<()> {
+    Command::new("kubectl")
+        .arg("version")
+        .arg("--client")
+        .output()
+        .map_err(|e| anyhow!("kubectl not found on PATH: {e}"))?;
+    Ok(())
+}

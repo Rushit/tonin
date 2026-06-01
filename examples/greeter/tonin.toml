@@ -1,0 +1,16 @@
+schema = "v1"
+
+[service]
+name    = "greeter"
+version = "0.1.0"
+codec   = "prost"
+
+[deploy]
+replicas    = 2
+mesh        = "cilium"   # cilium | istio | linkerd | none
+mcp_sidecar = true
+namespace   = "default"
+
+[resources]
+cpu    = "100m"
+memory = "128Mi"

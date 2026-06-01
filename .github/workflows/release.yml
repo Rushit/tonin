@@ -1,0 +1,256 @@
+# Release to crates.io + cross-platform binaries
+#
+# Setup: this workflow needs a crates.io API token exposed as a repository
+# secret named CARGO_REGISTRY_TOKEN. To create it:
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#   -> CARGO_REGISTRY_TOKEN (paste the token from https://crates.io/me)
+#
+# crates.io publish order (must respect the internal dep graph):
+#   1. tonin-client      - leaf, no internal deps
+#   2. tonin-mcp-macros  - leaf, no internal deps
+#   3. tonin-build       - leaf, no internal deps
+#   4. tonin-core        - depends on tonin-client + tonin-mcp-macros
+#   5. tonin             - umbrella library + the `tonin` CLI binary,
+#                            depends on tonin-core (published last)
+#
+# A short sleep between publishes gives the crates.io sparse index time to
+# propagate; without it, the next `cargo publish` can fail to resolve the
+# crate it just uploaded.
+#
+# Binary targets (built and uploaded in parallel with the crates.io publish):
+#   - x86_64-unknown-linux-gnu   (Linux x86_64)
+#   - aarch64-unknown-linux-gnu  (Linux ARM64, e.g. Graviton)
+#   - x86_64-apple-darwin        (macOS Intel)
+#   - aarch64-apple-darwin       (macOS Apple Silicon)
+#   - x86_64-pc-windows-msvc     (Windows x86_64)
+#
+# Archives follow taiki-e/upload-rust-binary-action's default naming:
+#   tonin-<target>.tar.gz     (or .zip on Windows)
+# That naming is also what `cargo binstall tonin` expects, so end users
+# get pre-built binaries for free without us shipping a separate installer.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. v0.1.0) - emergency manual run only'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # ----------------------------------------------------------------------
+  # Verify tag matches the workspace version before doing anything.
+  # Both publish-crates and build-binaries depend on this passing.
+  # ----------------------------------------------------------------------
+  verify:
+    name: Verify tag matches workspace version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF="${{ github.event.inputs.version }}"
+          else
+            REF="${{ github.ref_name }}"
+          fi
+          TAG_VERSION="${REF#v}"
+          # /VERSION is the source of truth. scripts/bump-version.sh keeps
+          # Cargo.toml's [workspace.package].version in sync; we still cross-
+          # check it here to catch the case where someone hand-edited one
+          # without the other.
+          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          CARGO_VERSION="$(
+            awk '
+              /^\[workspace\.package\]/ { in_section=1; next }
+              /^\[/ && in_section      { in_section=0 }
+              in_section && /^version[[:space:]]*=/ {
+                match($0, /"[^"]+"/)
+                print substr($0, RSTART+1, RLENGTH-2)
+                exit
+              }
+            ' Cargo.toml
+          )"
+          echo "Tag version:       ${TAG_VERSION}"
+          echo "VERSION file:      ${FILE_VERSION}"
+          echo "Cargo.toml:        ${CARGO_VERSION}"
+          if [ "${FILE_VERSION}" != "${CARGO_VERSION}" ]; then
+            echo "::error::VERSION (${FILE_VERSION}) and Cargo.toml (${CARGO_VERSION}) are out of sync." >&2
+            echo "::error::Run scripts/bump-version.sh to resync, then re-tag." >&2
+            exit 1
+          fi
+          if [ "${TAG_VERSION}" != "${FILE_VERSION}" ]; then
+            echo "::error::Tag ${REF} does not match /VERSION (${FILE_VERSION})." >&2
+            exit 1
+          fi
+
+  # ----------------------------------------------------------------------
+  # Run the full `make ci` gate (fmt-check + clippy -D warnings + tests +
+  # doc -D warnings) at the tagged commit. Same gates ci.yml runs on push,
+  # repeated here so the release workflow is self-contained: a release tag
+  # whose commit doesn't pass tests never reaches crates.io and never
+  # produces uploaded binaries.
+  # ----------------------------------------------------------------------
+  test:
+    name: Test (make ci)
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+          components: rustfmt, clippy
+
+      # `etcd-client` (transitive via `tonin-config-etcd`) needs protoc
+      # in its build.rs; runner images don't ship it preinstalled.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: make ci
+        run: make ci
+
+  # ----------------------------------------------------------------------
+  # Publish the five crates to crates.io in dep order.
+  # ----------------------------------------------------------------------
+  publish-crates:
+    name: Publish crates to crates.io
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+
+      # `cargo publish` re-verifies each crate by compiling it, which for
+      # any future config-impl crate (etcd, etc.) pulls in protoc users.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish all crates to crates.io
+        run: make publish
+
+  # ----------------------------------------------------------------------
+  # Cross-platform binary builds. Each matrix entry produces one archive
+  # and uploads it to the GitHub Release for this tag. The first job to
+  # finish creates the Release; the rest idempotently add their asset.
+  # ----------------------------------------------------------------------
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.90 with target ${{ matrix.target }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          targets: ${{ matrix.target }}
+
+      # protoc needed even for the binary build: cargo evaluates the full
+      # workspace dep graph before building -p tonin --bin tonin.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # taiki-e/upload-rust-binary-action handles:
+      #   - cargo build --release --target <target> -p tonin --bin tonin
+      #   - cross-compile via `cross` when target != host (e.g. aarch64-linux on ubuntu-x86)
+      #   - tar.gz / zip with conventional naming (tonin-<target>.<ext>)
+      #   - gh release create (idempotent) + asset upload, signed checksums
+      #   - manifest is what `cargo binstall tonin` expects, so binstall works for free
+      - name: Build and upload tonin
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: tonin
+          target: ${{ matrix.target }}
+          archive: tonin-$target
+          tar: unix
+          zip: windows
+          checksum: sha256
+          include: LICENSE,README.md
+          ref: ${{ github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ----------------------------------------------------------------------
+  # Finalize the GitHub Release after both publish + binaries succeed.
+  # generate_release_notes pulls commit messages since the previous tag.
+  # ----------------------------------------------------------------------
+  finalize-release:
+    name: Finalize GitHub Release
+    needs: [publish-crates, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finalize Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false

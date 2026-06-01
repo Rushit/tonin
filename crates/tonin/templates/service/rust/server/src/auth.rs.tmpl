@@ -1,0 +1,29 @@
+//! Auth verifier wiring for this service.
+//!
+//! The framework owns the interceptor + token propagation + task-local.
+//! This file only picks the verifier. Swap the body of `verifier()` to
+//! plug in Okta, Cognito, API keys, or compose with ChainVerifier — the
+//! rest of the auth stack is unchanged.
+//!
+//! See `AGENTS.md` for the spawn-pitfall warning when propagating auth
+//! through `tokio::spawn`'d tasks.
+
+use tonin::auth::{default::JwtValidator, TokenVerifier};
+
+/// Construct the service's token verifier. Called once during boot.
+///
+/// Env-var configuration (see `tonin::auth::default::JwtValidator`):
+/// - `TONIN_AUTH_ISSUER`        (required in prod)
+/// - `TONIN_AUTH_AUDIENCE`      (required in prod)
+/// - `TONIN_AUTH_JWKS_URL`      (required in prod)
+/// - `TONIN_AUTH_INSECURE_DEV=1` (dev only — logs a loud WARN)
+pub fn verifier() -> impl TokenVerifier {
+    JwtValidator::from_env().unwrap_or_else(|e| {
+        tracing::warn!(
+            error = ?e,
+            "TONIN_AUTH_ISSUER unset or invalid — running in INSECURE_DEV mode. \
+             Tokens accepted without signature verification. DO NOT USE IN PROD."
+        );
+        JwtValidator::insecure_dev()
+    })
+}

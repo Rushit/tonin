@@ -1,0 +1,26 @@
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("TONIN_SKIP_PROTOC").is_ok() {
+        return Ok(());
+    }
+    // Client-side codegen: messages + the strongly-typed Client. The
+    // server crate re-exports `proto` from here, so this is the
+    // canonical home for the wire types.
+    //
+    // The extra derives let the framework's MCP layer auto-derive an
+    // input schema for each gRPC method (the proc-macro
+    // `#[tonin::mcp_expose]` reads them via schemars). They're
+    // additive — services that don't use MCP pay only the build-time
+    // cost of the derives, no runtime cost.
+    tonic_build::configure()
+        .build_server(false)
+        .build_client(true)
+        .type_attribute(
+            ".",
+            "#[derive(::serde::Serialize, ::serde::Deserialize, ::schemars::JsonSchema)]",
+        )
+        .compile_protos(
+            &["../proto/{{ service_name_snake }}.proto"],
+            &["../proto"],
+        )?;
+    Ok(())
+}

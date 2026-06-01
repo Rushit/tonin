@@ -1,0 +1,11 @@
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ name }}-mtls
+  namespace: {{ namespace }}
+spec:
+  selector:
+    matchLabels:
+      service.identity: {{ name }}.{{ namespace }}
+  mtls:
+    mode: STRICT

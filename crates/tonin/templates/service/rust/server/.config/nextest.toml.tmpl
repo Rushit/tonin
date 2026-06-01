@@ -1,0 +1,25 @@
+# Nextest config for {{ service_name }}-server.
+#
+# Run with: `cargo nextest run`
+#
+# Reference: https://nexte.st/docs/configuration/
+
+[profile.default]
+# Don't tolerate flaky tests silently — they should be marked or fixed.
+retries = 0
+# Show test output for failures (not all tests).
+failure-output = "immediate-final"
+success-output = "never"
+# Slow-test warning: if any test exceeds 10s, print a warning.
+slow-timeout = { period = "10s", terminate-after = 6 }
+
+[profile.ci]
+# CI-only profile: fail-fast off so we see every failure, immediate
+# output, structured junit XML for CI tooling.
+retries = 2
+fail-fast = false
+failure-output = "immediate"
+success-output = "never"
+
+[profile.ci.junit]
+path = "junit.xml"

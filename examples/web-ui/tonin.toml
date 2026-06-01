@@ -1,0 +1,23 @@
+schema = "v1"
+
+[service]
+name     = "web-ui"
+version  = "0.1.0"
+language = "typescript"
+# UI is a browser app; no MCP sidecar, no gRPC server-side.
+codec    = "prost"
+
+[deploy]
+replicas    = 2
+mesh        = "cilium"
+mcp_sidecar = false
+namespace   = "shop"
+expose      = "ingress"   # tells the CLI to also generate an Ingress, not just a ClusterIP Service
+
+# Small pod: just an nginx serving static files.
+[resources]
+cpu    = "50m"
+memory = "64Mi"
+
+[autoscale]
+max_replicas = 3

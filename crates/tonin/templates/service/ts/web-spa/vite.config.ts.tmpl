@@ -1,0 +1,15 @@
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+// Pure client-side SPA. No server, no SSR. Dev server proxies /api/* to
+// a backend pod (override BACKEND_URL when running locally if you have one).
+const backend = process.env.BACKEND_URL ?? "http://localhost:50051";
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    proxy: { "/api": { target: backend, changeOrigin: true, rewrite: (p) => p.replace(/^\/api/, "") } },
+  },
+});

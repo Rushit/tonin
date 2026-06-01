@@ -1,0 +1,17 @@
+# Headless Service for the StatefulSet. Service name == DNS hostname the
+# main service resolves to via DATABASE_URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ db_name }}
+  namespace: {{ db_namespace }}
+  labels:
+    micro.io/owned-by: {{ name }}.{{ namespace }}
+spec:
+  clusterIP: None
+  selector:
+    app: {{ db_name }}
+  ports:
+    - name: {{ db_engine }}
+      port: {{ db_port }}
+      targetPort: {{ db_port }}

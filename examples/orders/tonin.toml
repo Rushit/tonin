@@ -1,0 +1,24 @@
+schema = "v1"
+
+[service]
+name    = "orders"
+version = "0.1.0"
+codec   = "prost"
+
+[deploy]
+replicas    = 2
+mesh        = "cilium"
+mcp_sidecar = true
+namespace   = "shop"
+
+# Medium pod: handles request fan-out to inventory + notifier.
+[resources]
+cpu    = "250m"
+memory = "256Mi"
+
+[autoscale]
+max_replicas = 6
+
+[depends_on]
+inventory = "shop"
+notifier  = "shop"

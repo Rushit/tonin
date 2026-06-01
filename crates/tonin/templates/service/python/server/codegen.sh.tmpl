@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Regenerate Python gRPC stubs for the server. We import the client's
+# generated `_pb` module rather than emitting our own, but the server
+# also needs the *Servicer* base class which grpcio emits in the same
+# pass. So this script regenerates into _pb/ in the server package.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+uv sync --extra codegen --quiet
+
+PROTO_DIR=../proto
+OUT_DIR=src/{{ service_name_snake }}_server/_pb
+mkdir -p "$OUT_DIR"
+touch "$OUT_DIR/__init__.py"
+
+uv run python -m grpc_tools.protoc \
+  -I "$PROTO_DIR" \
+  --python_out="$OUT_DIR" \
+  --grpc_python_out="$OUT_DIR" \
+  "$PROTO_DIR/{{ service_name_snake }}.proto"
+
+# Same import-path fix as client-python: grpcio-tools emits
+# `import <svc>_pb2 as ...` which only works flat. Rewrite to relative.
+if [[ "$(uname)" == "Darwin" ]]; then
+  sed -i '' -e 's/^import {{ service_name_snake }}_pb2/from . import {{ service_name_snake }}_pb2/' \
+    "$OUT_DIR/{{ service_name_snake }}_pb2_grpc.py"
+else
+  sed -i -e 's/^import {{ service_name_snake }}_pb2/from . import {{ service_name_snake }}_pb2/' \
+    "$OUT_DIR/{{ service_name_snake }}_pb2_grpc.py"
+fi
+
+echo "✓ regenerated stubs in $OUT_DIR/"

@@ -1,0 +1,43 @@
+[package]
+name    = "{{ service_name }}-server"
+version = "0.1.0"
+edition = "2021"
+
+# `<service>` is the binary name; users type `cargo run` and it works.
+# MCP runs in-process on a second port (default :50052) — no separate
+# binary needed. To opt into the legacy sidecar model, scaffold with
+# `--with-mcp-sidecar`.
+[[bin]]
+name = "{{ service_name }}"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tonin  = "0.1"
+{{ service_name }}-client = { path = "../client-rust" }
+
+tokio = { version = "1", features = ["full"] }
+tonic = "0.12"
+prost = "0.13"
+async-trait = "0.1"
+tracing = "0.1"
+futures = "0.3"
+# Needed by the `#[tonin::mcp_expose]` macro-generated adapter.
+# rmcp's macros emit unqualified `rmcp::...` paths in their expansion,
+# so the user's crate must have `rmcp` + `rmcp-macros` in scope. The
+# scaffolded code itself never names rmcp directly — these are
+# transitively required by the macro output only.
+serde_json  = "1"
+schemars    = "1"
+rmcp        = { version = "1", default-features = false, features = ["server", "macros"] }
+rmcp-macros = "1"
+
+[dev-dependencies]
+tokio-stream = "0.1"
+
+[build-dependencies]
+# Server build.rs generates the SERVER side (Greeter trait, GreeterServer)
+# only — message types come from ../client-rust via the path dep above.
+tonic-build = "0.12"
