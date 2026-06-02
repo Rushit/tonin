@@ -11,7 +11,7 @@ RUSTDOCFLAGS ?= -D warnings
 # Default to printing the help table when invoked with no args.
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test fmt fmt-check lint doc ci clean \
+.PHONY: help build check test fmt fmt-check lint doc ci clean gen-example \
         install-cli publish-dry publish version release show-version
 
 help: ## Show this help table
@@ -46,6 +46,15 @@ doc: ## Build rustdoc for the workspace, warnings denied
 
 ci: fmt-check lint test doc ## Run the same gate CI runs (fmt + lint + test + doc)
 	@echo "ci: all checks passed"
+
+# Proves the templates + generated code still hold together: `cargo build`
+# runs the example's build.rs codegen (tonic-build) and compiles the result;
+# `k8s generate` re-renders its manifests from tonin.toml. Run after touching
+# any template under crates/tonin/templates/ or the codegen module.
+gen-example: ## Re-render examples/greeter manifests and confirm it builds
+	$(CARGO) build -p greeter
+	$(CARGO) run -p tonin -- k8s generate --path examples/greeter
+	@echo "gen-example: greeter builds and manifests render"
 
 clean: ## Remove cargo build artifacts
 	$(CARGO) clean

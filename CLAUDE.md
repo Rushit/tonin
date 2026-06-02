@@ -2,15 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status
-
-Pre-0.1, preparing first crates.io publish. The runtime, CLI, and example services compile and run. Expect commands, crate APIs, and templates to move before 0.1.0; prefer reading the current code over README phrasing when they disagree.
-
-The reader-facing documentation lives at [`docs/00-overview.md`](docs/00-overview.md) and the 15 capability docs alongside it (`docs/01-principles.md` through `docs/15-multi-language.md`). That tree is the authoritative source for "what tonin does and why" — start there before redesigning a capability or `tonin.toml` section.
+The reader-facing documentation lives at [`docs/00-overview.md`](docs/00-overview.md) and the capability docs alongside it (`docs/01-principles.md` through `docs/16-config.md`). That tree is the authoritative source for "what tonin does and why" — start there before redesigning a capability or `tonin.toml` section.
 
 ## Common commands
 
-Pinned toolchain: `stable` with `rustfmt` + `clippy` (`rust-toolchain.toml`).
+Pinned toolchain: Rust `1.90` with `rustfmt` + `clippy` (`rust-toolchain.toml`).
 
 ```bash
 # Build / check the whole workspace
@@ -81,21 +77,81 @@ Each example is a workspace member, not a standalone crate. `examples/greeter/` 
 ## Authoring conventions worth knowing
 
 - **`tonin.toml` is the single source of truth.** Service name, mesh choice, replicas, resources, MCP sidecar toggle, stateful deps — all here. The CLI re-renders k8s manifests from it; don't hand-edit generated YAML.
-- **`tonin.toml` is versioned (top-level `schema = "v1"`) and backward-compatible by default.** Files written by older CLIs keep parsing — a missing `schema` field is treated as `v1`. **Adding fields to v1 must be additive only** (new optional fields with defaults that match today's behavior). Renaming, removing, or retyping a field requires bumping `CURRENT_SCHEMA` in `crates/tonin/src/codegen/plan.rs` AND writing the migration in the same change. See [`docs/17-schema-versioning.md`](docs/17-schema-versioning.md) for the policy coding agents must follow.
+- **`tonin.toml` is versioned (top-level `schema = "v1"`) and backward-compatible by default.** Files written by older CLIs keep parsing — a missing `schema` field is treated as `v1`. **Adding fields to v1 must be additive only** (new optional fields with defaults that match today's behavior). Renaming, removing, or retyping a field requires bumping `CURRENT_SCHEMA` in `crates/tonin/src/codegen/plan.rs` AND writing the migration in the same change. This section is the policy; `CURRENT_SCHEMA` in `plan.rs` is the enforcing source of truth.
 - **Capability sections in `tonin.toml` (`[cache]`, `[database]`, future `[eventbus]`) select an implementation via `engine = "..."`.** Swapping Redis → NATS for events should be a TOML change + a `Cargo.toml` dep flip, never a handler rewrite. Preserve that invariant when adding new capabilities.
 - **Mesh-delegated concerns** (mTLS, retries, circuit breaking, cross-cluster routing) are intentionally absent from the framework crates. See [`docs/13-service-mesh.md`](docs/13-service-mesh.md) and [`docs/01-principles.md`](docs/01-principles.md) (mesh-delegated network concerns) for the rationale. Don't reintroduce them in `tonin-core::transport` / `tonin-core::discovery` without a deliberate design pass.
 - **Codec today is prost** via `tonic-build` — every scaffolded service and every example compiles its `.proto` through prost. The `[service].codec` field in `tonin.toml` and the `TONIN_CODEC` env var reserve the surface for a future `protoc-gen-micro` (buffa-based) plugin; setting `codec = "buffa"` is a no-op today and falls back to prost with a stderr notice.
 
-## Capability docs
+## How to add a feature
 
-The 16-file `docs/` tree is the authoritative reader documentation. Before designing a new `tonin.toml` section, capability trait, or framework concept, check the relevant doc:
+tonin is opinionated. A new feature should fit the four principles or name the deviation
+explicitly. Reason in this order:
 
-- [`docs/00-overview.md`](docs/00-overview.md) — landing page; what tonin is, who it's for, doc navigation.
-- [`docs/01-principles.md`](docs/01-principles.md) — interface-first, mesh-delegated, MCP-by-default, `tonin.toml` as source of truth. Any new design should fit these four rules; if it doesn't, name the deviation explicitly.
-- [`docs/02-architecture.md`](docs/02-architecture.md) — current crate map, runtime layout, request flow.
-- `docs/03-grpc-service.md` through `docs/06-authentication.md` — the build-a-service flow (Service builder, MCP exposure, telemetry, auth).
-- `docs/07-cache.md` through `docs/10-secrets.md` — capability traits (Cache, Database, EventBus, SecretStore).
-- `docs/11-service-discovery.md` through `docs/13-service-mesh.md` — deploy story (DNS, k8s rendering, mesh overlays).
-- `docs/14-background-jobs.md`, `docs/15-multi-language.md` — beyond gRPC: jobs and polyglot scaffolding.
+1. **Does it fit the four principles?** (full text in [`docs/01-principles.md`](docs/01-principles.md))
+   - **Interface-first** — capabilities are traits in `tonin-core`; concrete backends live in
+     their own crates, selected by `engine = "..."`. Define the trait before any backend.
+   - **Mesh-delegated** — mTLS, retries, circuit breaking, cross-cluster routing belong to the
+     mesh, not the framework. Don't build them in.
+   - **MCP-by-default** — anything exposing RPCs must keep the "every method is also a tool"
+     property intact.
+   - **`tonin.toml` is the single source of truth** — new config is a `tonin.toml` field, and the
+     CLI renders from it. No second source, no hand-edited generated output.
+2. **Which layer owns it?** A new capability → a trait in `tonin-core` (+ a separate impl crate),
+   never a concrete backend inside `tonin-core`. A new build/deploy action → a command under
+   `crates/tonin/src/commands/` + a `TopCmd` variant. New generated output → a Tera template + a
+   `plan.rs` decision + a test.
+3. **Is it additive to the schema?** New `tonin.toml` fields must be optional with defaults that
+   preserve today's behavior. Otherwise bump `CURRENT_SCHEMA` and write the migration in the same
+   change.
+4. **Read and update the governing doc.** Each capability has a `docs/NN-*.md` with a Status block
+   (ships-now vs. roadmap) — read it before designing, update it in the same change.
 
-Each capability doc has a "Status" section flagging what ships in 0.1 vs. what's deferred. Use those status callouts to decide whether a feature exists today or is on the roadmap before you start writing code.
+## Rust standards
+
+**Clean interfaces and simplicity come first.** Readable, maintainable, extensible code beats clever
+code. Apply the optimizations below only when they don't cost clarity — never contort an API to save
+an allocation.
+
+- **Async-first.** The runtime is tokio. I/O-bearing capability methods are `async`. Never block the
+  runtime — no blocking `std::fs`/`std::net` or CPU-heavy loops on async paths (use `tokio`
+  equivalents or `spawn_blocking`), and don't hold a lock across `.await`.
+- **Errors, not panics.** Library crates (`tonin-core`, …) return typed errors (`thiserror`,
+  `tonin::Result`) — no `unwrap`/`expect`/`panic!` on a reachable path; a panic in a service kills
+  the pod. The CLI uses `anyhow`/`bail!` with actionable messages. Propagate with `?` and add
+  context; don't swallow errors.
+- **Zero-copy where it's free.** Borrow (`&str`, `&[u8]`) over owning in signatures; pass buffers as
+  `bytes::Bytes` (cheap clone); avoid reflexive `.clone()`/`.to_string()`. But a `String` that makes
+  a signature obvious beats a lifetime-tangled `&'a str`, and CLI/codegen paths are cold — clone
+  freely there.
+- **Pluggable over monomorphized.** A `dyn Capability` trait object is the right call for swappable
+  backends even though generics would be marginally faster — the clean, swappable interface is the
+  point.
+- **Crash-safe, deterministic codegen.** Write generated files atomically (temp + rename) so an
+  interrupted `tonin k8s generate` / `proto generate` never leaves partial output. Rendered output
+  must be deterministic (stable ordering) so re-running produces no spurious diffs.
+- **No `unsafe`.** Nothing here needs it.
+
+## Definition of done
+
+Drive the gate through `make` (run `make help` for the full target table):
+
+- **`make fmt` then `make ci`** passes — `ci` is the same gate CI runs: `fmt-check` + clippy
+  `-D warnings` + `test` + `doc`. Zero warnings is a gate, not advice.
+- New `plan.rs`/codegen behavior has a unit test (plain `#[test]` / `#[tokio::test]` — there is no
+  snapshot harness; don't add one without reason).
+- Touched a capability or `tonin.toml` field? Update its `docs/NN-*.md` + Status block in the same
+  change. Touched a template under `crates/tonin/templates/` or the codegen module? Run
+  **`make gen-example`** (re-renders the greeter manifests and confirms it builds).
+- Commit messages follow Conventional Commits (`feat:`, `fix:`, …); see `CONTRIBUTING.md`.
+
+## Doc map
+
+The 17-file `docs/` tree (`00`–`16`) is the authoritative reader documentation — check the relevant
+doc before designing a new `tonin.toml` section, capability trait, or framework concept.
+
+- [`docs/01-principles.md`](docs/01-principles.md) — the four rules above, in full.
+- [`docs/02-architecture.md`](docs/02-architecture.md) — crate map, runtime layout, request flow.
+- `03`–`06` — build-a-service flow (Service builder, MCP exposure, telemetry, auth).
+- `07`–`10`, `16` — capability traits (Cache, Database, EventBus, SecretStore, Config).
+- `11`–`13` — deploy story (DNS discovery, k8s rendering, mesh overlays).
+- `14`–`15` — background jobs, polyglot scaffolding.
