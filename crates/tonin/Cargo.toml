@@ -10,6 +10,9 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Opinionated Rust microservice framework. Kubernetes-native, mesh-secured, MCP-by-default."
+# The package ships two binaries (`tonin` CLI + `gen-shared-types` dev tool), so
+# `cargo run -p tonin` is otherwise ambiguous. Default to the user-facing CLI.
+default-run = "tonin"
 
 # The crate is dual-purpose:
 #   * Library — `use tonin::prelude::*;` re-exports the framework runtime.
