@@ -12,12 +12,16 @@ categories.workspace = true
 description = "Client-side primitives shared between generated tonin service clients: AuthCtx, retry/circuit-breaker config, OTel propagation. Tiny dep tree — peer services depend on this without pulling in the server framework."
 
 [dependencies]
-tonic       = { workspace = true }
-http        = { workspace = true }
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
+tonic        = { workspace = true }
+prost        = { workspace = true }
+http         = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+tokio        = { workspace = true, features = ["sync", "time"] }
+dashmap      = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

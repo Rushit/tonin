@@ -4,25 +4,61 @@
 //! `cargo build` regenerates the `proto::*` module from `../proto/*.proto`
 //! but does NOT touch the items below it.
 //!
-//! ## Client-side primitives
+//! ## Coalescing + cache
 //!
-//! This crate re-exports the shared `tonin-client` surface so peer
-//! services can write one `use {{ service_name_snake }}_client::*;` and
-//! get everything they need to call `{{ service_name }}` with auth,
-//! retries, and circuit breakers configured:
+//! The generated `{{ ServiceCamel }}CoalescingClient` wraps the raw tonic
+//! client and provides:
+//!
+//! - **Request coalescing** — concurrent identical in-flight calls share
+//!   one upstream RPC (default: {% if client.coalesce %}ON{% else %}OFF{% endif %}).
+//! - **Per-method TTL cache** — opt-in per method (see below).
+//!
+//! ### Wrapping the tonic client
 //!
 //! ```ignore
-//! use {{ service_name_snake }}_client::{GreeterClient, AuthCtx, RetryPolicy};
+//! use {{ service_name_snake }}_client::{
+//!     {{ ServiceCamel }}Client, CoalescingClient,
+//! };
+//! use tonin_client::cache::CacheConfig;
+//! use std::time::Duration;
 //!
-//! let mut client = GreeterClient::connect("http://{{ service_name }}:50051").await?;
-//! let mut req = tonic::Request::new(HelloRequest { name: "world".into() });
-//! AuthCtx::from_bearer(my_token).propagate(&mut req);
-//! let resp = client.say_hello(req).await?;
+//! let inner = {{ ServiceCamel }}Client::connect("http://{{ service_name }}:50051").await?;
+//!
+//! // Default: coalescing on, no TTL cache.
+//! let client = CoalescingClient::new(inner);
+//!
+//! // Or build with per-method TTL cache:
+//! let client = CoalescingClient::builder(inner)
+{%- for cache in client.caches %}
+//!     .cache("{{ cache.0 }}", CacheConfig::new(
+//!         Duration::from_millis({{ cache.1.ttl_ms }}),
+//!         {{ cache.1.capacity }},
+//!     ))
+{%- endfor %}
+//!     .build();
+//!
+//! // Call a method through the coalescing client:
+//! let req_bytes = prost::Message::encode_to_vec(&my_request);
+//! let resp = client
+//!     .call::<HelloReply, _, _>(
+//!         "{{ service_name_snake }}.v1.{{ ServiceCamel }}",
+//!         "SayHello",
+//!         req_bytes,
+//!         move || async move { inner.say_hello(tonic::Request::new(my_request)).await },
+//!     )
+//!     .await?;
 //! ```
 //!
-//! As the framework grows additional client-side patterns (retries,
-//! circuit breakers, hedging), they land in `tonin-client` and become
-//! available here without touching this generated file.
+//! ## Raw tonic client
+//!
+//! For streaming calls or when coalescing is not needed, use the raw
+//! tonic client via `client.inner`:
+//!
+//! ```ignore
+//! let mut req = tonic::Request::new(HelloRequest { name: "world".into() });
+//! AuthCtx::from_bearer(my_token).propagate(&mut req);
+//! let resp = client.inner.say_hello(req).await?;
+//! ```
 
 #![doc = include_str!("../README.md")]
 
@@ -45,5 +81,7 @@ pub use proto::{HelloReply, HelloRequest};
 // the top level so peers don't need to learn the two-crate split.
 pub use tonin_client::auth::{AuthCtx, AuthError, PrincipalKind, RawToken};
 pub use tonin_client::breaker::CircuitBreaker;
+pub use tonin_client::cache::CacheConfig;
+pub use tonin_client::client::{ClientConfig, CoalescingClient};
 pub use tonin_client::retry::{Backoff, RetryPolicy, RetryableCodes};
-pub use tonin_client::{breaker, propagate, retry};
+pub use tonin_client::{breaker, cache, client, coalesce, propagate, retry};

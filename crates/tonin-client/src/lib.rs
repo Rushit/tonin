@@ -6,12 +6,24 @@
 //! which drags the tonic server stack, OTLP telemetry SDK, MCP sidecar
 //! runtime, JWT validation and JWKS fetching along with it. This crate
 //! holds only the contract pieces a caller actually needs: auth context,
-//! retry/breaker config, and W3C trace propagation.
+//! retry/breaker config, OTel propagation, and request coalescing.
 //!
-//! # Example
+//! # Example — coalesced auth check
 //!
-//! Propagate an inbound `AuthCtx` + `traceparent` onto an outbound tonic
-//! request:
+//! ```rust,no_run
+//! use tonin_client::client::CoalescingClient;
+//! use tonin_client::cache::CacheConfig;
+//! use std::time::Duration;
+//!
+//! // Wrap the tonic-generated AuthServiceClient.
+//! // Coalescing is on by default; add a 500 ms TTL cache for Check.
+//! // let inner = AuthServiceClient::connect("http://auth:50051").await?;
+//! // let client = CoalescingClient::builder(inner)
+//! //     .cache("Check", CacheConfig::new(Duration::from_millis(500), 1_000))
+//! //     .build();
+//! ```
+//!
+//! # Example — trace propagation
 //!
 //! ```rust,no_run
 //! use tonin_client::{AuthCtx, propagate};
@@ -35,11 +47,9 @@
 //! - [`retry`] — `RetryPolicy`, `Backoff`, `RetryableCodes`.
 //! - [`breaker`] — `CircuitBreaker` config with three-state presets.
 //! - [`propagate`] — W3C `traceparent` / `tracestate` injection.
-//!
-//! # Sample app
-//!
-//! <https://github.com/Rushit/tonin/tree/main/examples/greeter> —
-//! Service B in the demo depends on this crate to call Service A.
+//! - [`coalesce`] — `Singleflight<R>`, `KeyFn`, `DefaultKeyFn`.
+//! - [`cache`] — `ResponseCache<R>`, `CacheConfig`.
+//! - [`client`] — `CoalescingClient<C>`, `CoalescingClientBuilder`.
 //!
 //! # Sibling crates
 //!
@@ -51,7 +61,11 @@
 
 pub mod auth;
 pub mod breaker;
+pub mod cache;
+pub mod client;
+pub mod coalesce;
 pub mod propagate;
 pub mod retry;
 
 pub use auth::{AuthCtx, AuthError, PrincipalKind, RawToken};
+pub use client::CoalescingClient;
