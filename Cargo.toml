@@ -31,8 +31,11 @@ tonin-core       = { path = "crates/tonin-core",      version = "0.3.4" }
 tonin-mcp-macros = { path = "crates/tonin-mcp-macros", version = "0.3.4" }
 tonin-build      = { path = "crates/tonin-build",     version = "0.3.4" }
 
-tokio       = { version = "1", features = ["full"] }
-tonic       = "0.12"
+tokio        = { version = "1", features = ["full"] }
+tonic        = "0.12"
+dashmap      = "6"
+futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["net"] }
 tonic-build = "0.12"
 prost       = "0.13"
 prost-types = "0.13"

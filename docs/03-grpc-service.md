@@ -132,8 +132,79 @@ sequenceDiagram
 
 Order matters: telemetry wraps auth so the auth-verify work shows up as a child of the request span. If auth fails, the rejection is still recorded inside the trace.
 
+## Client-side request coalescing
+
+When Service B calls a hot unary method on Service A (e.g. an auth `Check` on every inbound request), concurrent identical calls can be coalesced into a single upstream RPC. `tonin-client` ships `CoalescingClient<C>`, a zero-framework-dep wrapper around any tonic-generated client.
+
+**Status:** Ships in 0.3.4. Default ON for all unary calls; opt-in per-method TTL cache.
+
+### Quick start
+
+```rust
+use auth_client::{AuthServiceClient, CoalescingClient};
+use tonin_client::cache::CacheConfig;
+use std::time::Duration;
+
+// Coalescing on, no TTL cache:
+let inner = AuthServiceClient::connect("http://auth:50051").await?;
+let client = CoalescingClient::new(inner);
+
+// With a 500 ms TTL cache on the Check method:
+let client = CoalescingClient::builder(inner)
+    .cache("Check", CacheConfig::new(Duration::from_millis(500), 1_000))
+    .build();
+```
+
+### `tonin.toml` config (additive, v1-compatible)
+
+```toml
+[client]
+coalesce = true          # default; set false to disable for all methods
+
+[client.cache.Check]
+ttl_ms   = 500           # opt-in TTL cache for the Check method
+capacity = 1000          # max entries; new inserts dropped when full
+```
+
+Builder API always wins over `tonin.toml` values.
+
+### Semantics
+
+| Property | Behaviour |
+|---|---|
+| **Key** | `(service_path, method_name, encode_to_vec(request))` — any field change = new key |
+| **Coalescing** | Concurrent identical in-flight calls share one upstream RPC; error shared but not cached |
+| **TTL cache** | Only `Ok` responses cached; errors never cached; bounded by `capacity` |
+| **Streaming** | Never coalesced — call `client.inner.your_stream_method()` directly |
+| **Cancellation** | Dropping one waiter mid-flight does not cancel other waiters |
+
+### Tracing
+
+Each call emits a `coalesce` span with `flight.role` (`"driver"` / `"waiter"`) and `flight.key_hash` (a stable hex of the key). The driver's `traceparent` is propagated upstream. Waiters show a near-zero-latency `coalesce` span; correlate across traces by `flight.key_hash` in Jaeger/Tempo.
+
+### Key extensibility
+
+When responses vary per caller identity, supply a custom `KeyFn` to include the auth principal in the key:
+
+```rust
+use tonin_client::coalesce::KeyFn;
+
+struct AuthKeyFn;
+impl KeyFn for AuthKeyFn {
+    fn derive(&self, service: &str, method: &str, request_bytes: &[u8]) -> Vec<u8> {
+        // include the principal from thread-local AuthCtx, or pass it via a wrapper
+        let mut key = DefaultKeyFn.derive(service, method, request_bytes);
+        key.extend_from_slice(my_principal_bytes());
+        key
+    }
+}
+
+let client = CoalescingClient::builder(inner).key_fn(AuthKeyFn).build();
+```
+
 ## See also
 
 - [04-mcp-exposure.md](04-mcp-exposure.md) — turn each gRPC method into an MCP tool with `#[mcp_expose]`.
 - [05-telemetry.md](05-telemetry.md) — what `ExtractLayer` does and how spans propagate to downstream peers.
 - [06-authentication.md](06-authentication.md) — `TokenVerifier`, `AuthCtx`, and the JWT default.
+

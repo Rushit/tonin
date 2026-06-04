@@ -11,10 +11,13 @@ name = "greeter"
 path = "src/main.rs"
 
 [dependencies]
-tonin           = { workspace = true }
-tokio    = { workspace = true }
-tonic    = { workspace = true }
-prost    = { workspace = true }
+tonin        = { workspace = true }
+tokio        = { workspace = true }
+tonic        = { workspace = true }
+prost        = { workspace = true }
+tonin-client = { workspace = true }
+futures-util = { workspace = true }
+tokio-stream = { workspace = true }
 
 [build-dependencies]
 tonin-build = { workspace = true }

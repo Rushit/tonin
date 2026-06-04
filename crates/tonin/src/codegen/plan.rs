@@ -114,6 +114,10 @@ struct RawConfig {
     /// Dynamic application config (env / etcd / github / chained).
     #[serde(default)]
     config: Option<RawConfigBlock>,
+    /// Generated client behaviour (coalescing + optional TTL cache).
+    /// Entirely optional — absence preserves today's behaviour.
+    #[serde(default)]
+    client: Option<RawClientConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +163,68 @@ struct RawAutoscale {
 
 fn default_true() -> bool {
     true
+}
+
+// ---------- [client] config (additive, v1-compatible) ----------
+
+/// Raw `[client]` block from `tonin.toml`. All fields optional so omitting
+/// the section entirely preserves today's default behaviour (coalescing on,
+/// no TTL cache).
+///
+/// Example:
+/// ```toml
+/// [client]
+/// coalesce = true   # default — may be set to false to opt out
+///
+/// [client.cache.Check]
+/// ttl_ms   = 500
+/// capacity = 1000
+/// ```
+#[derive(Debug, Default, Deserialize)]
+struct RawClientConfig {
+    /// Enable request coalescing for generated clients. Default: `true`.
+    #[serde(default = "default_true")]
+    coalesce: bool,
+    /// Per-method TTL cache settings. Key = gRPC method name (e.g. `"Check"`).
+    #[serde(default)]
+    cache: std::collections::BTreeMap<String, RawMethodCacheConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawMethodCacheConfig {
+    /// How long (milliseconds) an `Ok` response is considered fresh.
+    ttl_ms: u64,
+    /// Maximum number of cached entries for this method. Default: 1 000.
+    #[serde(default = "default_cache_capacity")]
+    capacity: usize,
+}
+
+fn default_cache_capacity() -> usize {
+    1_000
+}
+
+/// Resolved per-method cache config (milliseconds → `Duration` already done).
+#[derive(Clone, Debug, Serialize)]
+pub struct MethodCacheSpec {
+    pub ttl_ms: u64,
+    pub capacity: usize,
+}
+
+/// Resolved `[client]` config passed to the renderer.
+#[derive(Clone, Debug, Serialize)]
+pub struct ClientSpec {
+    pub coalesce: bool,
+    /// Sorted for deterministic template output.
+    pub caches: Vec<(String, MethodCacheSpec)>,
+}
+
+impl Default for ClientSpec {
+    fn default() -> Self {
+        Self {
+            coalesce: true,
+            caches: Vec::new(),
+        }
+    }
 }
 
 // ---------- normalized Plan (what the renderer consumes) ----------
@@ -246,6 +312,8 @@ pub struct Plan {
     pub emitted_env: EmittedEnv,
     /// Which env was selected when resolving overlays (for diagnostics).
     pub selected_env: String,
+    /// Resolved `[client]` config for generated client code.
+    pub client: ClientSpec,
 }
 
 impl Plan {
@@ -324,6 +392,31 @@ impl Plan {
         let migrations = raw.migrations.as_ref().map(stateful::resolve_migrations);
         let config = raw.config.as_ref().map(stateful::resolve_config);
 
+        let client = raw
+            .client
+            .map(|c| {
+                let mut caches: Vec<(String, MethodCacheSpec)> = c
+                    .cache
+                    .into_iter()
+                    .map(|(method, mc)| {
+                        (
+                            method,
+                            MethodCacheSpec {
+                                ttl_ms: mc.ttl_ms,
+                                capacity: mc.capacity,
+                            },
+                        )
+                    })
+                    .collect();
+                // Stable ordering for deterministic template output.
+                caches.sort_by(|a, b| a.0.cmp(&b.0));
+                ClientSpec {
+                    coalesce: c.coalesce,
+                    caches,
+                }
+            })
+            .unwrap_or_default();
+
         let mut emitted_env = EmittedEnv::default();
         if let Some(d) = &database {
             emitted_env.extend_database(d, &svc_name);
@@ -358,6 +451,7 @@ impl Plan {
             secrets,
             migrations,
             config,
+            client,
             emitted_env,
             selected_env: env.to_string(),
         })
