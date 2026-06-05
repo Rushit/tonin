@@ -102,6 +102,12 @@ struct RawConfig {
     /// `[depends_on]` map: `<name> = "<namespace>"`.
     #[serde(default)]
     depends_on: BTreeMap<String, String>,
+    /// `[callers]` map: `<name> = "<namespace>"`. Explicit ingress allowlist
+    /// for single-service mode. In workspace mode this is also computed from
+    /// the inverse of `depends_on` across all services; explicit entries here
+    /// are merged with the computed ones (union, no duplicates).
+    #[serde(default)]
+    callers: BTreeMap<String, String>,
     // -- Stateful dependencies (Phase 1) --
     #[serde(default)]
     database: Option<RawDatabase>,
@@ -346,8 +352,17 @@ impl Plan {
             });
         }
 
-        let depends_on = raw
+        let depends_on: Vec<ServiceRef> = raw
             .depends_on
+            .into_iter()
+            .map(|(name, namespace)| ServiceRef { name, namespace })
+            .collect();
+
+        // Explicit callers from tonin.toml (single-service mode).
+        // In workspace mode the workspace loader merges these with the
+        // graph-computed inverse-depends_on callers.
+        let explicit_callers: Vec<ServiceRef> = raw
+            .callers
             .into_iter()
             .map(|(name, namespace)| ServiceRef { name, namespace })
             .collect();
@@ -444,7 +459,7 @@ impl Plan {
             memory: raw.resources.memory,
             image,
             depends_on,
-            callers: Vec::new(),
+            callers: explicit_callers,
             dir,
             database,
             cache,

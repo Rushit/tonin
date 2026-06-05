@@ -62,6 +62,8 @@ pub fn run(
     st: ServiceType,
     wm: Option<WebMode>,
     no_workspace: bool,
+    _template_repo: Option<&str>,
+    flat: bool,
     with_jobs: &[String],
     with_storage: Option<StorageKind>,
     extra_clients: &[ClientLang],
@@ -92,6 +94,21 @@ pub fn run(
         language: lang.as_str().to_string(),
         service_type: st.as_str().to_string(),
     };
+
+    // Default: three-crate workspace layout (proto + server + rs).
+    // Use --flat to get the old single-directory structure instead.
+    if matches!(lang, Lang::Rust) && !flat {
+        if dest.exists() {
+            bail!(
+                "{} already exists; pick another name or delete it first",
+                dest.display()
+            );
+        }
+        std::fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
+        emit_workspace_layout(&dest, &vars, extra_clients)?;
+        print_workspace_next_steps(name, extra_clients);
+        return Ok(());
+    }
 
     scaffold(&dest, lang, st, wm, &vars)?;
     write_service_toml(&dest, &vars, st, wm)?;
@@ -1250,6 +1267,1585 @@ fn print_next_steps(
                     eprintln!("  (cd client-rust && cargo build)");
                 }
             }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Workspace layout scaffold (--workspace-layout)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Scaffold the workspace layout: <name>-proto, <name>-server, <name>-rs,
+/// plus optional language clients (<name>-py, <name>-ts).
+fn emit_workspace_layout(dest: &Path, vars: &Vars, extras: &[ClientLang]) -> Result<()> {
+    let name = &vars.service_name;
+    let snake = &vars.service_name_snake;
+    let camel = &vars.service_camel;
+    let proto_mod = &vars.service_proto_module;
+
+    // Proto content from the shared template.
+    let shared = TEMPLATES
+        .get_dir("_shared")
+        .ok_or_else(|| anyhow!("missing _shared templates"))?;
+    let proto_content = vars.apply(&read_shared_file(shared, "proto.tmpl")?);
+
+    // ── workspace root ──────────────────────────────────────────────────
+    write_file(&dest.join("Cargo.toml"), &ws_cargo_toml(name))?;
+    write_file(&dest.join(".cargo/config.toml"), &ws_cargo_config(name))?;
+    write_file(&dest.join("CLAUDE.md"), &ws_claude_md(name, snake, camel))?;
+    write_file(&dest.join("AGENTS.md"), &ws_agents_md(name))?;
+    write_file(&dest.join(".gitignore"), &ws_gitignore())?;
+
+    // ── <name>-proto ─────────────────────────────────────────────────────
+    let proto_dir = dest.join(format!("{name}-proto"));
+    write_file(&proto_dir.join("Cargo.toml"), &proto_cargo_toml(name))?;
+    write_file(&proto_dir.join("build.rs"), &proto_build_rs(snake))?;
+    write_file(
+        &proto_dir.join(format!("proto/{snake}.proto")),
+        &proto_content,
+    )?;
+    write_file(&proto_dir.join("src/lib.rs"), &proto_lib_rs(snake))?;
+    write_file(
+        &proto_dir.join("CLAUDE.md"),
+        &sub_claude_md(name, "proto", snake, camel, proto_mod),
+    )?;
+    write_file(&proto_dir.join("AGENTS.md"), "@CLAUDE.md\n")?;
+    write_file(&proto_dir.join(".gitignore"), "/target/\n")?;
+
+    // ── <name>-server ────────────────────────────────────────────────────
+    let server_dir = dest.join(format!("{name}-server"));
+    write_file(&server_dir.join("Cargo.toml"), &server_cargo_toml(name))?;
+    write_file(&server_dir.join("tonin.toml"), &server_tonin_toml(name))?;
+    write_file(
+        &server_dir.join("src/main.rs"),
+        &server_main_rs(name, snake, camel, proto_mod),
+    )?;
+    write_file(&server_dir.join("src/lib.rs"), &server_lib_rs(camel))?;
+    write_file(
+        &server_dir.join("src/service.rs"),
+        &server_service_rs(snake, camel, proto_mod),
+    )?;
+    write_file(
+        &server_dir.join("migrations/.gitkeep"),
+        "# sqlx migration files go here.\n",
+    )?;
+    write_file(
+        &server_dir.join("tests/contract_e2e_test.rs"),
+        &server_contract_test(snake, camel, proto_mod),
+    )?;
+    write_file(
+        &server_dir.join("CLAUDE.md"),
+        &sub_claude_md(name, "server", snake, camel, proto_mod),
+    )?;
+    write_file(&server_dir.join("AGENTS.md"), "@CLAUDE.md\n")?;
+    write_file(&server_dir.join(".gitignore"), &server_gitignore())?;
+
+    // ── <name>-rs ────────────────────────────────────────────────────────
+    let rs_dir = dest.join(format!("{name}-rs"));
+    write_file(&rs_dir.join("Cargo.toml"), &rs_cargo_toml(name))?;
+    write_file(
+        &rs_dir.join("src/lib.rs"),
+        &rs_lib_rs(name, snake, camel, proto_mod),
+    )?;
+    write_file(
+        &rs_dir.join("CLAUDE.md"),
+        &sub_claude_md(name, "rs", snake, camel, proto_mod),
+    )?;
+    write_file(&rs_dir.join("AGENTS.md"), "@CLAUDE.md\n")?;
+    write_file(&rs_dir.join(".gitignore"), "/target/\n")?;
+
+    // ── Makefiles ────────────────────────────────────────────────────────
+    write_file(&dest.join("Makefile"), &ws_makefile(name))?;
+    write_file(
+        &dest.join(format!("{name}-proto/Makefile")),
+        &proto_makefile(name),
+    )?;
+    write_file(
+        &dest.join(format!("{name}-server/Makefile")),
+        &server_makefile(name),
+    )?;
+    write_file(
+        &dest.join(format!("{name}-rs/Makefile")),
+        &rs_makefile(name),
+    )?;
+
+    // ── GitHub Actions CI ─────────────────────────────────────────────
+    let gh_dir = dest.join(".github/workflows");
+    std::fs::create_dir_all(&gh_dir).with_context(|| format!("creating {}", gh_dir.display()))?;
+    write_file(&gh_dir.join("ci.yml"), &ws_github_ci_yml(name))?;
+
+    // ── E2E blackbox test crate ───────────────────────────────────────
+    let e2e_dir = dest.join(format!("{name}-e2e"));
+    std::fs::create_dir_all(e2e_dir.join("tests/common"))
+        .with_context(|| format!("creating {name}-e2e/tests/common/"))?;
+    write_file(&e2e_dir.join("Cargo.toml"), &e2e_cargo_toml(name))?;
+    write_file(&e2e_dir.join("Makefile"), &e2e_makefile(name))?;
+    write_file(&e2e_dir.join("tests/common/mod.rs"), &e2e_common_mod(name))?;
+    write_file(&e2e_dir.join("tests/contract.rs"), &e2e_contract_test(name))?;
+
+    // Pre-generate k8s manifests from the server's tonin.toml.
+    pregenerate_k8s(&server_dir)?;
+
+    // Optional language clients: <name>-py, <name>-ts, etc.
+    for &client in extras {
+        emit_workspace_client(dest, vars, client)?;
+    }
+
+    let extra_labels: Vec<&str> = extras
+        .iter()
+        .map(|c| match c {
+            ClientLang::Python => "greeter-py",
+            ClientLang::Ts => "greeter-ts",
+            ClientLang::Rust => "",
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    let extra_str = if extra_labels.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " / {}",
+            extras
+                .iter()
+                .filter(|&&c| !matches!(c, ClientLang::Rust))
+                .map(|c| format!(
+                    "{name}-{}",
+                    if matches!(c, ClientLang::Python) {
+                        "py"
+                    } else {
+                        "ts"
+                    }
+                ))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        )
+    };
+    eprintln!("✓ workspace: {name}-proto / {name}-server / {name}-rs{extra_str}");
+    Ok(())
+}
+
+/// Render a language client into the workspace as `<name>-py` or `<name>-ts`.
+/// Skips Rust (already covered by `<name>-rs`).
+fn emit_workspace_client(dest: &Path, vars: &Vars, client: ClientLang) -> Result<()> {
+    let (template_path, suffix) = match client {
+        ClientLang::Python => ("python/client-python", "py"),
+        ClientLang::Ts => ("ts/client-ts", "ts"),
+        ClientLang::Rust => return Ok(()), // already emitted as <name>-rs
+    };
+
+    let dir = TEMPLATES
+        .get_dir(template_path)
+        .ok_or_else(|| anyhow!("no template at {template_path}"))?;
+
+    let name = &vars.service_name;
+    let out_dir = dest.join(format!("{name}-{suffix}"));
+    walk_and_render(dir, dir, &out_dir, vars)?;
+
+    // Patch the package name from `<name>-client` → `<name>-{suffix}` so
+    // the directory name and the published package name align.
+    match client {
+        ClientLang::Python => patch_file(
+            &out_dir.join("pyproject.toml"),
+            &format!("{name}-client"),
+            &format!("{name}-py"),
+        )?,
+        ClientLang::Ts => patch_file(
+            &out_dir.join("package.json"),
+            &format!("\"name\": \"{name}-client\""),
+            &format!("\"name\": \"{name}-ts\""),
+        )?,
+        ClientLang::Rust => {}
+    }
+
+    // CLAUDE.md / AGENTS.md / .gitignore
+    write_file(
+        &out_dir.join("CLAUDE.md"),
+        &ws_client_claude_md(name, suffix, vars),
+    )?;
+    write_file(&out_dir.join("AGENTS.md"), "@CLAUDE.md\n")?;
+    write_file(&out_dir.join(".gitignore"), &ws_client_gitignore(client))?;
+
+    eprintln!("✓ emitted {suffix} client → {name}-{suffix}/");
+    Ok(())
+}
+
+fn patch_file(path: &Path, from: &str, to: &str) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    std::fs::write(path, content.replace(from, to))
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+// ── file content helpers ────────────────────────────────────────────────
+
+fn ws_cargo_toml(name: &str) -> String {
+    format!(
+        r#"[workspace]
+resolver = "2"
+members = [
+    "{name}-proto",
+    "{name}-server",
+    "{name}-rs",
+    "{name}-e2e",
+]
+
+[workspace.package]
+version  = "0.1.0"
+edition  = "2024"
+license  = "LicenseRef-Commercial"
+
+[workspace.dependencies]
+{name}-proto = {{ path = "{name}-proto" }}
+{name}-rs    = {{ path = "{name}-rs" }}
+tonin        = "0.4"
+tonin-client = "0.4"
+tonic        = "0.12"
+prost        = "0.13"
+prost-types  = "0.13"
+tokio        = {{ version = "1", features = ["full"] }}
+async-trait  = "0.1"
+tracing      = "0.1"
+thiserror    = "2"
+tokio-stream = {{ version = "0.1", features = ["net"] }}
+anyhow       = "1"
+testcontainers         = "0.27"
+testcontainers-modules = {{ version = "0.15", features = ["postgres", "redis"] }}
+sqlx = {{ version = "0.8", features = ["postgres", "runtime-tokio-native-tls", "macros"] }}
+"#
+    )
+}
+
+fn ws_cargo_config(name: &str) -> String {
+    format!(
+        r#"[build]
+target-dir = "/tmp/{name}-target"
+"#
+    )
+}
+
+fn ws_claude_md(name: &str, snake: &str, camel: &str) -> String {
+    format!(
+        r#"# {name} — Claude guidance
+
+Cargo workspace scaffolded by `tonin service new`. Read this file first,
+then the crate-level CLAUDE.md for the specific code you're touching.
+
+## Crate map
+
+| Crate | Role | Published |
+|-------|------|-----------|
+| `{name}-proto` | gRPC contract (`{snake}.v1`) — source of truth for the wire format | Yes |
+| `{name}-server` | tonin gRPC binary (`{camel}` service) | Binary only |
+| `{name}-rs` | Rust client library for callers | Yes |
+
+Extra clients (if scaffolded): `{name}-py` (Python), `{name}-ts` (TypeScript).
+
+## Key commands
+
+```bash
+cargo build && cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cd {name}-server && tonin k8s generate   # regenerate k8s/ manifests
+```
+
+## Versioning policy
+
+| Layer | Scheme | Breaking change rule |
+|-------|--------|----------------------|
+| Proto API | `{snake}.v1` package; bump to `v2` only on wire break | Field renumber, type change, removal |
+| DB schema | Sequential `0001_*.sql`; files immutable once merged | Any destructive change |
+| Rust crates | Semver — MAJOR tracks proto MAJOR | Any non-backward-compatible API change |
+| Python pkg | Semver — same MAJOR as Rust | Same |
+| npm pkg | Semver — same MAJOR as Rust | Same |
+
+## Backward compatibility — non-negotiable
+
+### Proto
+- **Safe:** add field (new number), add enum value, add RPC, rename Rust binding
+- **UNSAFE — never without bumping to v2:**
+  - Renumber a field (wire breaking)
+  - Change a field's type
+  - Remove a field — instead add `reserved 3;` and `reserved "old_name";`
+
+### Database migrations
+- **Safe:** `ADD COLUMN` with `DEFAULT`, `CREATE INDEX CONCURRENTLY`, `CREATE TABLE`
+- **UNSAFE — use two-step deploy:**
+  - `DROP COLUMN` → stop using it in code (deploy), then drop in a later migration
+  - `RENAME COLUMN` → add new + backfill + drop old (three separate deploys)
+  - `ALTER COLUMN TYPE` → add new column, migrate data, drop old (three deploys)
+- Migration files are **immutable once merged** — never edit a committed migration
+
+## Workspace-level rules
+- `edition = "2024"`, `license = "LicenseRef-Commercial"` on all crates (inherited via workspace)
+- Cargo target dir: `/tmp/{name}-target` (`.cargo/config.toml`) — never commit `/target/`
+- Never hand-edit `k8s/*.yaml` — always regenerate with `tonin k8s generate`
+- `k8s/secrets.yaml` and `k8s/db-secret.yaml` are auto-gitignored; never commit with real values
+"#
+    )
+}
+
+fn ws_agents_md(name: &str) -> String {
+    format!(
+        r#"@CLAUDE.md
+
+# {name} — Agent instructions
+
+> Universal instructions for any AI agent (Claude Code, Cursor, Windsurf, Copilot…).
+> Full detail in `CLAUDE.md` (auto-loaded above).
+
+## Essential commands
+
+```bash
+cargo build && cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cd {name}-server && tonin k8s generate
+```
+
+## Non-negotiable rules
+
+1. **Proto field numbers are immutable** — never renumber; add `reserved N;` instead of removing.
+2. **DB migrations are immutable once merged** — never edit a committed `.sql` file.
+3. **Only additive changes** to proto and DB schema without a version bump.
+4. **Never hand-edit** generated `k8s/*.yaml` — always re-run `tonin k8s generate`.
+5. **Never commit** `k8s/secrets.yaml` or `k8s/db-secret.yaml` with real values.
+6. All crates: `edition = "2024"`, `license = "LicenseRef-Commercial"`.
+7. Backward-compat breakage requires a proto package version bump (`v1` → `v2`).
+"#
+    )
+}
+
+fn ws_gitignore() -> String {
+    r#"/target/
+Cargo.lock
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+.env
+.env.*
+!.env.example
+"#
+    .to_string()
+}
+
+fn proto_cargo_toml(name: &str) -> String {
+    format!(
+        r#"[package]
+name        = "{name}-proto"
+description = "Generated gRPC types for {name} ({name}.v1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tonic       = {{ workspace = true }}
+prost       = {{ workspace = true }}
+prost-types = {{ workspace = true }}
+
+[build-dependencies]
+tonic-build = "0.12"
+"#
+    )
+}
+
+fn proto_build_rs(snake: &str) -> String {
+    format!(
+        r#"fn main() -> Result<(), Box<dyn std::error::Error>> {{
+    if std::env::var("TONIN_SKIP_PROTOC").is_ok() {{
+        return Ok(());
+    }}
+    let wkt = std::env::var("PROTOC_INCLUDE").ok();
+    let mut includes: Vec<&str> = vec!["proto"];
+    let wkt_owned;
+    if let Some(ref w) = wkt {{
+        wkt_owned = w.clone();
+        includes.push(&wkt_owned);
+    }}
+    tonic_build::configure().compile_protos(&["proto/{snake}.proto"], &includes)?;
+    Ok(())
+}}
+"#
+    )
+}
+
+fn proto_lib_rs(snake: &str) -> String {
+    format!("tonic::include_proto!(\"{snake}.v1\");\n")
+}
+
+fn server_cargo_toml(name: &str) -> String {
+    format!(
+        r#"[package]
+name    = "{name}-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "{name}"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+{name}-proto = {{ workspace = true }}
+tonin        = {{ workspace = true }}
+tonic        = {{ workspace = true }}
+prost        = {{ workspace = true }}
+prost-types  = {{ workspace = true }}
+tokio        = {{ workspace = true }}
+async-trait  = {{ workspace = true }}
+tracing      = {{ workspace = true }}
+thiserror    = {{ workspace = true }}
+
+[dev-dependencies]
+tokio-stream = {{ workspace = true }}
+"#
+    )
+}
+
+fn server_tonin_toml(name: &str) -> String {
+    format!(
+        r#"schema = "v1"
+
+[service]
+name    = "{name}"
+version = "0.1.0"
+codec   = "prost"
+
+[deploy]
+replicas    = 1
+mesh        = "cilium"
+mcp_sidecar = true
+namespace   = "default"
+
+[resources]
+cpu    = "100m"
+memory = "128Mi"
+
+[autoscale]
+max_replicas = 3
+
+[database]
+engine = "postgres"
+
+[cache]
+engine = "redis"
+
+# Services allowed to call this one (ingress allowlist for CiliumNetworkPolicy).
+# Format: <service-name> = "<namespace>"
+[callers]
+# gateway = "default"
+"#
+    )
+}
+
+fn server_main_rs(name: &str, snake: &str, camel: &str, proto_mod: &str) -> String {
+    format!(
+        r#"use {snake}_proto::{proto_mod}_server::{camel}Server;
+use {snake}_server::{camel}Service;
+use tonin::prelude::*;
+
+#[tokio::main]
+async fn main() -> tonin::Result<()> {{
+    Service::new("{name}")
+        .handler({camel}Server::new({camel}Service::default()))
+        .run()
+        .await
+}}
+"#
+    )
+}
+
+fn server_lib_rs(camel: &str) -> String {
+    format!(
+        r#"pub mod service;
+pub use service::{camel}Service;
+"#
+    )
+}
+
+fn server_service_rs(snake: &str, camel: &str, proto_mod: &str) -> String {
+    format!(
+        r#"use tonic::{{Request, Response, Status}};
+use {snake}_proto::{{{proto_mod}_server::{camel}, HelloReply, HelloRequest}};
+
+/// `{camel}` gRPC service — stub implementation.
+/// Replace each `unimplemented` return with real logic.
+#[derive(Debug, Default)]
+pub struct {camel}Service;
+
+#[tonic::async_trait]
+impl {camel} for {camel}Service {{
+    async fn say_hello(
+        &self,
+        _req: Request<HelloRequest>,
+    ) -> Result<Response<HelloReply>, Status> {{
+        Err(Status::unimplemented("stub: implement say_hello"))
+    }}
+}}
+"#
+    )
+}
+
+fn server_contract_test(snake: &str, camel: &str, proto_mod: &str) -> String {
+    format!(
+        r#"//! Contract tests — verifies all RPCs are reachable.
+//! Starts an in-process tonic server; all stubs return UNIMPLEMENTED.
+
+use std::time::Duration;
+use {snake}_proto::{{{proto_mod}_client::{camel}Client, {proto_mod}_server::{camel}Server, HelloRequest}};
+use {snake}_server::{camel}Service;
+use tokio::net::TcpListener;
+use tokio_stream::wrappers::TcpListenerStream;
+
+async fn start_server() -> String {{
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {{
+        tonic::transport::Server::builder()
+            .add_service({camel}Server::new({camel}Service::default()))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    }});
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    format!("http://{{addr}}")
+}}
+
+#[tokio::test]
+async fn test_say_hello_stub_returns_unimplemented() {{
+    let uri = start_server().await;
+    let mut client = {camel}Client::connect(uri).await.unwrap();
+    let err = client
+        .say_hello(HelloRequest {{ name: "test".into() }})
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unimplemented);
+}}
+"#
+    )
+}
+
+fn server_gitignore() -> String {
+    r#"/target/
+.env
+.env.*
+!.env.example
+
+# tonin: generated secret manifests — never commit plaintext values
+k8s/secrets.yaml
+k8s/db-secret.yaml
+"#
+    .to_string()
+}
+
+fn rs_cargo_toml(name: &str) -> String {
+    format!(
+        r#"[package]
+name        = "{name}-rs"
+description = "Rust client for the {name} service — pre-wired with tonin-client coalescing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+{name}-proto = {{ workspace = true }}
+tonin-client = {{ workspace = true }}
+tonic        = {{ workspace = true }}
+tokio        = {{ workspace = true }}
+tracing      = {{ workspace = true }}
+"#
+    )
+}
+
+fn rs_lib_rs(name: &str, snake: &str, camel: &str, proto_mod: &str) -> String {
+    format!(
+        r#"//! Rust client for the {name} service.
+//!
+//! ```no_run
+//! use {snake}_rs::{camel}Client;
+//! use tonic::transport::Endpoint;
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {{
+//! let ep = Endpoint::from_static("http://{name}.default.svc.cluster.local:50051");
+//! let client = {camel}Client::connect(ep).await?;
+//! // client.inner.say_hello(...).await?;
+//! # Ok(())
+//! # }}
+//! ```
+
+pub use {snake}_proto as proto;
+
+use {snake}_proto::{proto_mod}_client::{camel}Client as Raw{camel}Client;
+use tonin_client::client::CoalescingClient;
+use tonic::transport::Channel;
+
+/// Pre-wired {camel} service client with singleflight coalescing (default-on).
+/// Wrap in `Arc` to share cheaply across tasks.
+pub struct {camel}Client {{
+    channel: Channel,
+}}
+
+impl {camel}Client {{
+    /// Connect to the {name} service.
+    pub async fn connect(
+        endpoint: tonic::transport::Endpoint,
+    ) -> Result<Self, tonic::transport::Error> {{
+        let channel = endpoint.connect().await?;
+        Ok(Self {{ channel }})
+    }}
+
+    /// Returns the gRPC client wrapped in `CoalescingClient`.
+    pub fn inner(&self) -> CoalescingClient<Raw{camel}Client<Channel>> {{
+        CoalescingClient::new(Raw{camel}Client::new(self.channel.clone()))
+    }}
+}}
+"#
+    )
+}
+
+fn sub_claude_md(
+    name: &str,
+    crate_kind: &str,
+    snake: &str,
+    camel: &str,
+    proto_mod: &str,
+) -> String {
+    let header = format!("@../CLAUDE.md\n\n# {name}-{crate_kind} — Claude guidance\n");
+    let body = match crate_kind {
+        "proto" => format!(
+            r#"
+Contract crate. One proto file → generated Rust types consumed by every other crate.
+
+## Commands
+
+```bash
+cargo build -p {name}-proto          # runs tonic-build codegen
+TONIN_SKIP_PROTOC=1 cargo check      # skip codegen when protoc unavailable
+```
+
+## Proto versioning — backward compatibility
+
+Package `{snake}.v1`. Bump to `v2` only when a wire-breaking change is unavoidable.
+
+### Safe (additive — no version bump needed)
+```proto
+// Add a new field — always use a fresh number, never reuse a deleted one
+string new_field = 5;
+
+// Add a new RPC
+rpc NewMethod (NewRequest) returns (NewResponse);
+
+// Add a new enum value
+enum Status {{ UNKNOWN = 0; ACTIVE = 1; NEW_VALUE = 2; }}
+```
+
+### Unsafe — requires `v2` package
+```proto
+// NEVER do any of these in v1:
+// - Renumber: string name = 1; → string name = 2;   (wire breaking)
+// - Change type: string id = 1; → int64 id = 1;     (wire breaking)
+// - Remove a field without reserving its number
+```
+
+### Deprecating a field (safe alternative to removal)
+```proto
+string old_field = 3 [deprecated = true];
+// After all clients have migrated:
+reserved 3;
+reserved "old_field";
+```
+
+## Rust codegen paths
+
+| Proto element | Generated Rust |
+|---------------|----------------|
+| `service {camel}` | `{proto_mod}_server::{camel}` (trait) + `{proto_mod}_server::{camel}Server` (wrapper) |
+| `service {camel}` | `{proto_mod}_client::{camel}Client` (tonic client) |
+| `message HelloRequest` | `{snake}_proto::HelloRequest` |
+| `google.protobuf.Timestamp` | `prost_types::Timestamp` |
+| `google.protobuf.Empty` RPC return | `()` in tonic trait |
+"#
+        ),
+        "server" => format!(
+            r#"
+tonin gRPC binary. Handlers start as stubs (`UNIMPLEMENTED`); fill in real logic milestone by milestone.
+
+## Commands
+
+```bash
+cargo build -p {name}-server
+cargo test --test contract_e2e_test   # in-process gRPC, no Docker needed
+cargo test -p {name}-server           # all tests including unit tests
+tonin k8s generate                    # regenerate k8s/*.yaml + update .gitignore
+```
+
+## Rust / tonin coding standards
+
+- **Async-first.** All I/O is async. Never block a tokio thread (`std::fs`, `std::net`, CPU loops).
+  Use `tokio::fs`, `tokio::net`, or `tokio::task::spawn_blocking` for blocking work.
+- **No panics in handler code.** Return `Result<Response<T>, Status>`. Map errors:
+  ```rust
+  .map_err(|e| Status::internal(format!("db error: {{e}}")))?
+  ```
+- **No locks across `.await`.** Clone data out of a `Mutex`/`RwLock` before awaiting.
+- **`#[tonic::async_trait]`** on every `impl {camel} for {camel}Service` block.
+- **clippy pedantic** — `cargo clippy -- -D warnings` must be clean before merging.
+
+## Implementing a stub handler
+
+```rust
+// Before: stub
+async fn say_hello(&self, _req: Request<HelloRequest>) -> Result<Response<HelloReply>, Status> {{
+    Err(Status::unimplemented("stub"))
+}}
+
+// After: real implementation
+async fn say_hello(&self, req: Request<HelloRequest>) -> Result<Response<HelloReply>, Status> {{
+    let inner = req.into_inner();
+    // 1. validate input
+    // 2. call service layer (inject via self.state)
+    // 3. return response
+    Ok(Response::new(HelloReply {{ message: format!("hello {{}}", inner.name) }}))
+}}
+```
+
+## Test rules
+
+| Scope | Location | Infrastructure |
+|-------|----------|----------------|
+| Handler logic, error paths | Inline `#[cfg(test)] mod tests {{}}` | Mock deps |
+| All RPCs reachable | `tests/contract_e2e_test.rs` | In-process tonic server |
+| Migrations apply cleanly | `tests/migrations_test.rs` (add when ready) | testcontainers Postgres |
+| Tenant isolation | E2E (add when authz is live) | Real DB |
+
+Test naming: `test_<function>_<scenario>_<expected>`.
+
+## DB migration safety
+
+Files in `migrations/` are **immutable once merged**. Never edit a committed file.
+
+```sql
+-- SAFE: always provide a DEFAULT so existing rows are not broken
+ALTER TABLE foo ADD COLUMN bar TEXT NOT NULL DEFAULT '';
+
+-- SAFE: non-blocking index creation
+CREATE INDEX CONCURRENTLY idx_foo_bar ON foo(bar);
+
+-- UNSAFE: dropping a column requires two deploys
+-- Deploy 1: stop reading/writing the column in code
+-- Deploy 2: ALTER TABLE foo DROP COLUMN bar;  (new migration file)
+```
+"#
+        ),
+        "rs" => format!(
+            r#"
+Rust client library. Any service calling `{name}` depends on this crate only —
+never import `{name}-proto` or `tonic` directly in callers.
+
+## Usage
+
+```rust
+use {snake}_rs::{camel}Client;
+use tonic::transport::Endpoint;
+
+// Construct once; wrap in Arc to share across tasks.
+let ep = Endpoint::from_static("http://{name}.default.svc.cluster.local:50051");
+let client = std::sync::Arc::new({camel}Client::connect(ep).await?);
+
+// Each call returns a CoalescingClient-wrapped tonic client.
+let mut c = client.inner();
+let reply = c.say_hello({snake}_proto::HelloRequest {{ name: "world".into() }}).await?;
+```
+
+## Rust standards for this crate
+
+- **Thin wrapper only.** No business logic, no DB access, no inbound auth middleware.
+- **Error propagation.** Return `Result<T, tonic::Status>` — never swallow errors.
+- **No retry logic.** The mesh (Cilium/Istio) handles retries. `CoalescingClient` handles
+  deduplication. Adding retry here creates double-retry bugs.
+- **`Arc<{camel}Client>`** — the `{camel}Client` struct holds a `Channel` (internally ref-counted),
+  so wrapping in `Arc` is the canonical share-across-tasks pattern.
+
+## Adding a convenience method
+
+```rust
+impl {camel}Client {{
+    /// One-line helper that hides the inner() unwrap from callers.
+    pub async fn say_hello(&self, name: impl Into<String>) -> Result<{snake}_proto::HelloReply, tonic::Status> {{
+        self.inner()
+            .say_hello({snake}_proto::HelloRequest {{ name: name.into() }})
+            .await
+            .map(|r| r.into_inner())
+    }}
+}}
+```
+
+Keep helpers thin — no caching, no validation, no retry.
+"#
+        ),
+        _ => String::new(),
+    };
+    format!("{header}{body}")
+}
+
+fn ws_client_claude_md(name: &str, suffix: &str, vars: &Vars) -> String {
+    let camel = &vars.service_camel;
+    let snake = &vars.service_name_snake;
+    match suffix {
+        "py" => format!(
+            r#"@../CLAUDE.md
+
+# {name}-py — Claude guidance
+
+Python gRPC client for the `{name}` service.
+
+## Commands
+
+```bash
+bash codegen.sh          # regenerate _pb/ stubs from ../{name}-proto/proto/
+uv sync                  # install / sync deps
+uv run python -c "from {snake}_client import {camel}Stub"   # smoke-test import
+```
+
+**Do not commit `src/{snake}_client/_pb/`** — it is gitignored and regenerated by `codegen.sh`.
+Run `codegen.sh` whenever `../{name}-proto/proto/{snake}.proto` changes.
+
+## Usage
+
+```python
+from __future__ import annotations
+import grpc.aio
+from {snake}_client import {camel}Stub, HelloRequest, AuthCtx
+
+async def call(token: str) -> None:
+    async with grpc.aio.insecure_channel("{name}.default.svc.cluster.local:50051") as ch:
+        stub = {camel}Stub(ch)
+        metadata: list[tuple[str, str]] = []
+        AuthCtx.from_bearer(token).propagate(metadata)
+        reply = await stub.SayHello(HelloRequest(name="world"), metadata=metadata)
+        print(reply.message)
+```
+
+## Python coding standards
+
+- **Type hints everywhere.** Every function signature must be fully annotated.
+  `from __future__ import annotations` at the top of every file.
+- **`grpc.aio` only** — never use synchronous `grpc` in async contexts.
+- **`async with` for channels** — always close channels when done; use context managers.
+- **Explicit error handling.** Catch `grpc.aio.AioRpcError`, check `.code()`,
+  never swallow errors with bare `except Exception: pass`.
+- **No business logic here.** This crate is a thin client wrapper only.
+
+## Versioning
+
+Package name: `{name}-py`. Semver tracks the server MAJOR version.
+When the proto bumps to `v2`, this package bumps to `2.0.0`.
+
+## Proto stubs versioning
+
+`_pb/` stubs are derived from `{name}-proto`. When the proto adds a field or RPC:
+1. The field/RPC is automatically available after re-running `codegen.sh`.
+2. Old stubs still work (protobuf backward compatibility) — unknown fields are ignored.
+3. Removing or renumbering a field in proto → update this client at the same time.
+"#
+        ),
+        "ts" => format!(
+            r#"@../CLAUDE.md
+
+# {name}-ts — Claude guidance
+
+TypeScript gRPC client for the `{name}` service (Node + grpc-web compatible).
+
+## Commands
+
+```bash
+npm install              # install deps
+npm run gen              # regenerate src/gen/ from ../{name}-proto/proto/
+npm run build            # compile TypeScript → dist/
+```
+
+**Do not commit `src/gen/`** — it is gitignored and regenerated by `npm run gen`.
+Run `npm run gen` whenever `../{name}-proto/proto/{snake}.proto` changes.
+
+## Usage (Node / server-side)
+
+```typescript
+import {{ credentials, ServiceError }} from "@grpc/grpc-js";
+import {{ {camel}Client }} from "./{snake}";  // from src/gen/
+
+const client = new {camel}Client(
+  "{name}.default.svc.cluster.local:50051",
+  credentials.createInsecure(),
+);
+
+client.sayHello({{ name: "world" }}, (err: ServiceError | null, res) => {{
+  if (err) throw err;
+  console.log(res.message);
+}});
+```
+
+## TypeScript coding standards
+
+- **Strict mode.** `tsconfig.json` sets `strict: true` — never disable it.
+  No `any`, no `@ts-ignore`, no `as unknown as T`.
+- **`undefined` over `null`.** Use optional chaining (`?.`) and nullish coalescing (`??`).
+- **Explicit return types** on all exported functions and class methods.
+- **`async`/`await` over callbacks** — wrap grpc callbacks in promises:
+  ```typescript
+  const reply = await new Promise<HelloReply>((resolve, reject) =>
+    client.sayHello({{ name: "world" }}, (err, res) => err ? reject(err) : resolve(res))
+  );
+  ```
+- **ESM modules** (`"type": "module"` in package.json). Always use `.js` extensions
+  in import paths even when importing `.ts` files (tsc/Node ESM requirement).
+- **No business logic here.** This package is a thin client wrapper only.
+
+## Versioning
+
+Package name: `{name}-ts`. Semver tracks the server MAJOR version.
+When the proto bumps to `v2`, this package bumps to `2.0.0`.
+
+## Proto stubs versioning
+
+`src/gen/` is derived from `{name}-proto` via `buf`. When the proto adds a field or RPC:
+1. Run `npm run gen` — new fields/RPCs appear automatically.
+2. Old code still compiles (protobuf adds fields, never removes in a compatible change).
+3. If a field is removed from proto → update this client in the same PR.
+"#
+        ),
+        _ => format!("@../CLAUDE.md\n\n# {name}-{suffix}\n"),
+    }
+}
+
+fn ws_client_gitignore(client: ClientLang) -> String {
+    match client {
+        ClientLang::Python => r#"# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+
+# Generated proto stubs — regenerate with codegen.sh
+src/*/_pb/
+"#
+        .to_string(),
+        ClientLang::Ts => r#"# Node / TypeScript
+node_modules/
+dist/
+
+# Generated proto stubs — regenerate with npm run gen
+src/gen/
+"#
+        .to_string(),
+        ClientLang::Rust => String::new(),
+    }
+}
+
+fn ws_makefile(name: &str) -> String {
+    format!(
+        ".DEFAULT_GOAL := help\n\
+         \n\
+         .PHONY: help install build check fmt fmt-check lint test test-e2e e2e ci k8s-generate clean \\\n\
+         \t\tproto server rs\n\
+         \n\
+         # ── help ─────────────────────────────────────────────────────────────────────\n\
+         help:\n\
+         \t@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | \\\n\
+         \t  awk 'BEGIN {{FS = \":.*?## \"}}; {{printf \"  %-18s %s\\n\", $$1, $$2}}'\n\
+         \n\
+         # ── setup ─────────────────────────────────────────────────────────────────────\n\
+         install: ## Verify required tools are installed (cargo, uv, npm)\n\
+         \t@command -v cargo >/dev/null 2>&1 || (echo \"cargo not found\" && exit 1)\n\
+         \t@command -v uv >/dev/null 2>&1 || (echo \"uv not found. Install: pip install uv\" && exit 1)\n\
+         \t@command -v npm >/dev/null 2>&1 || (echo \"npm not found. Install Node.js from nodejs.org\" && exit 1)\n\
+         \t@echo \"✓ All required tools found: cargo, uv, npm\"\n\
+         \n\
+         # ── workspace-wide ────────────────────────────────────────────────────────────\n\
+         build: ## Build all crates (debug)\n\
+         \tcargo build --workspace\n\
+         \n\
+         check: ## Type-check all crates + all targets\n\
+         \tcargo check --workspace --all-targets\n\
+         \n\
+         fmt: ## Format all code\n\
+         \tcargo fmt --all\n\
+         \n\
+         fmt-check: ## Check formatting (CI)\n\
+         \tcargo fmt --all -- --check\n\
+         \n\
+         lint: ## Clippy -D warnings across workspace\n\
+         \tcargo clippy --workspace --all-targets -- -D warnings\n\
+         \n\
+         test: ## Unit + contract tests (no Docker required)\n\
+         \tcargo nextest run --workspace\n\
+         \n\
+         test-e2e: ## Run all E2E tests in {name}-e2e/ (requires Docker)\n\
+         \t$(MAKE) -C {name}-e2e test\n\
+         \n\
+         e2e: ## Run all E2E tests in {name}-e2e/ (requires Docker)\n\
+         \t$(MAKE) -C {name}-e2e test\n\
+         \n\
+         ci: fmt-check lint test ## Full CI gate (fmt + lint + nextest)\n\
+         \n\
+         k8s-generate: ## Regenerate k8s manifests from tonin.toml\n\
+         \t$(MAKE) -C {name}-server k8s-generate\n\
+         \n\
+         clean: ## Remove build artifacts\n\
+         \tcargo clean\n\
+         \n\
+         # ── per-crate delegates ───────────────────────────────────────────────────────\n\
+         proto: ## Run ci in {name}-proto/\n\
+         \t$(MAKE) -C {name}-proto ci\n\
+         \n\
+         server: ## Run ci in {name}-server/\n\
+         \t$(MAKE) -C {name}-server ci\n\
+         \n\
+         rs: ## Run ci in {name}-rs/\n\
+         \t$(MAKE) -C {name}-rs ci\n"
+    )
+}
+
+fn proto_makefile(name: &str) -> String {
+    format!(
+        ".DEFAULT_GOAL := help\n\
+         \n\
+         .PHONY: help build check fmt fmt-check lint ci\n\
+         \n\
+         help:\n\
+         \t@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | \\\n\
+         \t  awk 'BEGIN {{FS = \":.*?## \"}}; {{printf \"  %-16s %s\\n\", $$1, $$2}}'\n\
+         \n\
+         build: ## Compile {name}-proto (runs protoc)\n\
+         \tcargo build -p {name}-proto\n\
+         \n\
+         check: ## Type-check without codegen\n\
+         \tTONIN_SKIP_PROTOC=1 cargo check -p {name}-proto\n\
+         \n\
+         fmt: ## Format\n\
+         \tcargo fmt -p {name}-proto\n\
+         \n\
+         fmt-check: ## Check formatting (CI)\n\
+         \tcargo fmt -p {name}-proto -- --check\n\
+         \n\
+         lint: ## Clippy\n\
+         \tcargo clippy -p {name}-proto -- -D warnings\n\
+         \n\
+         ci: fmt-check lint build ## fmt + lint + build\n"
+    )
+}
+
+fn server_makefile(name: &str) -> String {
+    format!(
+        ".DEFAULT_GOAL := help\n\
+         \n\
+         .PHONY: help build check fmt fmt-check lint test test-contract test-migrations \\\n\
+         \t\tk8s-generate migrate ci\n\
+         \n\
+         help:\n\
+         \t@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | \\\n\
+         \t  awk 'BEGIN {{FS = \":.*?## \"}}; {{printf \"  %-20s %s\\n\", $$1, $$2}}'\n\
+         \n\
+         build: ## Build {name}-server binary\n\
+         \tcargo build -p {name}-server\n\
+         \n\
+         check: ## Type-check all targets\n\
+         \tcargo check -p {name}-server --all-targets\n\
+         \n\
+         fmt: ## Format\n\
+         \tcargo fmt -p {name}-server\n\
+         \n\
+         fmt-check: ## Check formatting (CI)\n\
+         \tcargo fmt -p {name}-server -- --check\n\
+         \n\
+         lint: ## Clippy -D warnings\n\
+         \tcargo clippy -p {name}-server -- -D warnings\n\
+         \n\
+         test: ## All tests (contract only — no Docker)\n\
+         \tcargo nextest run --test contract_e2e_test\n\
+         \n\
+         test-contract: ## In-process gRPC contract smoke tests\n\
+         \tcargo nextest run --test contract_e2e_test\n\
+         \n\
+         test-migrations: ## Migrations test (requires Docker / Rancher Desktop)\n\
+         \tcargo nextest run --test migrations_test\n\
+         \n\
+         k8s-generate: ## Regenerate k8s manifests via tonin\n\
+         \ttonin k8s generate\n\
+         \n\
+         migrate: ## Apply migrations to DATABASE_URL (dev/local)\n\
+         \tsqlx migrate run --source migrations\n\
+         \n\
+         ci: fmt-check lint test ## fmt + lint + nextest\n"
+    )
+}
+
+fn rs_makefile(name: &str) -> String {
+    format!(
+        ".DEFAULT_GOAL := help\n\
+         \n\
+         .PHONY: help build check fmt fmt-check lint test ci\n\
+         \n\
+         help:\n\
+         \t@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | \\\n\
+         \t  awk 'BEGIN {{FS = \":.*?## \"}}; {{printf \"  %-16s %s\\n\", $$1, $$2}}'\n\
+         \n\
+         build: ## Build {name}-rs\n\
+         \tcargo build -p {name}-rs\n\
+         \n\
+         check: ## Type-check all targets\n\
+         \tcargo check -p {name}-rs --all-targets\n\
+         \n\
+         fmt: ## Format\n\
+         \tcargo fmt -p {name}-rs\n\
+         \n\
+         fmt-check: ## Check formatting (CI)\n\
+         \tcargo fmt -p {name}-rs -- --check\n\
+         \n\
+         lint: ## Clippy -D warnings\n\
+         \tcargo clippy -p {name}-rs -- -D warnings\n\
+         \n\
+         test: ## Unit + doc tests\n\
+         \tcargo nextest run -p {name}-rs\n\
+         \n\
+         ci: fmt-check lint test ## fmt + lint + nextest\n"
+    )
+}
+
+fn ws_github_ci_yml(name: &str) -> String {
+    format!(
+        "name: CI\n\
+         \n\
+         on:\n\
+         \
+           push:\n\
+         \
+             branches: [main]\n\
+         \
+           pull_request:\n\
+         \
+             branches: [main]\n\
+         \n\
+         env:\n\
+         \
+           CARGO_TERM_COLOR: always\n\
+         \
+           PROTOC_INCLUDE: /usr/local/include\n\
+         \
+           RUSTFLAGS: \"-D warnings\"\n\
+         \n\
+         jobs:\n\
+         \
+           ci:\n\
+         \
+             name: fmt · lint · test\n\
+         \
+             runs-on: ubuntu-latest\n\
+         \
+             steps:\n\
+         \
+               - uses: actions/checkout@v4\n\
+         \n\
+         \
+               - name: Install Rust toolchain\n\
+         \
+                 uses: dtolnay/rust-toolchain@stable\n\
+         \
+                 with:\n\
+         \
+                   components: rustfmt, clippy\n\
+         \n\
+         \
+               - name: Install protoc\n\
+         \
+                 uses: arduino/setup-protoc@v3\n\
+         \
+                 with:\n\
+         \
+                   repo-token: ${{{{ secrets.GITHUB_TOKEN }}}}\n\
+         \n\
+         \
+               - name: Cache cargo registry + target\n\
+         \
+                 uses: actions/cache@v4\n\
+         \
+                 with:\n\
+         \
+                   path: |\n\
+         \
+                     ~/.cargo/registry\n\
+         \
+                     ~/.cargo/git\n\
+         \
+                     /tmp/{name}-target\n\
+         \
+                   key: ${{{{ runner.os }}}}-cargo-${{{{ hashFiles('**/Cargo.lock') }}}}\n\
+         \
+                   restore-keys: ${{{{ runner.os }}}}-cargo-\n\
+         \n\
+         \
+               - name: Check formatting\n\
+         \
+                 run: make fmt-check\n\
+         \n\
+         \
+               - name: Lint\n\
+         \
+                 run: make lint\n\
+         \n\
+         \
+               - name: Test (no Docker)\n\
+         \
+                 run: make test\n\
+         \n\
+           migrations:\n\
+         \
+             name: migrations test\n\
+         \
+             runs-on: ubuntu-latest\n\
+         \
+             services:\n\
+         \
+               postgres:\n\
+         \
+                 image: postgres:17\n\
+         \
+                 env:\n\
+         \
+                   POSTGRES_USER: postgres\n\
+         \
+                   POSTGRES_PASSWORD: postgres\n\
+         \
+                   POSTGRES_DB: {name}_test\n\
+         \
+                 ports: [\"5432:5432\"]\n\
+         \
+                 options: >-\n\
+         \
+                   --health-cmd pg_isready\n\
+         \
+                   --health-interval 5s\n\
+         \
+                   --health-timeout 5s\n\
+         \
+                   --health-retries 10\n\
+         \
+             steps:\n\
+         \
+               - uses: actions/checkout@v4\n\
+         \n\
+         \
+               - name: Install Rust toolchain\n\
+         \
+                 uses: dtolnay/rust-toolchain@stable\n\
+         \n\
+         \
+               - name: Install protoc\n\
+         \
+                 uses: arduino/setup-protoc@v3\n\
+         \
+                 with:\n\
+         \
+                   repo-token: ${{{{ secrets.GITHUB_TOKEN }}}}\n\
+         \n\
+         \
+               - name: Cache cargo\n\
+         \
+                 uses: actions/cache@v4\n\
+         \
+                 with:\n\
+         \
+                   path: |\n\
+         \
+                     ~/.cargo/registry\n\
+         \
+                     ~/.cargo/git\n\
+         \
+                     /tmp/{name}-target\n\
+         \
+                   key: ${{{{ runner.os }}}}-cargo-${{{{ hashFiles('**/Cargo.lock') }}}}\n\
+         \
+                   restore-keys: ${{{{ runner.os }}}}-cargo-\n\
+         \n\
+         \
+               - name: Run migrations test\n\
+         \
+                 env:\n\
+         \
+                   DATABASE_URL: postgres://postgres:postgres@localhost:5432/{name}_test\n\
+         \
+                   DOCKER_HOST: unix:///var/run/docker.sock\n\
+         \
+                 run: make test-e2e\n"
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// E2E crate content helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+fn e2e_cargo_toml(name: &str) -> String {
+    format!(
+        r#"[package]
+name    = "{name}-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# No src/ — this package contains only integration tests in tests/.
+# Each file under tests/ is a separate test binary that starts a real
+# server against testcontainer Postgres + Redis and connects via {name}-rs.
+
+[dev-dependencies]
+{name}-proto  = {{ workspace = true }}
+{name}-rs     = {{ workspace = true }}
+{name}-server = {{ path = "../{name}-server" }}
+tonic           = {{ workspace = true }}
+tokio           = {{ workspace = true }}
+tokio-stream    = {{ workspace = true }}
+testcontainers         = {{ workspace = true }}
+testcontainers-modules = {{ workspace = true }}
+sqlx    = {{ workspace = true }}
+anyhow  = {{ workspace = true }}
+"#
+    )
+}
+
+fn e2e_makefile(name: &str) -> String {
+    format!(
+        ".DEFAULT_GOAL := help\n\
+         \n\
+         .PHONY: help check test ci\n\
+         \n\
+         help:\n\
+         \t@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | \\\n\
+         \t  awk 'BEGIN {{FS = \":.*?## \"}}; {{printf \"  %-18s %s\\n\", $$1, $$2}}'\n\
+         \n\
+         check: ## Type-check without Docker\n\
+         \tcargo check -p {name}-e2e --tests\n\
+         \n\
+         test: ## All E2E tests (requires Docker)\n\
+         \tcargo test -p {name}-e2e\n\
+         \n\
+         ci: test ## E2E CI gate (requires Docker)\n"
+    )
+}
+
+fn e2e_common_mod(name: &str) -> String {
+    let snake = name.replace('-', "_");
+    let camel = {
+        use convert_case::{Case, Casing};
+        name.to_case(Case::Pascal)
+    };
+    format!(
+        r#"//! Shared E2E harness: testcontainer Postgres + Redis + in-process {name} server.
+//!
+//! Include in each test file with:
+//!   #[path = "common/mod.rs"] mod common;
+
+use std::net::TcpListener;
+use testcontainers::{{ContainerAsync, ImageExt, runners::AsyncRunner}};
+use testcontainers_modules::{{postgres::Postgres, redis::Redis}};
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Endpoint;
+
+use {snake}_proto::{snake}_server::{camel}Server;
+use {snake}_server::{camel}Service;
+use {snake}_rs::{camel}Client;
+
+/// Full E2E fixture: Postgres + Redis containers + real in-process server + connected client.
+///
+/// Keep the returned `E2EHarness` alive for the duration of the test — dropping it stops
+/// the containers.
+pub struct E2EHarness {{
+    pub client: {camel}Client,
+    pub db_url: String,
+    pub redis_url: String,
+    _pg: ContainerAsync<Postgres>,
+    _redis: ContainerAsync<Redis>,
+}}
+
+impl E2EHarness {{
+    pub async fn start() -> anyhow::Result<Self> {{
+        // Start containers
+        let pg = Postgres::default()
+            .with_db_name("{snake}_e2e")
+            .with_user("postgres")
+            .with_password("postgres")
+            .start()
+            .await?;
+        let redis = Redis::default().start().await?;
+
+        let pg_port = pg.get_host_port_ipv4(5432).await?;
+        let redis_port = redis.get_host_port_ipv4(6379).await?;
+
+        let db_url = format!("postgres://postgres:postgres@127.0.0.1:{{pg_port}}/{snake}_e2e");
+        let redis_url = format!("redis://127.0.0.1:{{redis_port}}");
+
+        // Apply migrations from the server crate (path relative to this crate's manifest)
+        let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../{name}-server/migrations");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&db_url)
+            .await?;
+        sqlx::migrate::Migrator::new(migrations)
+            .await?
+            .run(&pool)
+            .await?;
+
+        // Bind a random port; start the tonic server in a background task
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let incoming =
+            TcpListenerStream::new(tokio::net::TcpListener::from_std(listener)?);
+
+        // TODO(M2/M3): pass db_url + redis_url into service constructors via State
+        let _db = db_url.clone();
+        let _redis = redis_url.clone();
+
+        tokio::spawn(async move {{
+            tonic::transport::Server::builder()
+                .add_service({camel}Server::new({camel}Service::default()))
+                .serve_with_incoming(incoming)
+                .await
+                .expect("e2e server panicked");
+        }});
+
+        // Connect via {name}-rs (the public client crate)
+        let endpoint = Endpoint::from_shared(format!("http://{{addr}}"))?;
+        let client = {camel}Client::connect(endpoint).await?;
+
+        Ok(Self {{
+            client,
+            db_url,
+            redis_url,
+            _pg: pg,
+            _redis: redis,
+        }})
+    }}
+}}
+
+/// Returns true if Docker is reachable.
+/// Set DOCKER_HOST=unix:///home/<user>/.rd/docker.sock for Rancher Desktop.
+pub fn docker_available() -> bool {{
+    let sock = std::env::var("DOCKER_HOST")
+        .unwrap_or_else(|_| "unix:///var/run/docker.sock".to_string());
+    let path = sock.strip_prefix("unix://").unwrap_or(&sock);
+    std::path::Path::new(path).exists()
+}}
+
+/// Macro: skip the test with a message when Docker is not available.
+#[macro_export]
+macro_rules! require_docker {{
+    () => {{
+        if !common::docker_available() {{
+            eprintln!("skip: Docker not available — set DOCKER_HOST or start Docker");
+            return Ok(());
+        }}
+    }};
+}}
+"#,
+    )
+}
+
+fn e2e_contract_test(name: &str) -> String {
+    let snake = name.replace('-', "_");
+    let camel = {
+        use convert_case::{Case, Casing};
+        name.to_case(Case::Pascal)
+    };
+    format!(
+        r#"//! Contract smoke test — verifies the server is reachable and the gRPC
+//! transport works end-to-end. Individual service-specific test files
+//! (e.g. tests/service.rs) are added as each RPC is implemented.
+//!
+//! This file just checks "server up + client connects + any RPC call
+//! returns a gRPC status (not a connection/transport error)".
+
+#[path = "common/mod.rs"]
+mod common;
+
+use {snake}_proto::HelloRequest;
+
+type Result = anyhow::Result<()>;
+
+#[tokio::test]
+async fn test_{snake}_e2e_server_reachable() -> Result {{
+    require_docker!();
+    let h = common::E2EHarness::start().await?;
+
+    // The harness already connected the client in E2EHarness::start().
+    // Any connection-level failure (port unreachable, TLS) would have
+    // panicked there. Call say_hello via the CoalescingClient — the stub
+    // returns UNIMPLEMENTED which is a valid gRPC status, confirming the
+    // server is up and the transport layer is healthy.
+    //
+    // CoalescingClient::inner is the raw tonic-generated client; calling
+    // it directly avoids needing a convenience wrapper on {camel}Client.
+    let coalescing = h.client.inner();
+    let status = coalescing
+        .inner
+        .say_hello(HelloRequest {{ name: "smoke".into() }})
+        .await
+        .unwrap_err();
+
+    // Any gRPC status code is acceptable here — the important thing is that
+    // we did NOT get a transport error (which would be tonic::Code::Unknown
+    // with a "connection refused" or "transport error" message).
+    assert_ne!(
+        status.code(),
+        tonic::Code::Unknown,
+        "transport error — is the server running? {{status}}",
+    );
+    Ok(())
+}}
+"#,
+    )
+}
+
+fn print_workspace_next_steps(name: &str, extras: &[ClientLang]) {
+    eprintln!();
+    eprintln!("next steps:");
+    eprintln!("  cd {name}");
+    eprintln!("  cargo build --workspace          # compiles Rust crates");
+    eprintln!("  cargo test --workspace           # contract test should pass");
+    eprintln!("  cd {name}-server && tonin k8s generate   # regenerate k8s/");
+    for client in extras {
+        match client {
+            ClientLang::Python => {
+                eprintln!("  (cd {name}-py && bash codegen.sh)   # generate Python stubs")
+            }
+            ClientLang::Ts => {
+                eprintln!("  (cd {name}-ts && npm install && npm run gen)  # generate TS stubs")
+            }
+            ClientLang::Rust => {}
+        }
+    }
+    eprintln!();
+    eprintln!("scaffold:");
+    eprintln!("  {name}-proto/   ← proto contract + generated types");
+    eprintln!("  {name}-server/  ← tonin gRPC binary (stubs, fill in real logic)");
+    eprintln!("  {name}-rs/      ← Rust client library for callers");
+    for client in extras {
+        match client {
+            ClientLang::Python => {
+                eprintln!("  {name}-py/      ← Python client (gRPC stubs + tonin_client)")
+            }
+            ClientLang::Ts => {
+                eprintln!("  {name}-ts/      ← TypeScript client (buf-generated stubs)")
+            }
+            ClientLang::Rust => {}
         }
     }
 }

@@ -1,11 +1,17 @@
 //! Render a `Plan` into a set of YAML files.
 //!
-//! Templates are embedded at compile time so the CLI is a single binary.
+//! Templates are embedded at compile time so the CLI is a single binary, but
+//! can be overridden via:
+//! - `TONIN_TEMPLATE_DIR` env var (local filesystem path to k8s/ subdir)
+//! - `TONIN_TEMPLATE_VERSION` env var (GitHub release version, default: latest)
+//! - Auto-download from <https://github.com/Rushit/tonin-templates/releases>
+//!
 //! Each output file is `RenderedFile { path, contents }` where `path` is
 //! relative (e.g., `deployment.yaml`) — the caller decides where to write.
 
 use include_dir::{Dir, include_dir};
 use serde::Serialize;
+use std::path::PathBuf;
 use tera::{Context, Tera};
 
 use super::plan::{Plan, ServiceRef};
@@ -76,6 +82,17 @@ pub fn render(plan: &Plan) -> Result<Vec<RenderedFile>, Error> {
         required.push(("db-statefulset.yaml.tmpl", "db-statefulset.yaml"));
         required.push(("db-service.yaml.tmpl", "db-service.yaml"));
     }
+    // App secrets (JWT keys, API tokens, etc.) declared in [secrets] required.
+    // Renders a separate `secrets.yaml` with placeholder values — distinct
+    // from db-secret.yaml which holds only DATABASE_PASSWORD.
+    let has_app_secrets_manifest = plan
+        .secrets
+        .as_ref()
+        .is_some_and(|s| !s.required.is_empty());
+    if has_app_secrets_manifest {
+        required.push(("secrets.yaml.tmpl", "secrets.yaml"));
+    }
+
     let cache_owned = plan
         .cache
         .as_ref()
@@ -118,6 +135,18 @@ pub fn render(plan: &Plan) -> Result<Vec<RenderedFile>, Error> {
 }
 
 fn read_template(rel: &str) -> Result<String, Error> {
+    // Check TONIN_TEMPLATE_DIR environment variable first (for local development).
+    // Set to the k8s/ subdirectory, e.g. `TONIN_TEMPLATE_DIR=/path/to/tonin-templates/k8s`
+    if let Ok(template_dir) = std::env::var("TONIN_TEMPLATE_DIR") {
+        let path = PathBuf::from(&template_dir).join(rel);
+        if path.exists()
+            && let Ok(contents) = std::fs::read_to_string(&path)
+        {
+            return Ok(contents);
+        }
+    }
+
+    // Fall back to embedded templates from compile time.
     let f = TEMPLATES
         .get_file(rel)
         .ok_or_else(|| Error::Missing(rel.into()))?;
@@ -217,6 +246,20 @@ fn base_context(plan: &Plan) -> Result<Context, Error> {
     // REDIS_URL, etc.). Tera receives them as a list of (key, value) tuples.
     let literals: Vec<(String, String)> = plan.emitted_env.literals.to_vec();
     ctx.insert("stateful_env_literals", &literals);
+
+    // App secret env vars declared in `[secrets] required` (e.g. JWT_SIGNING_KEY).
+    // Rendered as `valueFrom: secretKeyRef` pointing at `<name>-secrets`.
+    // Intentionally separate from emitted_env.from_secret which also contains
+    // DATABASE_PASSWORD — that key is already covered by the db-credentials
+    // envFrom block and must not appear here to avoid duplicate env var errors.
+    let app_secret_keys: Vec<String> = plan
+        .secrets
+        .as_ref()
+        .map(|s| s.required.clone())
+        .unwrap_or_default();
+    let has_app_secrets = !app_secret_keys.is_empty();
+    ctx.insert("stateful_env_from_secret", &app_secret_keys);
+    ctx.insert("has_app_secrets", &has_app_secrets);
 
     // Init container fields for migrations.
     let has_migrations_init = plan

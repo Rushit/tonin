@@ -11,11 +11,12 @@ use super::new;
 pub enum ServiceCmd {
     /// Scaffold a new service.
     ///
-    /// Creates `./<name>/` with proto, src, `tonin.toml`, Dockerfile,
-    /// and pre-generated `k8s/` manifests. The exact tree depends on
-    /// `--lang` and `--type` — Rust scaffolds a multi-crate workspace
-    /// (`server/` + `client-rust/`); Python lands a `server/` package;
-    /// TypeScript lands a Vite SPA or Next.js BFF tree.
+    /// Creates `./<name>/` with a three-crate Cargo workspace by default
+    /// (Rust: `<name>-proto` + `<name>-server` + `<name>-rs`), pre-generated
+    /// `k8s/` manifests, CLAUDE.md, AGENTS.md, and .gitignore for each crate.
+    /// Python and TypeScript use their own layouts (`server/` package and
+    /// Vite SPA / Next.js BFF respectively). Use `--flat` to opt out of the
+    /// workspace layout for Rust.
     ///
     /// Idempotency: refuses to overwrite an existing `./<name>/`. Delete
     /// it (or pick a different name) before re-running.
@@ -87,6 +88,18 @@ and is applied automatically."
         /// Skip the interactive workspace prompt (treat as 'no').
         #[arg(long)]
         no_workspace: bool,
+        /// Custom template repository. Examples:
+        ///   github.com/Rushit/tonin-templates-flat
+        ///   github.com/myorg/my-templates
+        /// Defaults to github.com/Rushit/tonin-templates (standard variant)
+        #[arg(long)]
+        template_repo: Option<String>,
+        /// Scaffold a flat single-directory layout instead of the default
+        /// three-crate workspace (proto + server + rs). Only valid with
+        /// --lang rust. Use when embedding the service inside an existing
+        /// workspace that manages its own crate split.
+        #[arg(long)]
+        flat: bool,
         /// Add a background-job binary. Repeatable. Each job gets its
         /// own `src/bin/<name>.rs` entry point that bootstraps via
         /// `tonin::job::bootstrap(...)` — telemetry + service-identity
@@ -266,6 +279,8 @@ pub fn run(cmd: ServiceCmd) -> Result<()> {
             r#type,
             web_mode,
             no_workspace,
+            template_repo,
+            flat,
             with_jobs,
             with_storage,
             client_langs,
@@ -282,6 +297,9 @@ pub fn run(cmd: ServiceCmd) -> Result<()> {
             }
             if with_storage.is_some() && !matches!(lang, Lang::Rust | Lang::Python) {
                 bail!("--with-storage is supported only for --lang rust|python");
+            }
+            if flat && !matches!(lang, Lang::Rust) {
+                bail!("--flat is only supported for --lang rust");
             }
             // Default web mode is SPA.
             let wm = if st == ServiceType::Web {
@@ -308,6 +326,8 @@ pub fn run(cmd: ServiceCmd) -> Result<()> {
                 st,
                 wm,
                 no_workspace,
+                template_repo.as_deref(),
+                flat,
                 &with_jobs,
                 with_storage,
                 &extras,

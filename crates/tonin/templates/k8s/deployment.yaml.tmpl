@@ -72,6 +72,13 @@ spec:
             - name: {{ kv.0 }}
               value: "{{ kv.1 }}"
 {%- endfor %}
+{%- for key in stateful_env_from_secret %}
+            - name: {{ key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ name }}-secrets
+                  key: {{ key }}
+{%- endfor %}
           ports:
             - containerPort: {{ port }}
               name: grpc

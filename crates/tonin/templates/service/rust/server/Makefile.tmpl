@@ -1,0 +1,24 @@
+# Makefile for {{ service_name }} service
+
+.PHONY: help build check test fmt lint clean
+
+help: ## Show available targets
+	@grep -E '^[a-z][a-z-]*:.*##' Makefile | awk -F'[:#]+' '{print $$1, "-", $$3}'
+
+build: ## Compile the service (debug profile)
+	cargo build
+
+check: ## Type-check the service and tests
+	cargo check --all-targets
+
+test: ## Run all tests
+	cargo test
+
+fmt: ## Format code with rustfmt
+	cargo fmt --all
+
+lint: ## Run clippy linter
+	cargo clippy --all-targets -- -D warnings
+
+clean: ## Remove build artifacts
+	cargo clean

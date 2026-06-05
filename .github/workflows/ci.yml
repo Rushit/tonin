@@ -51,6 +51,11 @@ jobs:
           # Keep separate caches per toolchain so stable + MSRV don't stomp each other.
           key: ${{ matrix.rust }}
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: cargo fmt --check
         run: make fmt-check
 
