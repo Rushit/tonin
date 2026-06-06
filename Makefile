@@ -11,7 +11,7 @@ RUSTDOCFLAGS ?= -D warnings
 # Default to printing the help table when invoked with no args.
 .DEFAULT_GOAL := help
 
-.PHONY: help build check test fmt fmt-check lint doc ci clean gen-example \
+.PHONY: help build check test e2e test-all fmt fmt-check lint doc ci clean gen-example \
         install-cli publish-dry publish version release show-version
 
 help: ## Show this help table
@@ -29,8 +29,14 @@ build: ## Compile every workspace member (debug profile)
 check: ## Type-check the workspace including tests/examples
 	$(CARGO) check --workspace --all-targets
 
-test: ## Run the full workspace test suite
-	$(CARGO) test --workspace
+test: ## Run unit and contract tests (no Docker required)
+	$(CARGO) nextest run --workspace
+
+e2e: ## Run all tests including E2E (requires Docker/testcontainers)
+	$(CARGO) nextest run --workspace --include-ignored
+
+test-all: ## Run all tests (unit, contract, E2E with testcontainers)
+	$(CARGO) nextest run --workspace --include-ignored
 
 fmt: ## Format all crates with rustfmt
 	$(CARGO) fmt --all

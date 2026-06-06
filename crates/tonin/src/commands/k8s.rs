@@ -200,8 +200,59 @@ fn generate(args: &GenerateArgs) -> Result<()> {
                 plan.name,
                 target_dir.display()
             );
+
+            // Ensure any secret manifests written to the k8s dir are
+            // excluded from git — fulfils the promise in db-secret.yaml.tmpl
+            // and secrets.yaml.tmpl ("added to .gitignore by tonin").
+            let secret_paths: Vec<String> = files
+                .iter()
+                .filter(|f| is_secret_manifest(&f.path))
+                .map(|f| format!("{}/{}", args.out.display(), f.path))
+                .collect();
+            if !secret_paths.is_empty() {
+                protect_gitignore(&plan.dir, &secret_paths)
+                    .with_context(|| format!("updating .gitignore for '{}'", plan.name))?;
+            }
         }
     }
+    Ok(())
+}
+
+/// Returns true for manifest files whose contents must never be committed.
+fn is_secret_manifest(path: &str) -> bool {
+    matches!(path, "secrets.yaml" | "db-secret.yaml")
+}
+
+/// Append `entries` to the service dir's `.gitignore`, skipping any that
+/// are already present. Creates the file if it does not exist.
+fn protect_gitignore(service_dir: &Path, entries: &[String]) -> Result<()> {
+    let gitignore = service_dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
+
+    let new_entries: Vec<&str> = entries
+        .iter()
+        .map(String::as_str)
+        .filter(|e| !existing.lines().any(|l| l.trim() == *e))
+        .collect();
+
+    if new_entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str("\n# tonin: generated secret manifests — never commit plaintext values\n");
+    for entry in new_entries {
+        content.push_str(entry);
+        content.push('\n');
+    }
+
+    std::fs::write(&gitignore, content)
+        .with_context(|| format!("writing {}", gitignore.display()))?;
+
+    eprintln!("  updated .gitignore ← {}", entries.join(", "));
     Ok(())
 }
 
