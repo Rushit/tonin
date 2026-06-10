@@ -31,6 +31,9 @@ flamegraph.svg
 # rust-analyzer / rustc artifacts.
 rust-project.json
 
+# Node.js / front-end examples.
+node_modules/
+
 # IDE / OS noise.
 .DS_Store
 .idea/
