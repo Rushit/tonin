@@ -9,9 +9,9 @@
 #   1. tonin-client      - leaf, no internal deps
 #   2. tonin-mcp-macros  - leaf, no internal deps
 #   3. tonin-build       - leaf, no internal deps
-#   4. tonin-core        - depends on tonin-client + tonin-mcp-macros
-#   5. tonin             - umbrella library + the `tonin` CLI binary,
-#                            depends on tonin-core (published last)
+#   4. tonin-plugin      - leaf, no internal deps
+#   5. tonin-sdk         - depends on tonin-client + tonin-mcp-macros
+#   6. tonin             - CLI binary, depends on tonin-plugin (published last)
 #
 # A short sleep between publishes gives the crates.io sparse index time to
 # propagate; without it, the next `cargo publish` can fail to resolve the

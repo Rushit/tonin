@@ -79,20 +79,28 @@ install-cli: ## Build and install the `tonin` CLI from source
 # Publishing
 # ---------------------------------------------------------------------------
 
-# Dry-run publish for the three leaf crates only. The dependent crates
-# (tonin-core and tonin) can't dry-run cleanly until their upstream
+# Dry-run publish for the four leaf crates. The dependent crates
+# (tonin-sdk and tonin) can't dry-run cleanly until their upstream
 # deps actually exist on crates.io, so we skip them here.
 publish-dry: ## Dry-run `cargo publish` for the leaf crates
 	$(CARGO) publish --dry-run --allow-dirty -p tonin-client
 	$(CARGO) publish --dry-run --allow-dirty -p tonin-mcp-macros
 	$(CARGO) publish --dry-run --allow-dirty -p tonin-build
+	$(CARGO) publish --dry-run --allow-dirty -p tonin-plugin
 	@echo "publish-dry: leaf crates packaged cleanly"
 
 # Real publish: walk crates in dependency order, sleeping between each
 # step so the crates.io index has time to propagate before the next crate
-# (which depends on the previous one) is uploaded. `tonin` is published
-# last because it's dual-purpose (library + the `tonin` CLI binary).
-publish: ## Publish all five crates to crates.io in dep order
+# (which depends on the previous one) is uploaded.
+#
+# Publish order (must respect the internal dep graph):
+#   1. tonin-client      — leaf, no internal deps
+#   2. tonin-mcp-macros  — leaf, no internal deps
+#   3. tonin-build       — leaf, no internal deps
+#   4. tonin-plugin      — leaf, no internal deps
+#   5. tonin-sdk         — depends on tonin-client + tonin-mcp-macros
+#   6. tonin             — CLI binary, depends on tonin-plugin
+publish: ## Publish all six crates to crates.io in dep order
 	@test -n "$${CARGO_REGISTRY_TOKEN}" || \
 	  (echo "CARGO_REGISTRY_TOKEN not set" >&2; exit 1)
 	@echo "publish: tonin-client"
@@ -104,12 +112,15 @@ publish: ## Publish all five crates to crates.io in dep order
 	@echo "publish: tonin-build"
 	$(CARGO) publish -p tonin-build
 	sleep 30
-	@echo "publish: tonin-core (larger crate, longer sleep after)"
-	$(CARGO) publish -p tonin-core
+	@echo "publish: tonin-plugin"
+	$(CARGO) publish -p tonin-plugin
+	sleep 30
+	@echo "publish: tonin-sdk (larger crate, longer sleep after)"
+	$(CARGO) publish -p tonin-sdk
 	sleep 60
-	@echo "publish: tonin (umbrella library + CLI binary)"
+	@echo "publish: tonin (CLI binary)"
 	$(CARGO) publish -p tonin
-	@echo "publish: all five crates uploaded"
+	@echo "publish: all six crates uploaded"
 
 # ---------------------------------------------------------------------------
 # Versioning + release
