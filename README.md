@@ -42,7 +42,8 @@ service are:
 
 ```bash
 # 1. install the CLI (install script — fastest, no compile)
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
+  | bash -s -- --with-tonin-helm
 # or: cargo install tonin
 
 tonin service new greeter  # 2. scaffold
