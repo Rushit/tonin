@@ -1,6 +1,6 @@
 //! OTel metric handles + slow-op thresholds for capability decorators.
 //!
-//! `tonin-core::Instrumented<T>` calls into this module on every cache,
+//! `tonin-sdk::Instrumented<T>` calls into this module on every cache,
 //! database, and event-bus method call. Metric handles are lazily
 //! initialised through the OTel global meter — if no MeterProvider has
 //! been installed (Phase 3 ships without one), the global meter is a

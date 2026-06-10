@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use opentelemetry::{global, propagation::TextMapPropagator, trace::TracerProvider as _};
 use opentelemetry_sdk::{propagation::TraceContextPropagator, trace::TracerProvider};
-use tonin_core::telemetry::capability_metrics::SlowThresholds;
-use tonin_core::{
+use tonin_sdk::telemetry::capability_metrics::SlowThresholds;
+use tonin_sdk::{
     Error,
     instrumented::Instrumented,
     traits::{Acker, Cache, DeliveredMessage, EventBus, MessageId, SubscribeOptions, Subscription},

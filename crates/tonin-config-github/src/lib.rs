@@ -13,7 +13,7 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use tonin_core::traits::Config;
+//! use tonin_sdk::traits::Config;
 //! use tonin_config_github::GithubConfig;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,8 +29,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 use tokio::sync::RwLock;
-use tonin_core::Error;
-use tonin_core::traits::Config;
+use tonin_sdk::Error;
+use tonin_sdk::traits::Config;
 
 /// User-Agent string sent on every API call. GitHub rejects requests
 /// without a UA, so we always set one — version pulled from cargo.

@@ -12,7 +12,7 @@
 //! ```
 
 use tonin_config_github::GithubConfig;
-use tonin_core::traits::Config;
+use tonin_sdk::traits::Config;
 
 #[tokio::test]
 #[ignore = "requires a real GitHub repo + PAT"]

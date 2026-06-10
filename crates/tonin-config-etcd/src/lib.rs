@@ -1,4 +1,4 @@
-//! etcd v3 implementation of the [`tonin_core::traits::Config`] trait.
+//! etcd v3 implementation of the [`tonin_sdk::traits::Config`] trait.
 //!
 //! Use this when you want a real, push-based config backend with live
 //! reload — etcd's watch API delivers changes to clients as soon as the
@@ -10,7 +10,7 @@
 //! ```no_run
 //! use tonin_config_etcd::EtcdConfig;
 //!
-//! # async fn run() -> Result<(), tonin_core::Error> {
+//! # async fn run() -> Result<(), tonin_sdk::Error> {
 //! // From env vars (TONIN_CONFIG_ETCD_ENDPOINTS, TONIN_CONFIG_ETCD_PREFIX, ...).
 //! let cfg = EtcdConfig::from_env().await?;
 //!
@@ -47,8 +47,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use etcd_client::{Certificate, Client, ConnectOptions, GetOptions, Identity, TlsOptions};
 use tokio::sync::watch;
-use tonin_core::Error;
-use tonin_core::traits::Config;
+use tonin_sdk::Error;
+use tonin_sdk::traits::Config;
 
 const ENV_ENDPOINTS: &str = "TONIN_CONFIG_ETCD_ENDPOINTS";
 const ENV_PREFIX: &str = "TONIN_CONFIG_ETCD_PREFIX";

@@ -12,7 +12,7 @@ categories.workspace = true
 description = "etcd v3 Config implementation for the tonin framework. Native server-pushed watch for hot reload, TLS support for in-cluster etcd."
 
 [dependencies]
-tonin-core = { workspace = true }
+tonin-sdk = { workspace = true }
 etcd-client  = { version = "0.14", features = ["tls"] }
 tokio        = { workspace = true }
 async-trait  = { workspace = true }

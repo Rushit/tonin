@@ -11,7 +11,7 @@ name = "inventory"
 path = "src/main.rs"
 
 [dependencies]
-tonin           = { workspace = true }
+tonin-sdk = { workspace = true }
 tokio    = { workspace = true }
 tonic    = { workspace = true }
 prost    = { workspace = true }

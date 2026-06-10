@@ -1,18 +1,26 @@
-//! Core types and runtime for tonin services.
+//! tonin-sdk: Service builder, Config, Context, Error, and runtime for tonin microservices.
 //!
-//! # When to use this crate directly
+//! # Usage
 //!
-//! Depend on the umbrella crate [`tonin`](https://docs.rs/tonin)
-//! in most cases — it re-exports this crate plus a curated prelude.
-//! Reach for `tonin-core` directly when you want fewer transitive
-//! deps than the umbrella, or finer-grained feature-flag control over
-//! what gets compiled in.
+//! ```toml
+//! [dependencies]
+//! tonin-sdk = "0.4"
+//! ```
+//!
+//! ```no_run
+//! use tonin_sdk::prelude::*;
+//!
+//! #[tokio::main]
+//! async fn main() -> tonin_sdk::Result<()> {
+//!     Service::new("greeter").run().await
+//! }
+//! ```
 //!
 //! # Example
 //!
 //! ```no_run
-//! use tonin_core::{Service, Result};
-//! use tonin_core::auth::default::JwtValidator;
+//! use tonin_sdk::{Service, Result};
+//! use tonin_sdk::auth::default::JwtValidator;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
@@ -358,7 +366,7 @@ pub mod prelude {
     // shadow `std::result::Result` in user code, which breaks
     // macro-generated code (rmcp's tool macros, custom derives) that
     // emits unqualified `Result<T, E>` two-arg forms. Spell it as
-    // `tonin::Result<T>` when you want the framework's alias.
+    // `tonin_sdk::Result<T>` when you want the framework's alias.
     pub use super::{Error, Service, State};
     pub use crate::auth::{AuthCtx, AuthError, PrincipalKind};
     pub use crate::traits::{
@@ -366,3 +374,6 @@ pub mod prelude {
     };
     pub use tonic::{Request, Response, Status};
 }
+
+/// Convenience re-export: `#[tonin_sdk::main]` as an alias for `#[tokio::main]`.
+pub use tokio::main;
