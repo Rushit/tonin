@@ -12,7 +12,7 @@ RUSTDOCFLAGS ?= -D warnings
 .DEFAULT_GOAL := help
 
 .PHONY: help build check test e2e test-all fmt fmt-check lint doc ci clean gen-example \
-        install-cli publish-dry publish version release show-version
+        install-cli install-hooks publish-dry publish version release show-version
 
 help: ## Show this help table
 	@awk 'BEGIN {FS = ":.*##"; printf "Available targets:\n\n"} \
@@ -52,6 +52,13 @@ doc: ## Build rustdoc for the workspace, warnings denied
 
 ci: fmt-check lint test doc ## Run the same gate CI runs (fmt + lint + test + doc)
 	@echo "ci: all checks passed"
+
+install-hooks: ## Wire up git hooks (run once after cloning)
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	cp scripts/commit-msg .git/hooks/commit-msg
+	chmod +x .git/hooks/commit-msg
+	@echo "hooks installed: pre-commit, commit-msg"
 
 # Proves the templates + generated code still hold together: `cargo build`
 # runs the example's build.rs codegen (tonic-build) and compiles the result;

@@ -1,5 +1,5 @@
 [package]
-name = "tonin-core"
+name = "tonin-sdk"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ homepage.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Core types for tonin: Service builder, Config, Context, Error, runtime."
+description = "tonin-sdk: Service builder, Config, Context, Error, and runtime for tonin microservices."
 
 [dependencies]
 # Core runtime

@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use tonin_config_etcd::EtcdConfig;
-use tonin_core::traits::Config;
+use tonin_sdk::traits::Config;
 
 #[tokio::test]
 #[ignore = "requires an etcd instance reachable at TONIN_CONFIG_ETCD_ENDPOINTS"]

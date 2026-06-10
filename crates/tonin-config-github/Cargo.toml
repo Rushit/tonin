@@ -12,7 +12,7 @@ categories.workspace = true
 description = "GitHub-repo-backed Config implementation for the tonin framework. GitOps-style application config from a private repo; polls commit SHA for hot reload."
 
 [dependencies]
-tonin-core = { workspace = true }
+tonin-sdk = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

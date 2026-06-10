@@ -46,7 +46,7 @@ use crate::traits::{
 /// # use std::sync::Arc;
 /// # use std::time::Duration;
 /// # use async_trait::async_trait;
-/// # use tonin_core::{instrumented::Instrumented, traits::Cache, Error};
+/// # use tonin_sdk::{instrumented::Instrumented, traits::Cache, Error};
 /// struct MockCache;
 /// #[async_trait]
 /// impl Cache for MockCache {

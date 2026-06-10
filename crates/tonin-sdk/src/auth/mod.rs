@@ -17,9 +17,9 @@
 //! ## Common case (one-liner)
 //!
 //! ```no_run
-//! # use tonin_core::Service;
-//! # use tonin_core::auth::default::JwtValidator;
-//! # async fn run() -> tonin_core::Result<()> {
+//! # use tonin_sdk::Service;
+//! # use tonin_sdk::auth::default::JwtValidator;
+//! # async fn run() -> tonin_sdk::Result<()> {
 //! let svc = Service::new("my-svc")
 //!     .with_auth(JwtValidator::from_env()?);
 //! # Ok(()) }
@@ -28,7 +28,7 @@
 //! ## Custom verifier
 //!
 //! ```ignore
-//! use tonin_core::auth::{TokenVerifier, AuthCtx, AuthError, RawToken};
+//! use tonin_sdk::auth::{TokenVerifier, AuthCtx, AuthError, RawToken};
 //! use async_trait::async_trait;
 //!
 //! struct OktaVerifier { /* ... */ }

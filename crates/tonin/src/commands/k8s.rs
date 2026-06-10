@@ -12,29 +12,99 @@ pub enum K8sCmd {
     /// Render YAML manifests from tonin.toml.
     ///
     /// Parses `[service]`, `[deploy]`, `[resources]`, and any capability
-    /// blocks (`[database]`, `[cache]`, `[secrets]`, `[migrations]`,
-    /// `[config]`) and writes Deployment / Service / HPA / Ingress +
-    /// mesh overlays into ./k8s/ (or `--out`). Offline — no cluster
-    /// contact required.
+    /// blocks (`[database]`, `[databases.*]`, `[cache]`, `[caches.*]`,
+    /// `[callers]`, `[secrets]`, `[migrations]`, `[config]`) and writes
+    /// Deployment / Service / HPA / Ingress + mesh overlays into ./k8s/
+    /// (or `--out`). Offline — no cluster contact required.
+    ///
+    /// Each block supports per-env overlay subtables. `[deploy.dev]`,
+    /// `[database.dev]`, `[cache.dev]`, and `[callers.dev]` override only
+    /// the fields they specify for that environment; unset fields fall back
+    /// to the top-level value.
     #[command(after_long_help = "PREREQUISITES:
   - tonin.toml in the current dir (or `--path`).
 
 SIDE EFFECTS:
   Writes files under ./<out>/ (default ./k8s/). Overwrites existing
-  files in that directory.
+  files in that directory. Keep dev and prod manifests separate with --out:
+    tonin k8s generate --env dev  --out k8s/dev
+    tonin k8s generate --env prod --out k8s/prod
 
 EXAMPLES:
-  # Render the current service into ./k8s/
-  tonin k8s generate
+  # Render prod manifests into k8s/prod/
+  tonin k8s generate --env prod --out k8s/prod
 
-  # Render every service in a workspace recursively
-  tonin k8s generate --workspace --path ./services
+  # Render dev manifests into k8s/dev/ (shared DB + Redis, 1 replica)
+  tonin k8s generate --env dev --out k8s/dev
 
-  # Apply the prod overlay for [database.prod] / [cache.prod]
-  tonin k8s generate --env prod
+  # Preview dev to stdout without writing files
+  tonin k8s generate --env dev --dry-run
 
-  # Preview to stdout without writing files
-  tonin k8s generate --dry-run
+  # Render every service in a workspace
+  tonin k8s generate --workspace --path ./services --env prod --out k8s/prod
+
+TONIN.TOML — PER-ENV OVERLAY EXAMPLES:
+
+  # [deploy] — replicas and namespace per env
+  [deploy]
+  replicas  = 2
+  namespace = \"agnitiv\"
+
+  [deploy.dev]
+  replicas  = 1
+  namespace = \"agnitiv-dev\"
+
+  # [callers] — ingress allowlist per env (supports per-env subtable)
+  [callers]
+  gateway         = \"agnitiv\"
+  zradar-platform = \"agnitiv\"
+
+  [callers.dev]
+  gateway         = \"agnitiv-dev\"
+  zradar-platform = \"agnitiv-dev\"
+
+  # [database] — primary DB: owned in prod, shared in dev with literal URL
+  [database]
+  engine = \"postgres\"
+
+  [database.dev]
+  shared = true
+  url    = \"postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev\"
+
+  # [databases.*] — named DBs: emit <NAME>_DATABASE_URL / <NAME>_DATABASE_PASSWORD
+  # dev may use one shared write DB; prod may have separate read replica.
+  [databases.write]
+  engine = \"postgres\"
+
+  [databases.write.dev]
+  shared = true
+  url    = \"postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev\"
+
+  [databases.read]
+  engine = \"postgres\"
+  shared = true
+  name   = \"identity-read-replica\"
+  namespace = \"agnitiv\"
+
+  [databases.read.dev]
+  shared = true
+  url    = \"postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev\"
+
+  # [cache] — primary cache
+  [cache]
+  engine = \"redis\"
+
+  [cache.dev]
+  shared = true
+  url    = \"redis://redis.shared-dev.svc.cluster.local:6379\"
+
+  # [caches.*] — named caches: emit <NAME>_REDIS_URL
+  [caches.session]
+  engine = \"redis\"
+
+  [caches.session.dev]
+  shared = true
+  url    = \"redis://redis.shared-dev.svc.cluster.local:6379\"
 
 SEE ALSO:
   docs/12-kubernetes-deploy.md")]
@@ -139,8 +209,10 @@ pub struct GenerateArgs {
     /// Print to stdout instead of writing files.
     #[arg(long)]
     pub dry_run: bool,
-    /// Target environment for `[database.<env>]` / `[cache.<env>]` overlay
-    /// resolution. Falls back to `TONIN_ENV` env var, then `dev`.
+    /// Target environment for overlay resolution.
+    /// Applies to: `[deploy.<env>]`, `[callers.<env>]`, `[database.<env>]`,
+    /// `[databases.*.<env>]`, `[cache.<env>]`, `[caches.*.<env>]`.
+    /// Falls back to `TONIN_ENV` env var, then `dev`.
     #[arg(long)]
     pub env: Option<String>,
 }
@@ -378,6 +450,7 @@ fn setup(args: &SetupArgs) -> Result<()> {
 // --------------- helpers ---------------
 
 fn load_plans(path: &Path, workspace: bool, env: Option<&str>) -> Result<Vec<Plan>> {
+    check_cli_version();
     let env = crate::codegen::stateful::select_env(env);
     let plans = if workspace {
         Plan::load_workspace_with_env(path, &env).context("loading workspace plans")?
@@ -397,6 +470,43 @@ fn load_plans(path: &Path, workspace: bool, env: Option<&str>) -> Result<Vec<Pla
     Ok(plans)
 }
 
+/// Warn (never error) when the CLI is older than the minimum version
+/// recommended by the version of `tonin-plugin` compiled in.
+///
+/// This catches the common case of a service repo upgrading `tonin-plugin`
+/// (e.g. to pick up a new `[eventbus]` section) while the developer's
+/// installed CLI binary is still the previous version and would silently
+/// ignore the new fields.
+fn check_cli_version() {
+    use crate::codegen::plan::RECOMMENDED_CLI_MIN;
+    let cli_ver = env!("CARGO_PKG_VERSION");
+    if version_lt(cli_ver, RECOMMENDED_CLI_MIN) {
+        eprintln!(
+            "warning: tonin {cli_ver} is older than the minimum recommended \
+             by this project's tonin-plugin ({RECOMMENDED_CLI_MIN}). \
+             Some tonin.toml fields may be silently ignored. \
+             Run `cargo install tonin` to upgrade."
+        );
+    }
+}
+
+/// Returns true when `a` is strictly less than `b` using semver ordering.
+/// Falls back to false on any parse error so the check never blocks a build.
+fn version_lt(a: &str, b: &str) -> bool {
+    fn parse(s: &str) -> Option<(u32, u32, u32)> {
+        let mut it = s.split('.');
+        Some((
+            it.next()?.parse().ok()?,
+            it.next()?.parse().ok()?,
+            it.next()?.parse().ok()?,
+        ))
+    }
+    match (parse(a), parse(b)) {
+        (Some(av), Some(bv)) => av < bv,
+        _ => false,
+    }
+}
+
 fn require_kubectl() -> Result<()> {
     Command::new("kubectl")
         .arg("version")
@@ -404,4 +514,18 @@ fn require_kubectl() -> Result<()> {
         .output()
         .map_err(|e| anyhow!("kubectl not found on PATH: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_lt;
+
+    #[test]
+    fn version_lt_works() {
+        assert!(version_lt("0.4.1", "0.4.2"));
+        assert!(version_lt("0.3.9", "0.4.0"));
+        assert!(!version_lt("0.4.2", "0.4.2"));
+        assert!(!version_lt("0.5.0", "0.4.2"));
+        assert!(!version_lt("bad", "0.4.2"));
+    }
 }

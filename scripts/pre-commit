@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Pre-commit hook: mirrors the `make ci` gate (fmt-check + clippy + test + doc).
+# Install once via: make install-hooks
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-commit: fmt-check..."
+cargo fmt --all -- --check
+
+echo "pre-commit: clippy..."
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "pre-commit: test..."
+cargo test --workspace
+
+echo "pre-commit: doc..."
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
+
+echo "pre-commit: ok"

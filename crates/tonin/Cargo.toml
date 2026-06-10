@@ -57,9 +57,9 @@ path = "src/bin/gen_shared_types.rs"
 required-features = ["cli"]
 
 [dependencies]
-# Library (always on)
-tonin-core       = { workspace = true }
-tokio              = { workspace = true }
+# Plan API for codegen (always on for CLI)
+tonin-plugin     = { workspace = true }
+tokio            = { workspace = true }
 
 # CLI (feature-gated)
 clap         = { workspace = true, optional = true }
