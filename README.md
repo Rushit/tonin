@@ -103,21 +103,34 @@ way rather than reimplementing what Cilium/Istio/Linkerd already do well.
 Pre-built archives are published for Linux (x86_64, ARM64), macOS (Intel, Apple Silicon),
 and Windows (x86_64) on every release.
 
+**Install tonin + tonin-helm (recommended):**
 ```bash
-# 1. Install script (auto-detects OS/arch, installs to ~/.cargo/bin)
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
+  | bash -s -- --with-tonin-helm
+```
 
-# Also install tonin-helm in the same run
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --with-tonin-helm
+**Install tonin only:**
+```bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
+  | bash
+```
 
-# Custom install directory
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --dir /usr/local/bin
+**Custom install directory:**
+```bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
+  | bash -s -- --with-tonin-helm --dir /usr/local/bin
+```
 
-# 2. cargo-binstall (downloads the same pre-built archive)
+**Via cargo-binstall:**
+```bash
 cargo binstall tonin
+cargo binstall tonin-helm
+```
 
-# 3. cargo install (builds from source)
+**Build from source:**
+```bash
 cargo install tonin
+cargo install tonin-helm
 ```
 
 ## Update
@@ -125,20 +138,23 @@ cargo install tonin
 Re-running the install script upgrades to the latest release. It detects the currently
 installed version and skips the download if already up to date.
 
+**Update tonin + tonin-helm to latest:**
 ```bash
-# Update tonin
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
+  | bash -s -- --with-tonin-helm
+```
 
-# Update tonin + tonin-helm together
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --with-tonin-helm
+**Pin specific versions:**
+```bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
+  | bash -s -- \
+      --with-tonin-helm \
+      --version v0.5.4 \
+      --helm-version v0.1.1
+```
 
-# Update to a specific tonin version
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --version v0.5.4
-
-# Update to specific versions of both
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --with-tonin-helm --version v0.5.4 --helm-version v0.1.1
-
-# Via cargo-binstall
+**Via cargo-binstall:**
+```bash
 cargo binstall tonin
 cargo binstall tonin-helm
 ```
