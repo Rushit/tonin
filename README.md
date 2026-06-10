@@ -101,17 +101,40 @@ Pre-built archives are published for Linux (x86_64, ARM64), macOS (Intel, Apple 
 and Windows (x86_64) on every release.
 
 ```bash
-# 1. Pre-built binary (fastest, no compile)
-#    Browse: https://github.com/Rushit/tonin/releases/latest
-TARGET=x86_64-unknown-linux-gnu  # see crates/tonin/README.md for all targets
-curl -L "https://github.com/Rushit/tonin/releases/latest/download/tonin-${TARGET}.tar.gz" \
-  | tar -xz -C /usr/local/bin tonin
+# 1. Install script (auto-detects OS/arch, installs to ~/.cargo/bin)
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
+
+# Also install tonin-helm in the same run
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --with-tonin-helm
+
+# Custom install directory
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --dir /usr/local/bin
 
 # 2. cargo-binstall (downloads the same pre-built archive)
 cargo binstall tonin
 
 # 3. cargo install (builds from source)
 cargo install tonin
+```
+
+## Update
+
+Re-running the install script upgrades to the latest release. It detects the currently
+installed version and skips the download if already up to date.
+
+```bash
+# Update tonin
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
+
+# Update tonin + tonin-helm together
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --with-tonin-helm
+
+# Update to a specific version
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --version v0.5.4
+
+# Via cargo-binstall
+cargo binstall tonin
+cargo binstall tonin-helm
 ```
 
 ## What you write vs. what tonin handles
