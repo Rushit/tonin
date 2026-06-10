@@ -86,7 +86,7 @@ capabilities. Each works out of the box and is selected or reconfigured in `toni
   `tonin.toml`, with Cilium / Istio / Linkerd mesh overlays.
 - **Multi-Language Clients** — generate Rust, Python, and TypeScript service skeletons
   and client SDKs from the same `.proto`.
-- **Pluggable Interfaces** — every capability above is a trait in `tonin-core` with
+- **Pluggable Interfaces** — every capability above is a trait in `tonin-sdk` with
   implementations selected by `engine = "..."`. Defaults are good; nothing is welded in.
 
 **Intentionally delegated to the service mesh:** mTLS, retries, circuit breaking, and
@@ -226,7 +226,7 @@ Full source: [`examples/greeter`](examples/greeter).
 
 ## Adding capabilities
 
-Capabilities are declared in `tonin.toml`. Traits live in `tonin-core`;
+Capabilities are declared in `tonin.toml`. Traits live in `tonin-sdk`;
 implementations live in their own crates and are picked by `engine = "..."`.
 Swapping a backend is a TOML change plus a `Cargo.toml` dep flip — handler
 code does not change.
@@ -262,7 +262,8 @@ schema, and status (what ships today vs. 0.2+).
 | Crate | Role |
 | ----- | ---- |
 | [`tonin`](https://crates.io/crates/tonin) | Umbrella re-export. `use tonin::prelude::*;` is what most services pull in. |
-| [`tonin-core`](https://crates.io/crates/tonin-core) | `Service` builder, runtime, capability traits, auth, telemetry, MCP, transport, discovery. |
+| [`tonin-sdk`](https://crates.io/crates/tonin-sdk) | `Service` builder, runtime, capability traits, auth, telemetry, MCP, transport, discovery. |
+| [`tonin-plugin`](https://crates.io/crates/tonin-plugin) | Minimal `tonin.toml` Plan API for plugin authors. No CLI deps. |
 | [`tonin-client`](https://crates.io/crates/tonin-client) | Tiny peer-service client primitives. No server framework deps. |
 | [`tonin-mcp-macros`](https://crates.io/crates/tonin-mcp-macros) | `#[mcp_expose]` proc-macro: auto-derives an MCP adapter from a gRPC `impl` block. |
 | [`tonin-build`](https://crates.io/crates/tonin-build) | `build.rs` helper that wraps `tonic-build` with tonin conventions. |

@@ -19,7 +19,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 # Tests — entire workspace, one crate, or a single test
 cargo test --workspace
-cargo test -p tonin-core
+cargo test -p tonin-sdk
 cargo test -p tonin codegen::
 cargo test -p tonin codegen::plan::tests::name_of_test -- --nocapture
 
@@ -29,7 +29,7 @@ cargo run -p tonin -- proto generate
 cargo run -p tonin -- k8s generate
 ```
 
-The CLI binary is named `tonin` and ships from the same `tonin` umbrella crate as the library re-exports (feature-gated under `cli`, default-on). The package at `crates/tonin` produces `target/debug/tonin`.
+The CLI binary is named `tonin` and ships from the `crates/tonin` package, which also re-exports `tonin-plugin` for the codegen layer. The package at `crates/tonin` produces `target/debug/tonin`.
 
 ## Architecture
 
@@ -37,12 +37,12 @@ The repo is one Cargo workspace split into three roles: **framework crates** (wh
 
 ### Framework crates (`crates/`)
 
-The workspace was restructured pre-0.1 from ~10 narrow crates to **Shape B: 5 library crates + 1 CLI binary** to reduce publish/version-bump overhead. What used to be `tonin-transport`, `tonin-discovery`, `tonin-mcp`, and `tonin-telemetry` are now modules inside `tonin-core`; `tonin-codegen` moved into the CLI as `crates/tonin/src/codegen/`. See [`docs/02-architecture.md`](docs/02-architecture.md) for the current shape.
+The workspace was restructured pre-0.1 from ~10 narrow crates to **Shape B: 6 library crates + 1 CLI binary** to reduce publish/version-bump overhead. What used to be `tonin-transport`, `tonin-discovery`, `tonin-mcp`, and `tonin-telemetry` are now modules inside `tonin-sdk`; `tonin-codegen` moved into the CLI as `crates/tonin/src/codegen/`. At 0.5 the `tonin-plugin` bridge crate was extracted from the CLI so plugin authors get a minimal `tonin.toml` API without pulling in the full CLI dep tree. See [`docs/02-architecture.md`](docs/02-architecture.md) for the current shape.
 
-Services consume the umbrella crate `tonin`, which re-exports `tonin-core`. The library crates are:
+Services depend on `tonin-sdk` directly. The library crates are:
 
-- `tonin` — umbrella re-export crate. What most services depend on. Thin: re-exports `tonin-core` (and selected helpers) so downstream `Cargo.toml` stays a one-liner.
-- `tonin-core` — the framework. `Service`, `Config`, `Context`, `Error`, plus the `transport` (tonic/gRPC wiring; **mTLS delegated to the service mesh**), `discovery` (resolves `<service>.<ns>.svc.cluster.local` via k8s DNS; cross-cluster routing is the mesh's job), `mcp` (MCP sidecar runtime forwarding MCP tool calls to a co-located gRPC service), `telemetry` (zero-config OTLP, opentelemetry 0.27 stack), and `auth` modules. **Capability traits (e.g. `Cache`, `EventBus`) live here.** Implementations will live in their own crates (0.2+) and are selected by `tonin.toml` (`engine = "..."`). See [`docs/01-principles.md`](docs/01-principles.md) "Interface-first capabilities" — this is the load-bearing convention. Don't put a concrete backend in `tonin-core`.
+- `tonin-sdk` — the runtime framework (renamed from `tonin-core` at 0.5). `Service`, `Config`, `Context`, `Error`, plus the `transport` (tonic/gRPC wiring; **mTLS delegated to the service mesh**), `discovery` (resolves `<service>.<ns>.svc.cluster.local` via k8s DNS; cross-cluster routing is the mesh's job), `mcp` (MCP sidecar runtime forwarding MCP tool calls to a co-located gRPC service), `telemetry` (zero-config OTLP, opentelemetry 0.27 stack), and `auth` modules. **Capability traits (e.g. `Cache`, `EventBus`) live here.** Implementations live in their own crates (0.2+) and are selected by `tonin.toml` (`engine = "..."`). See [`docs/01-principles.md`](docs/01-principles.md) "Interface-first capabilities" — this is the load-bearing convention. Don't put a concrete backend in `tonin-sdk`.
+- `tonin-plugin` — minimal Plan API for plugin authors (~4 deps: serde, toml, thiserror, walkdir). Exposes `Plan::load_with_env()`, `select_env()`, all resolved types, and `RECOMMENDED_CLI_MIN`. No clap/tera/include_dir. What `tonin-helm` and other CLI plugins depend on.
 - `tonin-client` — tiny peer-service client primitives, with no server-framework deps. Lets a service depend on another service's generated client without pulling in tokio/tonic-server.
 - `tonin-mcp-macros` — proc-macro crate exposing `#[mcp_expose]`, which auto-derives MCP tool definitions from a gRPC `impl` block.
 - `tonin-build` — `build.rs` helper wrapping `tonic-build` with tonin conventions; used by generated services.
@@ -55,7 +55,7 @@ Services consume the umbrella crate `tonin`, which re-exports `tonin-core`. The 
 - `proto` — codegen from `.proto` files (drives the in-tree `codegen` module)
 - `k8s` — render / validate / diff / apply manifests
 
-The codegen engine lives at `crates/tonin/src/codegen/` (templating via Tera + `include_dir`): `plan.rs` decides *what* to render from a parsed proto + `tonin.toml`; `render.rs` does the rendering; `stateful.rs` handles the `[database]` / `[cache]` capability blocks. It was folded into the CLI binary because nothing else needs to depend on it.
+The codegen engine lives at `crates/tonin/src/codegen/` (templating via Tera + `include_dir`): `plan.rs` and `stateful.rs` are thin `pub use tonin_plugin::...` re-exports — the actual Plan parsing logic lives in `tonin-plugin`. `render.rs` does the Tera rendering. The codegen lives in the CLI because nothing else needs tera/include_dir.
 
 Adding a new top-level command means a new module under `commands/` plus a variant in the `TopCmd` enum in `main.rs`.
 
@@ -79,7 +79,7 @@ Each example is a workspace member, not a standalone crate. `examples/greeter/` 
 - **`tonin.toml` is the single source of truth.** Service name, mesh choice, replicas, resources, MCP sidecar toggle, stateful deps — all here. The CLI re-renders k8s manifests from it; don't hand-edit generated YAML.
 - **`tonin.toml` is versioned (top-level `schema = "v1"`) and backward-compatible by default.** Files written by older CLIs keep parsing — a missing `schema` field is treated as `v1`. **Adding fields to v1 must be additive only** (new optional fields with defaults that match today's behavior). Renaming, removing, or retyping a field requires bumping `CURRENT_SCHEMA` in `crates/tonin/src/codegen/plan.rs` AND writing the migration in the same change. This section is the policy; `CURRENT_SCHEMA` in `plan.rs` is the enforcing source of truth.
 - **Capability sections in `tonin.toml` (`[cache]`, `[database]`, future `[eventbus]`) select an implementation via `engine = "..."`.** Swapping Redis → NATS for events should be a TOML change + a `Cargo.toml` dep flip, never a handler rewrite. Preserve that invariant when adding new capabilities.
-- **Mesh-delegated concerns** (mTLS, retries, circuit breaking, cross-cluster routing) are intentionally absent from the framework crates. See [`docs/13-service-mesh.md`](docs/13-service-mesh.md) and [`docs/01-principles.md`](docs/01-principles.md) (mesh-delegated network concerns) for the rationale. Don't reintroduce them in `tonin-core::transport` / `tonin-core::discovery` without a deliberate design pass.
+- **Mesh-delegated concerns** (mTLS, retries, circuit breaking, cross-cluster routing) are intentionally absent from the framework crates. See [`docs/13-service-mesh.md`](docs/13-service-mesh.md) and [`docs/01-principles.md`](docs/01-principles.md) (mesh-delegated network concerns) for the rationale. Don't reintroduce them in `tonin-sdk::transport` / `tonin-sdk::discovery` without a deliberate design pass.
 - **Codec today is prost** via `tonic-build` — every scaffolded service and every example compiles its `.proto` through prost. The `[service].codec` field in `tonin.toml` and the `TONIN_CODEC` env var reserve the surface for a future `protoc-gen-micro` (buffa-based) plugin; setting `codec = "buffa"` is a no-op today and falls back to prost with a stderr notice.
 
 ## How to add a feature
@@ -88,7 +88,7 @@ tonin is opinionated. A new feature should fit the four principles or name the d
 explicitly. Reason in this order:
 
 1. **Does it fit the four principles?** (full text in [`docs/01-principles.md`](docs/01-principles.md))
-   - **Interface-first** — capabilities are traits in `tonin-core`; concrete backends live in
+   - **Interface-first** — capabilities are traits in `tonin-sdk`; concrete backends live in
      their own crates, selected by `engine = "..."`. Define the trait before any backend.
    - **Mesh-delegated** — mTLS, retries, circuit breaking, cross-cluster routing belong to the
      mesh, not the framework. Don't build them in.
@@ -96,8 +96,8 @@ explicitly. Reason in this order:
      property intact.
    - **`tonin.toml` is the single source of truth** — new config is a `tonin.toml` field, and the
      CLI renders from it. No second source, no hand-edited generated output.
-2. **Which layer owns it?** A new capability → a trait in `tonin-core` (+ a separate impl crate),
-   never a concrete backend inside `tonin-core`. A new build/deploy action → a command under
+2. **Which layer owns it?** A new capability → a trait in `tonin-sdk` (+ a separate impl crate),
+   never a concrete backend inside `tonin-sdk`. A new build/deploy action → a command under
    `crates/tonin/src/commands/` + a `TopCmd` variant. New generated output → a Tera template + a
    `plan.rs` decision + a test.
 3. **Is it additive to the schema?** New `tonin.toml` fields must be optional with defaults that
@@ -115,7 +115,7 @@ an allocation.
 - **Async-first.** The runtime is tokio. I/O-bearing capability methods are `async`. Never block the
   runtime — no blocking `std::fs`/`std::net` or CPU-heavy loops on async paths (use `tokio`
   equivalents or `spawn_blocking`), and don't hold a lock across `.await`.
-- **Errors, not panics.** Library crates (`tonin-core`, …) return typed errors (`thiserror`,
+- **Errors, not panics.** Library crates (`tonin-sdk`, `tonin-plugin`, …) return typed errors (`thiserror`,
   `tonin::Result`) — no `unwrap`/`expect`/`panic!` on a reachable path; a panic in a service kills
   the pod. The CLI uses `anyhow`/`bail!` with actionable messages. Propagate with `?` and add
   context; don't swallow errors.
