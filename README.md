@@ -41,7 +41,10 @@ For those counting — the commands to get a running, instrumented, MCP-enabled 
 service are:
 
 ```bash
-cargo install tonin        # 1. install the CLI
+# 1. install the CLI (install script — fastest, no compile)
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
+# or: cargo install tonin
+
 tonin service new greeter  # 2. scaffold
 cd greeter && cargo run    # 3. run
 ```
@@ -129,8 +132,11 @@ curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.s
 # Update tonin + tonin-helm together
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --with-tonin-helm
 
-# Update to a specific version
+# Update to a specific tonin version
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --version v0.5.4
+
+# Update to specific versions of both
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash -s -- --with-tonin-helm --version v0.5.4 --helm-version v0.1.1
 
 # Via cargo-binstall
 cargo binstall tonin

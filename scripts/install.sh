@@ -15,7 +15,7 @@
 #   curl -sSfL ... | bash -s -- --with-tonin-helm
 #
 # Or run locally:
-#   ./scripts/install.sh [--version v0.5.4] [--dir ~/.local/bin] [--with-tonin-helm]
+#   ./scripts/install.sh [--version v0.5.4] [--helm-version v0.1.1] [--dir ~/.local/bin] [--with-tonin-helm]
 
 set -euo pipefail
 
@@ -23,6 +23,7 @@ set -euo pipefail
 # Defaults
 # ---------------------------------------------------------------------------
 TONIN_VERSION=""          # empty = fetch latest from GitHub
+HELM_VERSION=""           # empty = fetch latest from GitHub
 INSTALL_DIR=""            # empty = auto-detect
 WITH_HELM=0
 REPO_TONIN="Rushit/tonin"
@@ -37,6 +38,10 @@ while [[ $# -gt 0 ]]; do
             TONIN_VERSION="$2"; shift 2 ;;
         --version=*)
             TONIN_VERSION="${1#--version=}"; shift ;;
+        --helm-version)
+            HELM_VERSION="$2"; shift 2 ;;
+        --helm-version=*)
+            HELM_VERSION="${1#--helm-version=}"; shift ;;
         --dir)
             INSTALL_DIR="$2"; shift 2 ;;
         --dir=*)
@@ -225,8 +230,11 @@ install_binary "$REPO_TONIN" "tonin" "$TONIN_VERSION" "$TARGET" "$DEST"
 # ---------------------------------------------------------------------------
 if [[ "$WITH_HELM" -eq 1 ]]; then
     echo
-    HELM_VERSION="$(latest_tag "$REPO_HELM")"
-    [[ -n "$HELM_VERSION" ]] || err "Could not determine latest tonin-helm version."
+    if [[ -z "$HELM_VERSION" ]]; then
+        say "Fetching latest tonin-helm version..."
+        HELM_VERSION="$(latest_tag "$REPO_HELM")"
+        [[ -n "$HELM_VERSION" ]] || err "Could not determine latest tonin-helm version. Pass --helm-version vX.Y.Z explicitly."
+    fi
     install_binary "$REPO_HELM" "tonin-helm" "$HELM_VERSION" "$TARGET" "$DEST"
 fi
 
