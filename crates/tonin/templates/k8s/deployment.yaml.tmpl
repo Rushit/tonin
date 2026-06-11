@@ -68,16 +68,18 @@ spec:
               value: "service.namespace={{ namespace }},service.version={{ version }}"
             - name: RUST_LOG
               value: "info"
-{%- for kv in stateful_env_literals %}
-            - name: {{ kv.0 }}
-              value: "{{ kv.1 }}"
-{%- endfor %}
+{#- Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD) inside the
+    DATABASE_URL literal that follows. #}
 {%- for key in stateful_env_from_secret %}
             - name: {{ key }}
               valueFrom:
                 secretKeyRef:
                   name: {{ name }}-secrets
                   key: {{ key }}
+{%- endfor %}
+{%- for kv in stateful_env_literals %}
+            - name: {{ kv.0 }}
+              value: "{{ kv.1 }}"
 {%- endfor %}
           ports:
             - containerPort: {{ port }}

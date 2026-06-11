@@ -245,8 +245,12 @@ impl DatabaseSpec {
         if let Some(ref url) = self.url_override {
             return url.clone();
         }
+        // `$(DATABASE_PASSWORD)` is the Kubernetes dependent-env syntax: the
+        // kubelet expands it from the DATABASE_PASSWORD env var (sourced from the
+        // Secret) provided that var is declared earlier in the container's env
+        // list. Bare `$VAR` is NOT expanded by Kubernetes.
         format!(
-            "{}://{svc}:$DATABASE_PASSWORD@{host}:{port}/{svc}",
+            "{}://{svc}:$(DATABASE_PASSWORD)@{host}:{port}/{svc}",
             self.engine.as_str(),
             svc = service_name,
             host = self.host(),
@@ -701,7 +705,7 @@ mod tests {
         assert_eq!(env.literals.len(), 1);
         assert_eq!(env.literals[0].0, "DATABASE_URL");
         assert!(env.literals[0].1.starts_with(
-            "postgres://billing:$DATABASE_PASSWORD@billing-db.shop.svc.cluster.local:5432/billing"
+            "postgres://billing:$(DATABASE_PASSWORD)@billing-db.shop.svc.cluster.local:5432/billing"
         ));
         assert_eq!(env.from_secret, vec!["DATABASE_PASSWORD".to_string()]);
     }
@@ -876,8 +880,9 @@ mod tests {
         let spec = resolve_database(&raw, "prod", "identity", "agnitiv");
         assert!(spec.url_override.is_none());
         assert!(
-            spec.url_template("identity").contains("$DATABASE_PASSWORD"),
-            "prod uses password-template URL"
+            spec.url_template("identity")
+                .contains("$(DATABASE_PASSWORD)"),
+            "prod uses password-template URL with k8s $(VAR) expansion syntax"
         );
     }
 
