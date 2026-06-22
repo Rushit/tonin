@@ -62,6 +62,44 @@ The renderer (`crates/tonin/src/codegen/render.rs`) maps `tonin.toml` fields to 
 
 `shared = true` on `[database]` or `[cache]` means a backing store already exists in the cluster — the framework wires the env vars (`DATABASE_URL`, `REDIS_URL`) but skips the StatefulSet.
 
+## Service protocol: gRPC, HTTP, or both
+
+`[service].type` selects the primary protocol. It defaults to `backend` (gRPC), so existing services are unaffected.
+
+| `type` | Port | Probe | Notes |
+|---|---|---|---|
+| `backend` (default) | gRPC `50051` | none | unchanged; MCP sidecar per `[deploy].mcp_sidecar` |
+| `http` | `8080` (or `[service].port`) | `httpGet /health` | plain HTTP/REST service (e.g. axum); MCP sidecar forced off |
+| `web` | `8080`/`3000` by `web_mode` | none | TypeScript SPA/BFF frontend |
+
+`[service].port` overrides the listen port for any type. An `http` service gets a default `GET /health` liveness/readiness probe; customize it with `[service.health]`:
+
+```toml
+[service]
+name = "web-api"
+version = "0.1.0"
+type = "http"
+port = 7001
+
+[service.health]
+path = "/healthz"   # default: /health
+# port = 7001       # default: the service's listen port
+```
+
+**Both gRPC and HTTP.** A gRPC `backend` can *also* expose an HTTP port (health, metrics, admin) — the two are not exclusive. Add `[service.http]`:
+
+```toml
+[service]
+name = "collector"
+version = "0.1.0"        # type defaults to backend (gRPC on 50051)
+
+[service.http]
+port = 8081              # extra HTTP port, rendered alongside grpc
+health_path = "/health" # optional httpGet probe on :8081
+```
+
+This renders a Service with both `grpc` and `http` ports, a Deployment with both container ports plus the HTTP probe, and (under Cilium) caller ingress rules for both.
+
 ## Local cluster setup
 
 `tonin k8s generate` is offline — it only writes YAML. Anything that talks

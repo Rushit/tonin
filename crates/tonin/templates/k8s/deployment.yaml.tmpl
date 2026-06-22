@@ -83,7 +83,25 @@ spec:
 {%- endfor %}
           ports:
             - containerPort: {{ port }}
-              name: grpc
+              name: {% if is_http %}http{% else %}grpc{% endif %}
+{%- if has_http_port %}
+            - containerPort: {{ http_port }}
+              name: http
+{%- endif %}
+{%- if has_health %}
+          livenessProbe:
+            httpGet:
+              path: {{ health_path }}
+              port: {{ health_port }}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: {{ health_path }}
+              port: {{ health_port }}
+            periodSeconds: 5
+            failureThreshold: 3
+{%- endif %}
 {%- endif %}
 {%- if has_db_secret %}
           envFrom:

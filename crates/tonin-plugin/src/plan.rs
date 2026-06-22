@@ -77,7 +77,7 @@ pub const SUPPORTED_SCHEMAS: &[&str] = &["v1"];
 ///
 /// Bump this constant (in the same commit) whenever a new `tonin.toml`
 /// section or field is added that older CLI versions would silently ignore.
-pub const RECOMMENDED_CLI_MIN: &str = "0.5.0";
+pub const RECOMMENDED_CLI_MIN: &str = "0.5.6";
 
 #[derive(Debug, Deserialize)]
 struct RawConfig {
@@ -123,6 +123,32 @@ struct RawService {
     #[serde(default)]
     #[allow(dead_code)]
     codec: Option<String>,
+    /// Explicit listen port. Optional — defaults per kind when unset
+    /// (web: 8080/3000 by mode, http: 8080, gRPC backend: 50051).
+    #[serde(default)]
+    port: Option<u32>,
+    /// HTTP health-probe config (`[service.health]`).
+    #[serde(default)]
+    health: Option<RawHealth>,
+    /// Additional HTTP endpoint (`[service.http]`). Lets a gRPC `backend` ALSO
+    /// serve HTTP (health/metrics/admin) — the two are not mutually exclusive.
+    #[serde(default)]
+    http: Option<RawHttpEndpoint>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHealth {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    port: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHttpEndpoint {
+    port: u32,
+    #[serde(default)]
+    health_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,6 +241,7 @@ impl Default for ClientSpec {
 pub enum ServiceKind {
     Backend,
     Web,
+    Http,
 }
 
 impl ServiceKind {
@@ -222,11 +249,22 @@ impl ServiceKind {
         match self {
             ServiceKind::Backend => "backend",
             ServiceKind::Web => "web",
+            ServiceKind::Http => "http",
         }
     }
     pub fn is_web(&self) -> bool {
         matches!(self, ServiceKind::Web)
     }
+    pub fn is_http(&self) -> bool {
+        matches!(self, ServiceKind::Http)
+    }
+}
+
+/// Resolved HTTP health-probe configuration (`[service.health]`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct HealthSpec {
+    pub path: String,
+    pub port: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -258,6 +296,12 @@ pub struct Plan {
     pub language: String,
     pub kind: ServiceKind,
     pub web_mode: Option<WebMode>,
+    /// Effective primary container/listen port (`[service].port` or per-kind default).
+    pub port: u32,
+    /// Additional HTTP port, when a gRPC backend also serves HTTP (`[service.http]`).
+    pub http_port: Option<u32>,
+    /// HTTP health probe, when an HTTP surface exists (always for http; opt-in otherwise).
+    pub health: Option<HealthSpec>,
     pub namespace: String,
     pub mesh: Mesh,
     pub replicas: u32,
@@ -347,6 +391,7 @@ impl Plan {
 
         let kind = match raw.service.kind.as_deref() {
             Some("web") => ServiceKind::Web,
+            Some("http") => ServiceKind::Http,
             _ => ServiceKind::Backend,
         };
         let web_mode = match (kind, raw.service.web_mode.as_deref()) {
@@ -354,6 +399,55 @@ impl Plan {
             (ServiceKind::Web, _) => Some(WebMode::Spa),
             _ => None,
         };
+
+        // Effective listen port. Explicit `[service].port` wins; otherwise the
+        // per-kind default — preserving pre-port-field output for web/backend.
+        let port = raw.service.port.unwrap_or_else(|| match kind {
+            ServiceKind::Web => web_mode.map(|m| m.container_port()).unwrap_or(8080),
+            ServiceKind::Http => 8080,
+            ServiceKind::Backend => 50051,
+        });
+
+        // Additional HTTP port for a gRPC backend that also serves HTTP
+        // (`[service.http]`). None for http-primary (its primary port is already
+        // HTTP) and for services with no secondary endpoint.
+        let http_port = match kind {
+            ServiceKind::Http => None,
+            _ => raw.service.http.as_ref().map(|h| h.port),
+        };
+
+        // Port an HTTP health probe targets: the http-primary port, else the
+        // secondary HTTP port. None ⇒ no HTTP surface ⇒ no httpGet probe.
+        let http_probe_port = match kind {
+            ServiceKind::Http => Some(port),
+            _ => http_port,
+        };
+
+        // HTTP health probe. Present when there is an HTTP surface (http kind or
+        // a `[service.http]` endpoint) or when `[service.health]` is declared.
+        // Path: `[service.health].path`, else `[service.http].health_path`, else
+        // `/health`. Backend/web without any of these get no probe, so existing
+        // manifests stay byte-identical.
+        let health = if raw.service.health.is_some() || http_probe_port.is_some() {
+            let declared = raw.service.health.as_ref();
+            let secondary = raw.service.http.as_ref();
+            Some(HealthSpec {
+                path: declared
+                    .and_then(|h| h.path.clone())
+                    .or_else(|| secondary.and_then(|h| h.health_path.clone()))
+                    .unwrap_or_else(|| "/health".into()),
+                port: declared
+                    .and_then(|h| h.port)
+                    .or(http_probe_port)
+                    .unwrap_or(port),
+            })
+        } else {
+            None
+        };
+
+        // MCP sidecar proxies to a gRPC server on :50051, so it cannot front an
+        // HTTP-primary service — force it off for kind = http.
+        let mcp_sidecar = deploy_mcp_sidecar && !matches!(kind, ServiceKind::Http);
 
         let svc_name = raw.service.name.clone();
         let svc_ns = deploy_namespace.clone();
@@ -438,11 +532,14 @@ impl Plan {
             language: raw.service.language.unwrap_or_else(|| "rust".into()),
             kind,
             web_mode,
+            port,
+            http_port,
+            health,
             namespace: deploy_namespace,
             mesh: deploy_mesh,
             replicas: deploy_replicas,
             max_replicas,
-            mcp_sidecar: deploy_mcp_sidecar,
+            mcp_sidecar,
             expose: deploy_expose,
             cpu: raw.resources.cpu,
             memory: raw.resources.memory,
@@ -497,5 +594,79 @@ impl Plan {
 
         plans.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(plans)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    const BASE: &str = "\n[deploy]\nreplicas = 1\nnamespace = \"demo\"\n\n[resources]\ncpu = \"100m\"\nmemory = \"128Mi\"\n";
+
+    /// Write `<service block> + BASE` to a temp tonin.toml and load it.
+    fn load(service: &str) -> Plan {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("tonin-plan-test-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tonin.toml");
+        std::fs::write(&path, format!("{service}{BASE}")).unwrap();
+        let plan = Plan::load_with_env(&path, "prod").unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        plan
+    }
+
+    #[test]
+    fn backend_defaults_unchanged() {
+        let p = load("[service]\nname = \"svc\"\nversion = \"0.1.0\"");
+        assert_eq!(p.kind, ServiceKind::Backend);
+        assert_eq!(p.port, 50051);
+        assert_eq!(p.http_port, None);
+        assert!(p.health.is_none());
+        assert!(p.mcp_sidecar, "backend keeps the default mcp sidecar");
+    }
+
+    #[test]
+    fn backend_port_override() {
+        let p = load("[service]\nname = \"svc\"\nversion = \"0.1.0\"\nport = 9090");
+        assert_eq!(p.port, 9090);
+    }
+
+    #[test]
+    fn http_kind_defaults_to_8080_with_default_probe_and_no_mcp() {
+        let p = load("[service]\nname = \"svc\"\nversion = \"0.1.0\"\ntype = \"http\"");
+        assert_eq!(p.kind, ServiceKind::Http);
+        assert_eq!(p.port, 8080);
+        let h = p.health.expect("http services get a default probe");
+        assert_eq!(h.path, "/health");
+        assert_eq!(h.port, 8080);
+        assert!(!p.mcp_sidecar, "http forces the mcp sidecar off");
+    }
+
+    #[test]
+    fn http_explicit_port_and_health_path() {
+        let p = load(
+            "[service]\nname = \"svc\"\nversion = \"0.1.0\"\ntype = \"http\"\nport = 7001\n[service.health]\npath = \"/healthz\"",
+        );
+        assert_eq!(p.port, 7001);
+        let h = p.health.unwrap();
+        assert_eq!(h.path, "/healthz");
+        assert_eq!(h.port, 7001);
+    }
+
+    #[test]
+    fn backend_with_http_exposes_both() {
+        let p = load(
+            "[service]\nname = \"svc\"\nversion = \"0.1.0\"\n[service.http]\nport = 8081\nhealth_path = \"/healthz\"",
+        );
+        assert_eq!(p.kind, ServiceKind::Backend);
+        assert_eq!(p.port, 50051, "gRPC primary port preserved");
+        assert_eq!(p.http_port, Some(8081));
+        let h = p.health.unwrap();
+        assert_eq!(h.path, "/healthz");
+        assert_eq!(h.port, 8081, "probe targets the http port, not gRPC");
+        assert!(p.mcp_sidecar, "a gRPC backend still gets its mcp sidecar");
     }
 }
