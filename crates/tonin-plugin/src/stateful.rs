@@ -418,10 +418,15 @@ pub(crate) fn resolve_callers(raw: &RawCallers, env: &str) -> Vec<crate::plan::S
     for (key, entry) in &raw.0 {
         match entry {
             RawCallerEntry::Namespace(ns) => {
-                base.insert(key.clone(), ns.clone());
+                // {env} is substituted so `gateway = "agnitiv-{env}"` resolves
+                // to "agnitiv-dev", "agnitiv-prod", etc. per environment.
+                base.insert(key.clone(), crate::plan::apply_env(ns, env));
             }
             RawCallerEntry::Env(map) if key == env => {
-                overlay = map.clone();
+                overlay = map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), crate::plan::apply_env(v, env)))
+                    .collect();
             }
             RawCallerEntry::Env(_) => {}
         }
@@ -845,6 +850,57 @@ mod tests {
         assert_eq!(dev.len(), 2, "overlay adds debug-tool");
         let prod = resolve_callers(&raw, "prod");
         assert_eq!(prod.len(), 1, "prod sees base only");
+    }
+
+    #[test]
+    fn callers_env_placeholder_resolves_per_env() {
+        let raw = parse_callers(
+            r#"
+            [callers]
+            gateway         = "agnitiv-{env}"
+            zradar-platform = "agnitiv-{env}"
+        "#,
+        );
+        let dev = resolve_callers(&raw, "dev");
+        assert!(
+            dev.iter().all(|c| c.namespace == "agnitiv-dev"),
+            "dev: {{env}} -> -dev"
+        );
+        let staging = resolve_callers(&raw, "staging");
+        assert!(
+            staging.iter().all(|c| c.namespace == "agnitiv-staging"),
+            "staging: {{env}} -> -staging"
+        );
+        let prod = resolve_callers(&raw, "prod");
+        assert!(
+            prod.iter().all(|c| c.namespace == "agnitiv-prod"),
+            "prod: {{env}} -> -prod"
+        );
+    }
+
+    #[test]
+    fn callers_env_placeholder_with_prod_override() {
+        // {env} in base; explicit [callers.prod] overrides just prod.
+        let raw = parse_callers(
+            r#"
+            [callers]
+            gateway         = "agnitiv-{env}"
+            zradar-platform = "agnitiv-{env}"
+
+            [callers.prod]
+            gateway         = "agnitiv"
+            zradar-platform = "agnitiv"
+        "#,
+        );
+        let dev = resolve_callers(&raw, "dev");
+        assert!(dev.iter().all(|c| c.namespace == "agnitiv-dev"));
+        let staging = resolve_callers(&raw, "staging");
+        assert!(staging.iter().all(|c| c.namespace == "agnitiv-staging"));
+        let prod = resolve_callers(&raw, "prod");
+        assert!(
+            prod.iter().all(|c| c.namespace == "agnitiv"),
+            "prod override wins over {{env}}"
+        );
     }
 
     #[test]

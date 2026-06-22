@@ -83,7 +83,7 @@ struct DepSpec {
 }
 
 /// Substitute the `{env}` placeholder in a namespace pattern.
-fn apply_env(pattern: &str, env: &str) -> String {
+pub(crate) fn apply_env(pattern: &str, env: &str) -> String {
     pattern.replace("{env}", env)
 }
 
