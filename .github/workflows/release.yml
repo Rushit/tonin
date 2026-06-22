@@ -285,3 +285,38 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
+
+  # ----------------------------------------------------------------------
+  # Smoke-test the installer end to end. install.sh stores no version — it
+  # resolves `releases/latest` at runtime — so the guarantee we need is
+  # "the published installer actually fetches the version we just tagged."
+  # This runs the real script and asserts the installed version matches the
+  # tag, failing the run if install.sh ever fetches the wrong version or
+  # breaks. Depends on finalize-release because `releases/latest` ignores
+  # draft releases, so it only resolves to this tag once it's published.
+  # ----------------------------------------------------------------------
+  verify-install:
+    name: Smoke-test install.sh
+    needs: finalize-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install via install.sh and assert version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF="${{ github.event.inputs.version }}"
+          else
+            REF="${{ github.ref_name }}"
+          fi
+          WANT="${REF#v}"
+          DEST="$(mktemp -d)"
+          bash scripts/install.sh --dir "$DEST"
+          GOT="$("$DEST/tonin" --version | awk '{print $NF}')"
+          echo "install.sh installed tonin ${GOT} (expected ${WANT})"
+          if [ "${GOT}" != "${WANT}" ]; then
+            echo "::error::install.sh installed ${GOT} but the released tag is ${WANT}" >&2
+            exit 1
+          fi
