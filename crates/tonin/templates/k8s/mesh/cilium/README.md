@@ -22,5 +22,5 @@ rather than `app`, so policies survive Deployment renames and naming collisions 
 
 ## Switching away
 
-Set `mesh = "istio"` (or `linkerd` / `none`) in `tonin.toml` and re-run `tonin generate`.
+Set `mesh = "istio"` (or `linkerd` / `none`) in `tonin.toml` and re-run `tonin k8s generate`.
 Only the contents of `k8s/mesh/` change — the Deployment, Service, and HPA stay identical.

@@ -75,6 +75,10 @@ This produces a `CiliumNetworkPolicy` (or Istio `AuthorizationPolicy`) on
 `inventory` and `notifier` that allows ingress from `orders` and nobody else
 (plus the OTel collector, which is always allowed for tracing).
 
+When a dependency's namespace differs per environment, use the `{env}`
+placeholder or the table form (`inventory = { namespace = "shop-{env}", prod = "shop" }`) —
+see [per-environment namespaces and dependencies](../docs/12-kubernetes-deploy.md#per-environment-namespaces-and-dependencies).
+
 ## Cross-language story
 
 Every service is a `.proto` file. The codegen path that runs today is
