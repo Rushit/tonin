@@ -4,6 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The reader-facing documentation lives at [`docs/00-overview.md`](docs/00-overview.md) and the capability docs alongside it (`docs/01-principles.md` through `docs/16-config.md`). That tree is the authoritative source for "what tonin does and why" — start there before redesigning a capability or `tonin.toml` section.
 
+## Agent workflow (branches, commits, PRs)
+
+When making changes in this repo, always work on a branch and open a PR — never
+commit to `main` directly.
+
+- **One branch per work item.** Branch off the latest `origin/main`
+  (`git fetch origin main && git switch -c <type>/<short-name> origin/main`).
+  Keep unrelated changes on separate branches/PRs; don't stack them.
+- **Open a PR for review, don't self-merge.** `gh pr create --base main`, then
+  leave it for the maintainer to approve and merge.
+- **Concise commit messages.** Conventional Commits (`feat:`, `fix:`, `ci:`,
+  `test:`, `docs:`, `chore:`) with a one-line subject; add a body only when it
+  explains *why*. Do **not** add a `Co-authored-by` trailer.
+- **Green before pushing.** Run `make ci` (the pre-commit hook also runs it).
+
 ## Common commands
 
 Pinned toolchain: Rust `1.90` with `rustfmt` + `clippy` (`rust-toolchain.toml`).
