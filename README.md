@@ -351,10 +351,14 @@ independently:
 | tonin CLI / tonin-plugin | tonin-helm |
 | ------------------------ | ---------- |
 | 0.5.3 – 0.5.5            | 0.1.x      |
-| 0.5.6+                   | 0.2.x      |
+| 0.5.6 – 0.5.x            | 0.2.x      |
+| 0.6.0+                   | 0.3.x      |
 
 HTTP services (`type = "http"`, and `[service.http]` for gRPC services that also serve
 HTTP) require **0.5.6+** (and tonin-helm 0.2.x for chart generation).
+
+Per-environment namespaces and dependencies (`{env}` placeholders and the Cargo-style
+`[depends_on]` table form) require **0.6.0+** (and tonin-helm 0.3.x for chart generation).
 
 ## Contributing
 
