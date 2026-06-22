@@ -27,6 +27,13 @@ pub enum Error {
         supported: Vec<String>,
         current: String,
     },
+    #[error("depends_on.{name}: {reason}")]
+    InvalidDependency { name: String, reason: String },
+    #[error(
+        "{context}: namespace {value:?} has an unresolved placeholder \
+         (only `{{env}}` is supported)"
+    )]
+    UnresolvedNamespace { context: String, value: String },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +69,149 @@ impl ServiceRef {
     }
 }
 
+/// One `[depends_on]` entry parsed from TOML, before environment resolution.
+///
+/// Both the shorthand (`name = "<ns>"`) and the table form
+/// (`name = { namespace = "<ns>", <env> = "<ns>", envs = [..] }`) land here.
+struct DepSpec {
+    /// Default namespace pattern (may contain `{env}`), if declared.
+    namespace: Option<String>,
+    /// Per-env namespace overrides (env name → pattern).
+    env_overrides: BTreeMap<String, String>,
+    /// Restrict the dependency to these envs; `None` ⇒ every env.
+    envs: Option<Vec<String>>,
+}
+
+/// Substitute the `{env}` placeholder in a namespace pattern.
+fn apply_env(pattern: &str, env: &str) -> String {
+    pattern.replace("{env}", env)
+}
+
+/// Reject a namespace that still carries an unresolved `{...}` placeholder.
+/// `{env}` is the only supported token, so anything left over is a typo.
+fn ensure_resolved(context: &str, value: &str) -> Result<(), Error> {
+    if value.contains('{') || value.contains('}') {
+        return Err(Error::UnresolvedNamespace {
+            context: context.to_string(),
+            value: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Parse a single `[depends_on]` entry (string shorthand or table form).
+fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
+    let invalid = |reason: String| Error::InvalidDependency {
+        name: name.to_string(),
+        reason,
+    };
+    match value {
+        toml::Value::String(s) => Ok(DepSpec {
+            namespace: Some(s),
+            env_overrides: BTreeMap::new(),
+            envs: None,
+        }),
+        toml::Value::Table(table) => {
+            let mut namespace = None;
+            let mut envs = None;
+            let mut env_overrides = BTreeMap::new();
+            for (key, val) in table {
+                match key.as_str() {
+                    "namespace" => {
+                        namespace = Some(
+                            val.as_str()
+                                .ok_or_else(|| invalid("`namespace` must be a string".into()))?
+                                .to_string(),
+                        );
+                    }
+                    "envs" => {
+                        let arr = val
+                            .as_array()
+                            .ok_or_else(|| invalid("`envs` must be an array of strings".into()))?;
+                        let mut list = Vec::with_capacity(arr.len());
+                        for item in arr {
+                            list.push(
+                                item.as_str()
+                                    .ok_or_else(|| {
+                                        invalid("`envs` must be an array of strings".into())
+                                    })?
+                                    .to_string(),
+                            );
+                        }
+                        envs = Some(list);
+                    }
+                    // Any other key is a per-env namespace override (`prod = "..."`).
+                    other => {
+                        let ns = val.as_str().ok_or_else(|| {
+                            invalid(format!("override `{other}` must be a namespace string"))
+                        })?;
+                        env_overrides.insert(other.to_string(), ns.to_string());
+                    }
+                }
+            }
+            Ok(DepSpec {
+                namespace,
+                env_overrides,
+                envs,
+            })
+        }
+        other => Err(invalid(format!(
+            "expected a namespace string or a table, got {}",
+            other.type_str()
+        ))),
+    }
+}
+
+/// Resolve `[depends_on]` for one environment into concrete egress targets.
+///
+/// - A dependency whose `envs` whitelist excludes `env` is dropped.
+/// - The namespace is the per-env override if present, else the default,
+///   with `{env}` substituted.
+/// - `@inherit` drops the entry from rendered output (the namespace is
+///   supplied at deploy time / by GitOps).
+/// - An active dependency with no resolvable namespace — or one left with an
+///   unresolved placeholder — is a hard error. There is no silent fallback to
+///   a base value, which is what let a dev namespace leak into prod before.
+fn resolve_depends_on(
+    raw: BTreeMap<String, toml::Value>,
+    env: &str,
+) -> Result<Vec<ServiceRef>, Error> {
+    let mut out = Vec::new();
+    for (name, value) in raw {
+        let spec = parse_dependency(&name, value)?;
+        if let Some(envs) = &spec.envs
+            && !envs.iter().any(|e| e == env)
+        {
+            continue; // not active in this environment
+        }
+        let Some(pattern) = spec.env_overrides.get(env).or(spec.namespace.as_ref()) else {
+            return Err(Error::InvalidDependency {
+                name: name.clone(),
+                reason: format!(
+                    "has no namespace for env '{env}' \
+                     (set {name}.{env}, use \"{{env}}\", or mark \"@inherit\")"
+                ),
+            });
+        };
+        let resolved = apply_env(pattern, env);
+        if resolved == "@inherit" {
+            continue; // namespace owned by the deploy layer; omit egress entry
+        }
+        ensure_resolved(&format!("depends_on.{name}"), &resolved)?;
+        if resolved.is_empty() {
+            return Err(Error::InvalidDependency {
+                name: name.clone(),
+                reason: format!("namespace for env '{env}' is empty"),
+            });
+        }
+        out.push(ServiceRef {
+            name,
+            namespace: resolved,
+        });
+    }
+    Ok(out)
+}
+
 // ---------- on-disk TOML shape ----------
 
 /// The schema version this CLI knows how to read.
@@ -88,8 +238,11 @@ struct RawConfig {
     resources: RawResources,
     #[serde(default)]
     autoscale: Option<RawAutoscale>,
+    // String shorthand (`name = "<ns>"`) or table form
+    // (`name = { namespace = "<ns>", <env> = "<ns>", envs = [..] }`).
+    // Parsed as raw values and interpreted by `resolve_depends_on`.
     #[serde(default)]
-    depends_on: BTreeMap<String, String>,
+    depends_on: BTreeMap<String, toml::Value>,
     #[serde(default)]
     callers: RawCallers,
     #[serde(default)]
@@ -348,11 +501,7 @@ impl Plan {
             });
         }
 
-        let depends_on: Vec<ServiceRef> = raw
-            .depends_on
-            .into_iter()
-            .map(|(name, namespace)| ServiceRef { name, namespace })
-            .collect();
+        let depends_on = resolve_depends_on(raw.depends_on, env)?;
 
         let explicit_callers = stateful::resolve_callers(&raw.callers, env);
 
@@ -360,9 +509,14 @@ impl Plan {
         let deploy_replicas = deploy_overlay
             .and_then(|o| o.replicas)
             .unwrap_or(raw.deploy.replicas);
-        let deploy_namespace = deploy_overlay
-            .and_then(|o| o.namespace.clone())
-            .unwrap_or(raw.deploy.namespace);
+        let deploy_namespace = {
+            let raw_ns = deploy_overlay
+                .and_then(|o| o.namespace.clone())
+                .unwrap_or(raw.deploy.namespace);
+            let ns = apply_env(&raw_ns, env);
+            ensure_resolved("deploy.namespace", &ns)?;
+            ns
+        };
         let deploy_mesh = deploy_overlay
             .and_then(|o| o.mesh)
             .or(raw.deploy.mesh)
@@ -668,5 +822,143 @@ mod tests {
         assert_eq!(h.path, "/healthz");
         assert_eq!(h.port, 8081, "probe targets the http port, not gRPC");
         assert!(p.mcp_sidecar, "a gRPC backend still gets its mcp sidecar");
+    }
+
+    // ---- depends_on per-env resolution ------------------------------------
+
+    /// A complete tonin.toml with [service] + [resources]; tests append
+    /// [deploy] and [depends_on]. Bodies use literal `{env}` (no format!),
+    /// so they're concatenated rather than interpolated.
+    const SVC: &str = "[service]\nname = \"svc\"\nversion = \"0.1.0\"\n[resources]\ncpu = \"100m\"\nmemory = \"128Mi\"\n";
+
+    fn try_load_env(body: &str, env: &str) -> Result<Plan, Error> {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("tonin-plan-dep-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tonin.toml");
+        std::fs::write(&path, body).unwrap();
+        let plan = Plan::load_with_env(&path, env);
+        let _ = std::fs::remove_dir_all(&dir);
+        plan
+    }
+
+    fn dep(plan: &Plan, name: &str) -> Option<String> {
+        plan.depends_on
+            .iter()
+            .find(|d| d.name == name)
+            .map(|d| d.namespace.clone())
+    }
+
+    #[test]
+    fn depends_on_literal_is_backward_compatible() {
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = \"agnitiv-dev\"\n"].concat();
+        let p = try_load_env(&body, "prod").unwrap();
+        // No {env} → literal namespace, identical in every env (today's behaviour).
+        assert_eq!(dep(&p, "identity").as_deref(), Some("agnitiv-dev"));
+    }
+
+    #[test]
+    fn depends_on_env_placeholder_resolves_per_env() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"agnitiv-{env}\"\n[depends_on]\nidentity = \"agnitiv-{env}\"\n",
+        ]
+        .concat();
+        let dev = try_load_env(&body, "dev").unwrap();
+        assert_eq!(dev.namespace, "agnitiv-dev");
+        assert_eq!(dep(&dev, "identity").as_deref(), Some("agnitiv-dev"));
+        let prod = try_load_env(&body, "prod").unwrap();
+        assert_eq!(prod.namespace, "agnitiv-prod");
+        assert_eq!(dep(&prod, "identity").as_deref(), Some("agnitiv-prod"));
+    }
+
+    #[test]
+    fn depends_on_table_per_env_override_wins() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nzradar = { namespace = \"zradar-{env}\", prod = \"zradar-shared\" }\n",
+        ]
+        .concat();
+        assert_eq!(
+            dep(&try_load_env(&body, "dev").unwrap(), "zradar").as_deref(),
+            Some("zradar-dev")
+        );
+        assert_eq!(
+            dep(&try_load_env(&body, "prod").unwrap(), "zradar").as_deref(),
+            Some("zradar-shared")
+        );
+    }
+
+    #[test]
+    fn depends_on_envs_whitelist_scopes_dependency() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\naudit = { namespace = \"security-{env}\", envs = [\"prod\"] }\n",
+        ]
+        .concat();
+        assert!(
+            dep(&try_load_env(&body, "dev").unwrap(), "audit").is_none(),
+            "absent in dev"
+        );
+        assert_eq!(
+            dep(&try_load_env(&body, "prod").unwrap(), "audit").as_deref(),
+            Some("security-prod")
+        );
+    }
+
+    #[test]
+    fn depends_on_inherit_is_omitted_from_output() {
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nbilling = { namespace = \"@inherit\" }\n"].concat();
+        assert!(dep(&try_load_env(&body, "prod").unwrap(), "billing").is_none());
+    }
+
+    #[test]
+    fn depends_on_unresolved_placeholder_is_error() {
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = \"agnitiv-{environment}\"\n"].concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(
+            matches!(err, Error::UnresolvedNamespace { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn depends_on_missing_namespace_for_env_is_error() {
+        // Only a dev override; prod has nothing to resolve to → hard error,
+        // never a silent fallback.
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = { dev = \"agnitiv-dev\" }\n"].concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidDependency { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn depends_on_bad_type_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = 123\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidDependency { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn deploy_namespace_unresolved_placeholder_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"agnitiv-{cluster}\"\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(
+            matches!(err, Error::UnresolvedNamespace { .. }),
+            "got {err:?}"
+        );
     }
 }
