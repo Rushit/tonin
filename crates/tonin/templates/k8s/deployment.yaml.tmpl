@@ -90,15 +90,25 @@ spec:
 {%- endif %}
 {%- if has_health %}
           livenessProbe:
+{%- if health_grpc %}
+            grpc:
+              port: {{ health_port }}
+{%- else %}
             httpGet:
               path: {{ health_path }}
               port: {{ health_port }}
+{%- endif %}
             periodSeconds: 10
             failureThreshold: 3
           readinessProbe:
+{%- if health_grpc %}
+            grpc:
+              port: {{ health_port }}
+{%- else %}
             httpGet:
               path: {{ health_path }}
               port: {{ health_port }}
+{%- endif %}
             periodSeconds: 5
             failureThreshold: 3
 {%- endif %}
