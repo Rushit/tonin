@@ -227,7 +227,11 @@ pub const SUPPORTED_SCHEMAS: &[&str] = &["v1"];
 ///
 /// Bump this constant (in the same commit) whenever a new `tonin.toml`
 /// section or field is added that older CLI versions would silently ignore.
-pub const RECOMMENDED_CLI_MIN: &str = "0.5.6";
+///
+/// 0.6.0: per-environment namespaces and dependencies (`{env}` placeholders
+/// and the Cargo-style `[depends_on]` table form) — a CLI older than this
+/// can't render them.
+pub const RECOMMENDED_CLI_MIN: &str = "0.6.0";
 
 #[derive(Debug, Deserialize)]
 struct RawConfig {

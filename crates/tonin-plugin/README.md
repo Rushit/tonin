@@ -64,7 +64,7 @@ Rules:
 `tonin-plugin` exports a `RECOMMENDED_CLI_MIN` constant:
 
 ```rust
-pub const RECOMMENDED_CLI_MIN: &str = "0.4.2";
+pub const RECOMMENDED_CLI_MIN: &str = "0.6.0";
 ```
 
 The `tonin` CLI reads this at `tonin k8s generate` / `tonin helm generate`
