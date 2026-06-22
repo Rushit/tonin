@@ -127,6 +127,18 @@ enum TopCmd {
         #[command(subcommand)]
         cmd: commands::plugin::PluginCmd,
     },
+    /// Upgrade the tonin CLI and every installed plugin to the latest release.
+    ///
+    /// Downloads the canonical install script and runs it with one
+    /// `--plugin` flag per plugin discovered on `$PATH` (each plugin reports
+    /// its own repo via `--tonin-meta`). The full plan is shown and confirmed
+    /// before anything changes — `--yes` skips the prompt, `--check` previews.
+    Upgrade(commands::upgrade::UpgradeArgs),
+    /// Check installed plugins for version compatibility with this CLI.
+    ///
+    /// Reports any plugin that needs a newer `tonin` and offers to run
+    /// `tonin upgrade`. Local only — no network access.
+    Doctor(commands::doctor::DoctorArgs),
 }
 
 fn main() -> Result<()> {
@@ -160,6 +172,8 @@ fn dispatch(cli: Cli) -> Result<()> {
         TopCmd::Service { cmd } => commands::service::run(cmd),
         TopCmd::Describe(args) => commands::describe::run(args, &Cli::command()),
         TopCmd::Plugin { cmd } => commands::plugin::run(cmd),
+        TopCmd::Upgrade(args) => commands::upgrade::run(args),
+        TopCmd::Doctor(args) => commands::doctor::run(args),
     }
 }
 

@@ -11,11 +11,16 @@
 #   # Install to a custom directory
 #   curl -sSfL ... | bash -s -- --dir /usr/local/bin
 #
-#   # Install both tonin and tonin-helm
+#   # Install tonin plus one or more plugins (repeatable, any tonin-* plugin)
+#   curl -sSfL ... | bash -s -- --plugin Rushit/tonin-helm
+#   curl -sSfL ... | bash -s -- --plugin Rushit/tonin-helm@v0.2.6
+#
+#   # Back-compat alias for --plugin Rushit/tonin-helm
 #   curl -sSfL ... | bash -s -- --with-tonin-helm
 #
 # Or run locally:
-#   ./scripts/install.sh [--version v0.5.4] [--helm-version v0.1.1] [--dir ~/.local/bin] [--with-tonin-helm]
+#   ./scripts/install.sh [--version v0.5.4] [--dir ~/.local/bin] \
+#       [--plugin <owner/repo>[@vX.Y.Z]]... [--with-tonin-helm [--helm-version v0.1.1]]
 
 set -euo pipefail
 
@@ -28,6 +33,7 @@ INSTALL_DIR=""            # empty = auto-detect
 WITH_HELM=0
 REPO_TONIN="Rushit/tonin"
 REPO_HELM="Rushit/tonin-helm"
+PLUGIN_SPECS=()           # repeatable --plugin <owner/repo>[@vX.Y.Z]
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -48,6 +54,10 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DIR="${1#--dir=}"; shift ;;
         --with-tonin-helm)
             WITH_HELM=1; shift ;;
+        --plugin)
+            PLUGIN_SPECS+=("$2"); shift 2 ;;
+        --plugin=*)
+            PLUGIN_SPECS+=("${1#--plugin=}"); shift ;;
         -h|--help)
             sed -n '/^# Usage:/,/^[^#]/p' "$0" | grep '^#' | sed 's/^# \{0,2\}//'
             exit 0 ;;
@@ -226,17 +236,36 @@ fi
 install_binary "$REPO_TONIN" "tonin" "$TONIN_VERSION" "$TARGET" "$DEST"
 
 # ---------------------------------------------------------------------------
-# Optional: tonin-helm
+# Plugins
 # ---------------------------------------------------------------------------
+# Back-compat: --with-tonin-helm [--helm-version vX] == --plugin <helm repo>[@vX].
 if [[ "$WITH_HELM" -eq 1 ]]; then
-    echo
-    if [[ -z "$HELM_VERSION" ]]; then
-        say "Fetching latest tonin-helm version..."
-        HELM_VERSION="$(latest_tag "$REPO_HELM")"
-        [[ -n "$HELM_VERSION" ]] || err "Could not determine latest tonin-helm version. Pass --helm-version vX.Y.Z explicitly."
+    if [[ -n "$HELM_VERSION" ]]; then
+        PLUGIN_SPECS+=("${REPO_HELM}@${HELM_VERSION}")
+    else
+        PLUGIN_SPECS+=("$REPO_HELM")
     fi
-    install_binary "$REPO_HELM" "tonin-helm" "$HELM_VERSION" "$TARGET" "$DEST"
 fi
+
+# Each spec is `owner/repo` or `owner/repo@vX.Y.Z`. The binary name is the
+# repo's last path segment (e.g. Rushit/tonin-helm -> tonin-helm), which is
+# exactly the `tonin-<name>` plugin convention.
+INSTALLED_PLUGINS=()
+for spec in ${PLUGIN_SPECS+"${PLUGIN_SPECS[@]}"}; do
+    repo="${spec%@*}"
+    version=""
+    [[ "$spec" == *@* ]] && version="${spec#*@}"
+    bin="${repo##*/}"
+
+    echo
+    if [[ -z "$version" ]]; then
+        say "Fetching latest ${bin} version..."
+        version="$(latest_tag "$repo")"
+        [[ -n "$version" ]] || err "Could not determine latest ${bin} version. Pass ${repo}@vX.Y.Z explicitly."
+    fi
+    install_binary "$repo" "$bin" "$version" "$TARGET" "$DEST"
+    INSTALLED_PLUGINS+=("$bin")
+done
 
 # ---------------------------------------------------------------------------
 # PATH reminder
@@ -251,4 +280,7 @@ if ! echo ":$PATH:" | grep -q ":${DEST}:"; then
 fi
 
 ok "Done! Run 'tonin --version' to verify."
-[[ "$WITH_HELM" -eq 1 ]] && ok "Run 'tonin helm --tonin-describe' to verify tonin-helm."
+for bin in ${INSTALLED_PLUGINS+"${INSTALLED_PLUGINS[@]}"}; do
+    name="${bin#tonin-}"
+    ok "Run 'tonin ${name} --tonin-describe' to verify ${bin}."
+done
