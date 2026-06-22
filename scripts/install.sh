@@ -198,12 +198,23 @@ install_binary() {
     [[ -n "$bin_path" ]] || err "Binary '${bin}' not found in archive."
     chmod +x "$bin_path"
 
-    # Write to dest_dir — try direct, fall back to sudo
+    # Install via stage-then-atomic-rename. `cp` opens the target with
+    # O_TRUNC, which the kernel refuses for a binary that is currently being
+    # executed (ETXTBSY) — exactly the case when `tonin upgrade` replaces its
+    # own running binary. rename(2) instead swaps the directory entry, leaving
+    # the running process on the old inode, so self-upgrade works. The staged
+    # file must live in dest_dir so the rename stays on one filesystem
+    # (a cross-filesystem `mv` falls back to copy and hits ETXTBSY again).
+    local staged="${dest}.new.$$"
     if [[ -w "$dest_dir" ]]; then
-        cp "$bin_path" "$dest"
+        cp "$bin_path" "$staged"
+        chmod +x "$staged"
+        mv -f "$staged" "$dest"
     else
         say "Installing to ${dest_dir} requires elevated permissions."
-        sudo cp "$bin_path" "$dest"
+        sudo cp "$bin_path" "$staged"
+        sudo chmod +x "$staged"
+        sudo mv -f "$staged" "$dest"
     fi
 
     if [[ -n "$current" ]]; then

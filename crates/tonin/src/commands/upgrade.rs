@@ -19,6 +19,9 @@ use crate::commands::plugin::{self, PluginMeta};
 /// Always fetch the latest install script from `main`.
 const INSTALL_SH_URL: &str =
     "https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh";
+/// Windows (PowerShell) equivalent of `install.sh`.
+const INSTALL_PS1_URL: &str =
+    "https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.ps1";
 /// GitHub repo for the tonin CLI itself.
 const TONIN_REPO: &str = "Rushit/tonin";
 
@@ -205,6 +208,21 @@ fn run_install_script(
     version: Option<&str>,
     plugins: &[UpgradablePlugin],
 ) -> Result<()> {
+    // Same orchestration on every OS, different installer + shell: bash +
+    // install.sh on Unix, PowerShell + install.ps1 on Windows. `cfg!(windows)`
+    // (not `#[cfg]`) keeps both paths compiled and type-checked everywhere.
+    if cfg!(windows) {
+        run_via_powershell(dir, version, plugins)
+    } else {
+        run_via_bash(dir, version, plugins)
+    }
+}
+
+fn run_via_bash(
+    dir: Option<&Path>,
+    version: Option<&str>,
+    plugins: &[UpgradablePlugin],
+) -> Result<()> {
     // Download to a temp file so the install dir path never has to survive
     // shell quoting through `bash -c`.
     let tmp = std::env::temp_dir().join("tonin-install.sh");
@@ -240,6 +258,59 @@ fn run_install_script(
     let _ = std::fs::remove_file(&tmp);
     if !status.success() {
         bail!("install.sh exited with a failure");
+    }
+    println!("\n✓ Upgrade complete. Run `tonin --version` to verify.");
+    Ok(())
+}
+
+fn run_via_powershell(
+    dir: Option<&Path>,
+    version: Option<&str>,
+    plugins: &[UpgradablePlugin],
+) -> Result<()> {
+    let tmp = std::env::temp_dir().join("tonin-install.ps1");
+    // Download via PowerShell itself (curl.exe isn't on every Windows).
+    let download = format!(
+        "Invoke-WebRequest -UseBasicParsing -Uri '{INSTALL_PS1_URL}' -OutFile '{}'",
+        tmp.display()
+    );
+    let status = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &download,
+        ])
+        .status()
+        .context("running powershell to download install.ps1 (is PowerShell installed?)")?;
+    if !status.success() {
+        bail!("failed to download install.ps1 from {INSTALL_PS1_URL}");
+    }
+
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&tmp);
+    if let Some(d) = dir {
+        cmd.arg("-Dir").arg(d);
+    }
+    if let Some(v) = version {
+        cmd.arg("-Version").arg(v);
+    }
+    if !plugins.is_empty() {
+        // install.ps1 takes a single comma-separated -Plugin and splits it.
+        let joined = plugins
+            .iter()
+            .map(|p| p.repo.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        cmd.arg("-Plugin").arg(joined);
+    }
+
+    let status = cmd.status().context("running install.ps1")?;
+    let _ = std::fs::remove_file(&tmp);
+    if !status.success() {
+        bail!("install.ps1 exited with a failure");
     }
     println!("\n✓ Upgrade complete. Run `tonin --version` to verify.");
     Ok(())
