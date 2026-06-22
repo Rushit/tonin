@@ -360,4 +360,83 @@ mod tests {
         assert!(dep.contains("livenessProbe"));
         assert!(dep.contains("port: 8081"), "probe targets the http port");
     }
+
+    // ---- per-env depends_on → CiliumNetworkPolicy egress -------------------
+
+    /// Render a full tonin.toml `body` at `env` into filename → contents.
+    fn render_env(body: &str, env: &str) -> HashMap<String, String> {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("tonin-render-env-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tonin.toml");
+        std::fs::write(&path, body).unwrap();
+        let plan = Plan::load_with_env(&path, env).unwrap();
+        let files = render(&plan).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        files.into_iter().map(|f| (f.path, f.contents)).collect()
+    }
+
+    // Generic service exercising every depends_on form: shorthand `{env}`,
+    // a table with a per-env override, a prod-only dependency, and `@inherit`.
+    const ORDERS: &str = "[service]
+name = \"orders\"
+version = \"0.1.0\"
+type = \"http\"
+port = 7001
+[deploy]
+replicas = 1
+namespace = \"orders-{env}\"
+mesh = \"cilium\"
+[resources]
+cpu = \"100m\"
+memory = \"128Mi\"
+[depends_on]
+identity = \"platform-{env}\"
+billing = { namespace = \"billing-{env}\", prod = \"billing-shared\" }
+audit = { namespace = \"security-{env}\", envs = [\"prod\"] }
+external = { namespace = \"@inherit\" }
+";
+
+    #[test]
+    fn depends_on_table_renders_prod_egress() {
+        let f = render_env(ORDERS, "prod");
+        let np = &f["networkpolicy.yaml"];
+        // Policy is scoped to the service's own per-env namespace.
+        assert!(np.contains("service.identity: orders.orders-prod"), "{np}");
+        // `{env}` egress target resolves to prod.
+        assert!(
+            np.contains("service.identity: identity.platform-prod"),
+            "{np}"
+        );
+        // Per-env override wins over the default namespace.
+        assert!(
+            np.contains("service.identity: billing.billing-shared"),
+            "{np}"
+        );
+        // Prod-only dependency is present in prod.
+        assert!(np.contains("service.identity: audit.security-prod"), "{np}");
+        // `@inherit` is omitted from the rendered policy.
+        assert!(
+            !np.contains("service.identity: external"),
+            "@inherit must not render: {np}"
+        );
+    }
+
+    #[test]
+    fn depends_on_table_renders_dev_egress() {
+        let f = render_env(ORDERS, "dev");
+        let np = &f["networkpolicy.yaml"];
+        assert!(np.contains("service.identity: orders.orders-dev"), "{np}");
+        assert!(
+            np.contains("service.identity: identity.platform-dev"),
+            "{np}"
+        );
+        // dev uses the default namespace, not the prod override.
+        assert!(np.contains("service.identity: billing.billing-dev"), "{np}");
+        // audit is prod-only → absent in dev.
+        assert!(
+            !np.contains("service.identity: audit"),
+            "audit is prod-only: {np}"
+        );
+    }
 }
