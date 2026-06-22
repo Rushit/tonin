@@ -136,13 +136,31 @@ cargo install tonin-helm
 
 ## Update
 
-Re-running the install script upgrades to the latest release. It detects the currently
-installed version and skips the download if already up to date.
+**Update everything in one step (recommended):**
+```bash
+tonin upgrade          # upgrades the CLI + every installed plugin
+tonin upgrade --check  # preview the plan without changing anything
+```
+
+`tonin upgrade` discovers the plugins on your `$PATH`, shows an upgrade plan, asks for
+confirmation (`--yes` to skip), then runs the install script for the CLI and each plugin.
+Each plugin reports its own repo via `--tonin-meta`, so new plugins are picked up
+automatically. Run `tonin doctor` any time to check that installed plugins are compatible
+with your CLI — a plugin dispatched by an out-of-date `tonin` also warns on its own.
+
+Re-running the install script directly works too. It detects the currently installed
+version and skips the download if already up to date.
 
 **Update tonin + tonin-helm to latest:**
 ```bash
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
   | bash -s -- --with-tonin-helm
+```
+
+**Install/update tonin + any plugin (repeatable `--plugin`):**
+```bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
+  | bash -s -- --plugin Rushit/tonin-helm
 ```
 
 **Pin specific versions:**
