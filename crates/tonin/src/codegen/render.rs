@@ -183,18 +183,27 @@ fn base_context(plan: &Plan) -> Result<Context, Error> {
     ctx.insert("memory", &plan.memory);
     ctx.insert("image", &plan.image);
 
-    // Web vs backend toggles in templates.
-    let is_web = plan.kind.is_web();
+    // Web / http / backend toggles in templates.
     ctx.insert("kind", plan.kind.as_str());
-    ctx.insert("is_web", &is_web);
-    let port: u32 = match (is_web, plan.web_mode) {
-        (true, Some(wm)) => wm.container_port(),
-        (true, None) => 8080,
-        (false, _) => 50051,
-    };
-    ctx.insert("port", &port);
+    ctx.insert("is_web", &plan.kind.is_web());
+    ctx.insert("is_http", &plan.kind.is_http());
+    ctx.insert("port", &plan.port);
     ctx.insert("web_mode", &plan.web_mode.map(|m| m.as_str()).unwrap_or(""));
     ctx.insert("ingress", &(plan.expose.as_deref() == Some("ingress")));
+
+    // Additional HTTP port (a gRPC backend that also serves HTTP).
+    ctx.insert("has_http_port", &plan.http_port.is_some());
+    if let Some(p) = plan.http_port {
+        ctx.insert("http_port", &p);
+    }
+
+    // HTTP health probe (httpGet). Absent for web/backend unless declared, so
+    // their manifests stay byte-identical.
+    ctx.insert("has_health", &plan.health.is_some());
+    if let Some(h) = &plan.health {
+        ctx.insert("health_path", &h.path);
+        ctx.insert("health_port", &h.port);
+    }
 
     let deps: Vec<ServiceRefCtx> = plan.depends_on.iter().map(Into::into).collect();
     let callers: Vec<ServiceRefCtx> = plan.callers.iter().map(Into::into).collect();
@@ -277,4 +286,78 @@ fn base_context(plan: &Plan) -> Result<Context, Error> {
     }
 
     Ok(ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Render `<service block>` (plus a minimal cilium deploy) into a map of
+    /// output filename → contents.
+    fn render_files(service: &str) -> HashMap<String, String> {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("tonin-render-test-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = format!(
+            "{service}\n[deploy]\nreplicas = 1\nnamespace = \"demo\"\nmesh = \"cilium\"\n[resources]\ncpu = \"100m\"\nmemory = \"128Mi\"\n"
+        );
+        let path = dir.join("tonin.toml");
+        std::fs::write(&path, body).unwrap();
+        let plan = Plan::load_with_env(&path, "prod").unwrap();
+        let files = render(&plan).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        files.into_iter().map(|f| (f.path, f.contents)).collect()
+    }
+
+    #[test]
+    fn backend_renders_grpc_service_without_probe() {
+        let f = render_files("[service]\nname = \"svc\"\nversion = \"0.1.0\"");
+        let svc = &f["service.yaml"];
+        assert!(svc.contains("name: grpc"));
+        assert!(svc.contains("port: 50051"));
+        let dep = &f["deployment.yaml"];
+        assert!(dep.contains("name: grpc"));
+        assert!(!dep.contains("livenessProbe"), "backend gets no http probe");
+    }
+
+    #[test]
+    fn http_renders_http_service_with_probe_and_no_mcp() {
+        let f = render_files(
+            "[service]\nname = \"svc\"\nversion = \"0.1.0\"\ntype = \"http\"\nport = 7001",
+        );
+        let svc = &f["service.yaml"];
+        assert!(svc.contains("name: http"));
+        assert!(svc.contains("port: 7001"));
+        assert!(!svc.contains("grpc"));
+        assert!(
+            !svc.contains("name: mcp"),
+            "http forces the mcp sidecar off"
+        );
+        let dep = &f["deployment.yaml"];
+        assert!(dep.contains("name: http"));
+        assert!(dep.contains("livenessProbe"));
+        assert!(dep.contains("readinessProbe"));
+        assert!(dep.contains("path: /health"));
+        assert!(!dep.contains("name: mcp"));
+    }
+
+    #[test]
+    fn backend_with_http_renders_both_ports() {
+        let f = render_files(
+            "[service]\nname = \"svc\"\nversion = \"0.1.0\"\n[service.http]\nport = 8081",
+        );
+        let svc = &f["service.yaml"];
+        assert!(svc.contains("name: grpc"));
+        assert!(svc.contains("name: http"));
+        assert!(svc.contains("port: 8081"));
+        let dep = &f["deployment.yaml"];
+        assert!(dep.contains("containerPort: 8081"));
+        assert!(dep.contains("livenessProbe"));
+        assert!(dep.contains("port: 8081"), "probe targets the http port");
+    }
 }

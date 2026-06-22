@@ -15,12 +15,15 @@ spec:
       toPorts:
         - ports:
             - { port: "{{ port }}", protocol: TCP }
+{%- if has_http_port %}
+            - { port: "{{ http_port }}", protocol: TCP }
+{%- endif %}
 {%- if mcp_sidecar %}
             - { port: "50052", protocol: TCP }
 {%- endif %}
 {%- endfor %}
-{%- if is_web %}
-    # Web services accept traffic from the ingress controller namespace.
+{%- if is_web or is_http %}
+    # Web / HTTP services accept traffic from the ingress controller namespace.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: ingress-nginx
