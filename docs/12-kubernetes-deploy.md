@@ -193,6 +193,42 @@ tonin k8s generate                 # uses TONIN_ENV, then defaults to dev
 
 The same pattern works for `[cache.<env>]`, and for any field that differs between environments (replicas, resources, mesh choice).
 
+### Per-environment namespaces and dependencies
+
+Namespaces in `[deploy]` and `[depends_on]` resolve per environment. The
+`{env}` placeholder is substituted with the environment being rendered, so a
+single declaration covers every environment:
+
+```toml
+[deploy]
+namespace = "agnitiv-{env}"          # → agnitiv-dev / agnitiv-staging / agnitiv-prod
+
+[depends_on]
+identity        = "agnitiv-{env}"    # egress target follows the same convention
+zradar-platform = "zradar-{env}"
+```
+
+When a dependency doesn't follow the `<base>-<env>` convention, use the table
+form — a shorthand string *or* a table is accepted per entry (the same
+ergonomics as a `Cargo.toml` dependency):
+
+```toml
+[depends_on]
+identity        = "agnitiv-{env}"                                   # shorthand
+zradar-platform = { namespace = "zradar-{env}", prod = "zradar-shared" }  # prod overrides the convention
+audit-sink      = { namespace = "security-{env}", envs = ["prod"] }       # only egresses in prod
+billing         = { namespace = "@inherit" }                        # namespace set at deploy time; omitted from the chart
+```
+
+Resolution rules for an environment `E`:
+
+- A per-env override key (`prod = "..."`) wins over the default `namespace`.
+- `envs = [...]` restricts the dependency to those environments; elsewhere it is dropped.
+- `@inherit` omits the entry from the rendered policy — supply it at deploy time (`--set-json`) or via GitOps.
+- If an active dependency has no namespace for `E`, or a `{...}` placeholder is left unresolved, generation **fails** — there is no silent fallback to a base value, which is what previously let a dev namespace leak into a prod chart.
+
+Both the shorthand string form and literal namespaces (no `{env}`) keep working unchanged.
+
 ## How it fits together
 
 ```mermaid
