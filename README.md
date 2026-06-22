@@ -324,6 +324,20 @@ for the four design rules (interface-first, mesh-delegated, MCP-by-default,
 Status block listing what ships today vs. what's planned. Per-crate API reference is on
 [docs.rs](https://docs.rs).
 
+## Compatibility
+
+`tonin` (the CLI) and `tonin-plugin` share one workspace version, so they always match.
+The [`tonin-helm`](https://github.com/Rushit/tonin-helm) plugin tracks `tonin-plugin`
+independently:
+
+| tonin CLI / tonin-plugin | tonin-helm |
+| ------------------------ | ---------- |
+| 0.5.3 – 0.5.5            | 0.1.x      |
+| 0.5.6+                   | 0.2.x      |
+
+HTTP services (`type = "http"`, and `[service.http]` for gRPC services that also serve
+HTTP) require **0.5.6+** (and tonin-helm 0.2.x for chart generation).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, PR conventions, and the scope of
