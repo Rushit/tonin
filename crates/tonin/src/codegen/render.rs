@@ -197,12 +197,13 @@ fn base_context(plan: &Plan) -> Result<Context, Error> {
         ctx.insert("http_port", &p);
     }
 
-    // HTTP health probe (httpGet). Absent for web/backend unless declared, so
-    // their manifests stay byte-identical.
+    // Health probe. Auto-derived: `health_grpc` selects a native `grpc:` probe
+    // (gRPC services) vs `httpGet` (HTTP/web services or a backend's http port).
     ctx.insert("has_health", &plan.health.is_some());
     if let Some(h) = &plan.health {
         ctx.insert("health_path", &h.path);
         ctx.insert("health_port", &h.port);
+        ctx.insert("health_grpc", &h.grpc);
     }
 
     let deps: Vec<ServiceRefCtx> = plan.depends_on.iter().map(Into::into).collect();
@@ -315,14 +316,22 @@ mod tests {
     }
 
     #[test]
-    fn backend_renders_grpc_service_without_probe() {
+    fn backend_renders_grpc_native_probe() {
         let f = render_files("[service]\nname = \"svc\"\nversion = \"0.1.0\"");
         let svc = &f["service.yaml"];
         assert!(svc.contains("name: grpc"));
         assert!(svc.contains("port: 50051"));
         let dep = &f["deployment.yaml"];
         assert!(dep.contains("name: grpc"));
-        assert!(!dep.contains("livenessProbe"), "backend gets no http probe");
+        // A gRPC backend gets a native `grpc:` probe on the gRPC port, never
+        // an httpGet (which would always fail on a gRPC port).
+        assert!(dep.contains("livenessProbe"), "{dep}");
+        assert!(dep.contains("readinessProbe"));
+        assert!(dep.contains("grpc:\n              port: 50051"), "{dep}");
+        assert!(
+            !dep.contains("httpGet"),
+            "gRPC service must not use httpGet: {dep}"
+        );
     }
 
     #[test]

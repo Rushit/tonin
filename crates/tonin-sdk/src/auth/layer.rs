@@ -87,6 +87,18 @@ where
     }
 
     fn call(&mut self, mut req: Request<BoxBody>) -> Self::Future {
+        // The gRPC health service backs Kubernetes `grpc:` probes, which send
+        // no credentials. Let it through without auth so liveness/readiness
+        // checks aren't 401'd on services that require a token.
+        if req.uri().path().starts_with("/grpc.health.v1.Health/") {
+            let mut inner = self.inner.clone();
+            return Box::pin(async move {
+                CURRENT_AUTH
+                    .scope(AuthCtx::anonymous(), inner.call(req))
+                    .await
+            });
+        }
+
         let mut inner = self.inner.clone();
         let extractor = self.extractor.clone();
         let verifier = self.verifier.clone();

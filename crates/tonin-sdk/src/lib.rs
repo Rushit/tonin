@@ -312,6 +312,16 @@ impl Service {
             mcp_spawner,
         } = self;
         let router = router.ok_or_else(|| Error::Config("no handler registered".into()))?;
+
+        // Serve grpc.health.v1.Health so Kubernetes `grpc:` probes work out of
+        // the box. Mark the overall ("") service SERVING; the auth layer
+        // allowlists this path so probes pass without credentials.
+        let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+        health_reporter
+            .set_service_status("", tonic_health::ServingStatus::Serving)
+            .await;
+        let router = router.add_service(health_service);
+
         tracing::info!(service = %name, %addr, "tonin service starting");
 
         // If MCP is enabled, spawn its listener in parallel. The

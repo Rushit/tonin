@@ -15,6 +15,8 @@ description = "tonin-sdk: Service builder, Config, Context, Error, and runtime f
 # Core runtime
 tokio       = { workspace = true }
 tonic       = { workspace = true }
+# Serves grpc.health.v1.Health so Kubernetes `grpc:` probes work out of the box.
+tonic-health = "0.12"
 tower       = { workspace = true }
 hyper       = { workspace = true, features = ["server", "http1", "http2"] }
 http        = { workspace = true }

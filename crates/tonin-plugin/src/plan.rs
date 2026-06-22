@@ -422,6 +422,9 @@ impl ServiceKind {
 pub struct HealthSpec {
     pub path: String,
     pub port: u32,
+    /// `true` → emit a native Kubernetes `grpc:` probe on `port` (gRPC
+    /// services); `false` → `httpGet` on `port` at `path`.
+    pub grpc: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -574,34 +577,37 @@ impl Plan {
             _ => raw.service.http.as_ref().map(|h| h.port),
         };
 
-        // Port an HTTP health probe targets: the http-primary port, else the
-        // secondary HTTP port. None ⇒ no HTTP surface ⇒ no httpGet probe.
-        let http_probe_port = match kind {
-            ServiceKind::Http => Some(port),
-            _ => http_port,
+        // Health probe, auto-derived from the service's surface and always
+        // present:
+        //   * An HTTP surface (http/web kind, or a `[service.http]` port on a
+        //     gRPC backend) → httpGet on that port.
+        //   * A pure gRPC backend → a native Kubernetes `grpc:` probe
+        //     (grpc.health.v1, served by the tonin runtime) on the gRPC port.
+        //     httpGet on a gRPC port can never succeed, so we never emit it.
+        // `[service.health]` overrides path/port for the HTTP case.
+        let http_surface_port = match kind {
+            ServiceKind::Http | ServiceKind::Web => Some(port),
+            ServiceKind::Backend => http_port,
         };
-
-        // HTTP health probe. Present when there is an HTTP surface (http kind or
-        // a `[service.http]` endpoint) or when `[service.health]` is declared.
-        // Path: `[service.health].path`, else `[service.http].health_path`, else
-        // `/health`. Backend/web without any of these get no probe, so existing
-        // manifests stay byte-identical.
-        let health = if raw.service.health.is_some() || http_probe_port.is_some() {
-            let declared = raw.service.health.as_ref();
-            let secondary = raw.service.http.as_ref();
-            Some(HealthSpec {
-                path: declared
-                    .and_then(|h| h.path.clone())
-                    .or_else(|| secondary.and_then(|h| h.health_path.clone()))
-                    .unwrap_or_else(|| "/health".into()),
-                port: declared
-                    .and_then(|h| h.port)
-                    .or(http_probe_port)
-                    .unwrap_or(port),
-            })
-        } else {
-            None
-        };
+        let health = Some(match http_surface_port {
+            Some(hp) => {
+                let declared = raw.service.health.as_ref();
+                let secondary = raw.service.http.as_ref();
+                HealthSpec {
+                    grpc: false,
+                    path: declared
+                        .and_then(|h| h.path.clone())
+                        .or_else(|| secondary.and_then(|h| h.health_path.clone()))
+                        .unwrap_or_else(|| "/health".into()),
+                    port: declared.and_then(|h| h.port).unwrap_or(hp),
+                }
+            }
+            None => HealthSpec {
+                grpc: true,
+                path: String::new(),
+                port,
+            },
+        });
 
         // MCP sidecar proxies to a gRPC server on :50051, so it cannot front an
         // HTTP-primary service — force it off for kind = http.
@@ -782,7 +788,10 @@ mod tests {
         assert_eq!(p.kind, ServiceKind::Backend);
         assert_eq!(p.port, 50051);
         assert_eq!(p.http_port, None);
-        assert!(p.health.is_none());
+        // A pure gRPC backend gets an auto native grpc: probe on the gRPC port.
+        let h = p.health.expect("backend gets an auto gRPC health probe");
+        assert!(h.grpc, "gRPC service uses a grpc: probe");
+        assert_eq!(h.port, 50051);
         assert!(p.mcp_sidecar, "backend keeps the default mcp sidecar");
     }
 
