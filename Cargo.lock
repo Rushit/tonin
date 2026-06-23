@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "greeter"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "futures-util",
  "prost",
@@ -1690,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "inventory"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "prost",
  "tokio",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "orders"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "prost",
  "tokio",
@@ -3129,6 +3129,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap 2.14.0",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3767,7 +3780,7 @@ dependencies = [
 
 [[package]]
 name = "tonin"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -3778,6 +3791,7 @@ dependencies = [
  "prost-types",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "tera",
  "thiserror 1.0.69",
@@ -3791,14 +3805,14 @@ dependencies = [
 
 [[package]]
 name = "tonin-build"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "tonic-build",
 ]
 
 [[package]]
 name = "tonin-client"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "dashmap",
  "futures-util",
@@ -3814,7 +3828,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-config-etcd"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "etcd-client",
@@ -3826,7 +3840,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-config-github"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64",
@@ -3841,7 +3855,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-mcp-macros"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -3851,7 +3865,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-plugin"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -3861,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-sdk"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -4107,6 +4121,12 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"
