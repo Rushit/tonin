@@ -16,6 +16,7 @@ use tera::{Context, Tera};
 
 use super::plan::{Plan, ServiceRef};
 use super::stateful::{CacheEngine, DatabaseEngine};
+use tonin_plugin::SecuritySection;
 
 // Bundled templates. Pulled in at build time from crates/tonin/templates/.
 static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates/k8s");
@@ -170,6 +171,88 @@ impl From<&ServiceRef> for ServiceRefCtx {
     }
 }
 
+/// Populate Tera context with pod / container security context YAML blocks.
+/// Keys without underscores pass through unchanged (already camelCase);
+/// snake_case keys are converted to camelCase recursively.
+fn insert_security(ctx: &mut Context, sec: Option<&SecuritySection>) {
+    match sec {
+        None => {
+            ctx.insert("has_pod_security", &false);
+            ctx.insert("has_container_security", &false);
+            ctx.insert("pod_security_yaml", &"");
+            ctx.insert("container_security_yaml", &"");
+        }
+        Some(s) => {
+            match &s.pod {
+                None => {
+                    ctx.insert("has_pod_security", &false);
+                    ctx.insert("pod_security_yaml", &"");
+                }
+                Some(val) => {
+                    ctx.insert("has_pod_security", &true);
+                    ctx.insert("pod_security_yaml", &to_yaml_block(val, 8));
+                }
+            }
+            match &s.container {
+                None => {
+                    ctx.insert("has_container_security", &false);
+                    ctx.insert("container_security_yaml", &"");
+                }
+                Some(val) => {
+                    ctx.insert("has_container_security", &true);
+                    ctx.insert("container_security_yaml", &to_yaml_block(val, 12));
+                }
+            }
+        }
+    }
+}
+
+fn to_yaml_block(val: &toml::Value, indent: usize) -> String {
+    let converted = normalize_keys(val.clone());
+    let raw = serde_yaml::to_string(&converted).unwrap_or_default();
+    let content = raw.strip_prefix("---\n").unwrap_or(&raw);
+    let prefix = " ".repeat(indent);
+    content
+        .lines()
+        .map(|l| format!("{prefix}{l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_keys(val: toml::Value) -> toml::Value {
+    match val {
+        toml::Value::Table(tbl) => {
+            let converted = tbl
+                .into_iter()
+                .map(|(k, v)| (snake_to_camel(&k), normalize_keys(v)))
+                .collect();
+            toml::Value::Table(converted)
+        }
+        toml::Value::Array(arr) => {
+            toml::Value::Array(arr.into_iter().map(normalize_keys).collect())
+        }
+        other => other,
+    }
+}
+
+fn snake_to_camel(key: &str) -> String {
+    if !key.contains('_') {
+        return key.to_string();
+    }
+    let mut parts = key.split('_');
+    let first = parts.next().unwrap_or("").to_ascii_lowercase();
+    let rest: String = parts
+        .map(|p| {
+            let mut chars = p.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect();
+    first + &rest
+}
+
 fn base_context(plan: &Plan) -> Result<Context, Error> {
     let mut ctx = Context::new();
     ctx.insert("name", &plan.name);
@@ -285,6 +368,8 @@ fn base_context(plan: &Plan) -> Result<Context, Error> {
         ctx.insert("migrations_command", &empty);
         ctx.insert("migrations_dir", "");
     }
+
+    insert_security(&mut ctx, plan.security.as_ref());
 
     Ok(ctx)
 }
@@ -429,6 +514,43 @@ external = { namespace = \"@inherit\" }
             !np.contains("service.identity: external"),
             "@inherit must not render: {np}"
         );
+    }
+
+    #[test]
+    fn security_context_renders_in_deployment() {
+        let f = render_files(
+            r#"[service]
+name    = "secure-svc"
+version = "0.1.0"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 65532
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = true
+
+[security.container.capabilities]
+drop = ["ALL"]
+"#,
+        );
+        let dep = &f["deployment.yaml"];
+        assert!(dep.contains("securityContext:"), "{dep}");
+        assert!(dep.contains("runAsNonRoot: true"), "{dep}");
+        assert!(dep.contains("runAsUser: 65532"), "{dep}");
+        assert!(dep.contains("allowPrivilegeEscalation: false"), "{dep}");
+        assert!(dep.contains("readOnlyRootFilesystem: true"), "{dep}");
+        assert!(dep.contains("capabilities:"), "{dep}");
+        assert!(dep.contains("drop:"), "{dep}");
+        assert!(dep.contains("ALL"), "{dep}");
+    }
+
+    #[test]
+    fn no_security_section_omits_security_context() {
+        let f = render_files("[service]\nname = \"bare\"\nversion = \"0.1.0\"");
+        let dep = &f["deployment.yaml"];
+        assert!(!dep.contains("securityContext:"), "{dep}");
     }
 
     #[test]

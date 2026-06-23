@@ -19,6 +19,10 @@ spec:
       annotations:
 {{ mesh_pod_annotations }}
     spec:
+{%- if has_pod_security %}
+      securityContext:
+{{ pod_security_yaml }}
+{%- endif %}
 {%- if has_migrations_init %}
       initContainers:
         - name: migrate
@@ -39,6 +43,10 @@ spec:
       containers:
         - name: {% if is_web %}web{% else %}server{% endif %}
           image: {{ image }}
+{%- if has_container_security %}
+          securityContext:
+{{ container_security_yaml }}
+{%- endif %}
 {%- if is_web %}
           # Web (Next.js standalone). Listens on :3000.
           env:
