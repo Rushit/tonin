@@ -27,8 +27,8 @@ pub(crate) mod stateful;
 
 // Plan loading + schema types
 pub use plan::{
-    CURRENT_SCHEMA, ClientSpec, Error, Mesh, MethodCacheSpec, Plan, RECOMMENDED_CLI_MIN,
-    SUPPORTED_SCHEMAS, ServiceKind, ServiceRef, WebMode,
+    CURRENT_SCHEMA, ClientSpec, Error, HealthSpec, Mesh, MethodCacheSpec, Plan,
+    RECOMMENDED_CLI_MIN, SUPPORTED_SCHEMAS, SecuritySection, ServiceKind, ServiceRef, WebMode,
 };
 
 // Env resolution + resolved stateful types

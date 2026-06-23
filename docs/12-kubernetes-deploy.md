@@ -43,6 +43,48 @@ engine = "redis"
 
 That's the whole input. `tonin k8s generate` turns it into roughly a dozen YAML files.
 
+## Image registry (`[image]`)
+
+By default, `tonin k8s generate` and `tonin-helm generate` use `micro/<name>:<version>` as the container image. Override this with `[image].registry`:
+
+```toml
+[image]
+registry = "ghcr.io/myorg"   # → ghcr.io/myorg/greeter:0.1.0
+```
+
+Priority (highest to lowest):
+1. `TONIN_IMAGE_PREFIX` environment variable — always wins, for CI/CD per-build overrides
+2. `[image].registry` in `tonin.toml` — the default for this service
+3. `micro/` prefix — built-in fallback when neither is set
+
+## Security context (`[security]`)
+
+Declare pod and container security context natively in `tonin.toml`. When present, `tonin-helm generate` emits `podSecurityContext` and `containerSecurityContext` blocks in `values.yaml` and wires them into the Deployment. When absent, no security context fields are generated — fully backward compatible.
+
+Keys may be written in `snake_case` (auto-converted to `camelCase`) or already in `camelCase` — both work:
+
+```toml
+# Distroless / nonroot image — full security lockdown
+[security.pod]
+run_as_non_root = true   # → runAsNonRoot
+run_as_user     = 65532  # → runAsUser  (nonroot UID used by distroless images)
+run_as_group    = 65532  # → runAsGroup
+fs_group        = 65532  # → fsGroup
+
+[security.container]
+allow_privilege_escalation = false   # → allowPrivilegeEscalation
+read_only_root_filesystem  = true    # → readOnlyRootFilesystem
+
+# Nested TOML tables map to nested YAML — no special syntax needed
+[security.container.capabilities]
+drop = ["ALL"]
+
+[security.container.seccomp_profile]
+type = "RuntimeDefault"
+```
+
+Both `[security.pod]` and `[security.container]` are optional independently — you can declare only one. Any field supported by the Kubernetes API can be used directly; new Kubernetes security context fields work without a tonin update.
+
 ## What gets rendered
 
 The renderer (`crates/tonin/src/codegen/render.rs`) maps `tonin.toml` fields to a fixed set of output files:

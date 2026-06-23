@@ -234,6 +234,20 @@ pub const SUPPORTED_SCHEMAS: &[&str] = &["v1"];
 pub const RECOMMENDED_CLI_MIN: &str = "0.6.0";
 
 #[derive(Debug, Deserialize)]
+struct RawImage {
+    #[serde(default)]
+    registry: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSecurity {
+    #[serde(default)]
+    pod: Option<toml::Value>,
+    #[serde(default)]
+    container: Option<toml::Value>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RawConfig {
     #[serde(default)]
     schema: Option<String>,
@@ -265,6 +279,10 @@ struct RawConfig {
     config: Option<RawConfigBlock>,
     #[serde(default)]
     client: Option<RawClientConfig>,
+    #[serde(default)]
+    image: Option<RawImage>,
+    #[serde(default)]
+    security: Option<RawSecurity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -449,6 +467,18 @@ impl WebMode {
     }
 }
 
+/// Free-form pod and container security context from `[security]` in `tonin.toml`.
+///
+/// Keys may be written in `snake_case` (tonin-helm converts to camelCase automatically)
+/// or already in `camelCase` — both are passed through correctly.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SecuritySection {
+    #[serde(default)]
+    pub pod: Option<toml::Value>,
+    #[serde(default)]
+    pub container: Option<toml::Value>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub name: String,
@@ -471,6 +501,8 @@ pub struct Plan {
     pub cpu: String,
     pub memory: String,
     pub image: String,
+    pub image_registry: Option<String>,
+    pub security: Option<SecuritySection>,
     pub depends_on: Vec<ServiceRef>,
     pub callers: Vec<ServiceRef>,
     pub dir: PathBuf,
@@ -546,9 +578,18 @@ impl Plan {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let image = std::env::var("TONIN_IMAGE_PREFIX")
+        // Priority: TONIN_IMAGE_PREFIX env var > [image].registry in tonin.toml > "micro/" fallback.
+        let image_registry: Option<String> = std::env::var("TONIN_IMAGE_PREFIX")
+            .ok()
+            .or_else(|| raw.image.as_ref().and_then(|img| img.registry.clone()));
+        let image = image_registry
+            .as_deref()
             .map(|prefix| format!("{prefix}/{}:{}", raw.service.name, raw.service.version))
-            .unwrap_or_else(|_| format!("micro/{}:{}", raw.service.name, raw.service.version));
+            .unwrap_or_else(|| format!("micro/{}:{}", raw.service.name, raw.service.version));
+        let security = raw.security.map(|s| SecuritySection {
+            pod: s.pod,
+            container: s.container,
+        });
 
         let kind = match raw.service.kind.as_deref() {
             Some("web") => ServiceKind::Web,
@@ -708,6 +749,8 @@ impl Plan {
             cpu: raw.resources.cpu,
             memory: raw.resources.memory,
             image,
+            image_registry,
+            security,
             depends_on,
             callers: explicit_callers,
             dir,
@@ -973,5 +1016,103 @@ mod tests {
             matches!(err, Error::UnresolvedNamespace { .. }),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn image_registry_from_toml_used_when_no_env_var() {
+        let p = load(
+            "[service]\nname = \"my-api\"\nversion = \"1.0.0\"\n\n[image]\nregistry = \"ghcr.io/myorg\"",
+        );
+        if std::env::var("TONIN_IMAGE_PREFIX").is_err() {
+            assert_eq!(p.image, "ghcr.io/myorg/my-api:1.0.0");
+            assert_eq!(p.image_registry.as_deref(), Some("ghcr.io/myorg"));
+        }
+    }
+
+    #[test]
+    fn no_image_section_yields_micro_fallback() {
+        let p = load("[service]\nname = \"bare\"\nversion = \"0.1.0\"");
+        if std::env::var("TONIN_IMAGE_PREFIX").is_err() {
+            assert_eq!(p.image, "micro/bare:0.1.0");
+            assert!(p.image_registry.is_none());
+        }
+    }
+
+    #[test]
+    fn security_spec_parsed_from_snake_case() {
+        let p = load(
+            r#"[service]
+name    = "secure-svc"
+version = "0.2.0"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 65532
+run_as_group    = 65532
+fs_group        = 65532
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = true
+drop_capabilities          = ["ALL"]
+seccomp_profile_type       = "RuntimeDefault"
+"#,
+        );
+        let sec = p.security.expect("security should be parsed");
+        let pod = sec.pod.expect("pod section present");
+        assert_eq!(
+            pod.get("run_as_non_root").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            pod.get("run_as_user").and_then(|v| v.as_integer()),
+            Some(65532)
+        );
+        let container = sec.container.expect("container section present");
+        assert_eq!(
+            container
+                .get("allow_privilege_escalation")
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            container
+                .get("read_only_root_filesystem")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn security_spec_parsed_from_camel_case() {
+        let p = load(
+            r#"[service]
+name    = "secure-svc"
+version = "0.2.0"
+
+[security.pod]
+runAsNonRoot = true
+runAsUser    = 65532
+
+[security.container]
+allowPrivilegeEscalation = false
+"#,
+        );
+        let sec = p.security.expect("security should be parsed");
+        let pod = sec.pod.expect("pod section present");
+        assert_eq!(
+            pod.get("runAsNonRoot").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            pod.get("runAsUser").and_then(|v| v.as_integer()),
+            Some(65532)
+        );
+    }
+
+    #[test]
+    fn no_security_section_yields_none() {
+        let p = load("[service]\nname = \"bare\"\nversion = \"0.1.0\"");
+        assert!(p.security.is_none());
     }
 }
