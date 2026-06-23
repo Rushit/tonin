@@ -32,6 +32,7 @@ cli = [
     "dep:prost-types",
     "dep:serde",
     "dep:serde_json",
+    "dep:serde_yaml",
     "dep:toml",
     "dep:thiserror",
     "dep:tera",
@@ -68,6 +69,7 @@ tracing-subscriber = { workspace = true, optional = true }
 prost-types  = { workspace = true, optional = true }
 serde        = { workspace = true, optional = true }
 serde_json   = { workspace = true, optional = true }
+serde_yaml   = { workspace = true, optional = true }
 toml         = { workspace = true, optional = true }
 thiserror    = { workspace = true, optional = true }
 tera         = { version = "1", optional = true }

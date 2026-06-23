@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.3"
+version = "0.6.4"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -26,12 +26,12 @@ keywords = ["microservice", "grpc", "kubernetes", "tonic", "framework"]
 categories = ["network-programming", "web-programming", "development-tools"]
 
 [workspace.dependencies]
-tonin            = { path = "crates/tonin",           version = "0.6.3" }
-tonin-plugin     = { path = "crates/tonin-plugin",    version = "0.6.3" }
-tonin-sdk        = { path = "crates/tonin-sdk",       version = "0.6.3" }
-tonin-client     = { path = "crates/tonin-client",    version = "0.6.3" }
-tonin-mcp-macros = { path = "crates/tonin-mcp-macros", version = "0.6.3" }
-tonin-build      = { path = "crates/tonin-build",     version = "0.6.3" }
+tonin            = { path = "crates/tonin",           version = "0.6.4" }
+tonin-plugin     = { path = "crates/tonin-plugin",    version = "0.6.4" }
+tonin-sdk        = { path = "crates/tonin-sdk",       version = "0.6.4" }
+tonin-client     = { path = "crates/tonin-client",    version = "0.6.4" }
+tonin-mcp-macros = { path = "crates/tonin-mcp-macros", version = "0.6.4" }
+tonin-build      = { path = "crates/tonin-build",     version = "0.6.4" }
 
 tokio        = { version = "1", features = ["full"] }
 tonic        = "0.12"
@@ -49,6 +49,7 @@ thiserror   = "1"
 anyhow      = "1"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
+serde_yaml  = "0.9"
 toml        = "0.8"
 tracing     = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

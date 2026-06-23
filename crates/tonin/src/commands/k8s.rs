@@ -106,6 +106,29 @@ TONIN.TOML — PER-ENV OVERLAY EXAMPLES:
   shared = true
   url    = \"redis://redis.shared-dev.svc.cluster.local:6379\"
 
+  # [image] — override the default micro/<name>:<version> container image registry.
+  # Priority: TONIN_IMAGE_PREFIX env var > [image].registry > \"micro/\" fallback.
+  [image]
+  registry = \"ghcr.io/myorg\"   # → ghcr.io/myorg/<name>:<version>
+
+  # [security] — pod and container security context (rendered by tonin-helm; see
+  # docs/12-kubernetes-deploy.md for the full field reference).
+  # Keys may be snake_case (auto-converted to camelCase) or already camelCase.
+  # Both [security.pod] and [security.container] are optional independently.
+  [security.pod]
+  run_as_non_root = true
+  run_as_user     = 65532
+
+  [security.container]
+  allow_privilege_escalation = false
+  read_only_root_filesystem  = true
+
+  [security.container.capabilities]
+  drop = [\"ALL\"]
+
+  [security.container.seccomp_profile]
+  type = \"RuntimeDefault\"
+
 SEE ALSO:
   docs/12-kubernetes-deploy.md")]
     Generate(GenerateArgs),
