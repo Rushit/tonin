@@ -41,9 +41,8 @@ For those counting — the commands to get a running, instrumented, MCP-enabled 
 service are:
 
 ```bash
-# 1. install the CLI (install script — fastest, no compile)
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
-  | bash -s -- --with-tonin-helm
+# 1. install the CLI
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
 # or: cargo install tonin
 
 tonin service new greeter  # 2. scaffold
@@ -51,8 +50,8 @@ cd greeter && cargo run    # 3. run
 ```
 
 That's it. A gRPC server on `:50051`, an MCP server on `:50052` exposing every RPC as a
-tool, OTLP traces flowing to your collector, and a `./k8s/` directory rendered for your
-mesh — none of which you wrote.
+tool, OTLP traces flowing to your collector, and Helm charts rendered for your mesh —
+none of which you wrote.
 
 ---
 
@@ -86,8 +85,9 @@ capabilities. Each works out of the box and is selected or reconfigured in `toni
   declared in `tonin.toml`.
 - **Background Jobs** — `jobs::bootstrap` plus generated Kubernetes CronJobs for
   scheduled and async work.
-- **Kubernetes Deploy** — Deployment, Service, HPA, and Ingress rendered from one
-  `tonin.toml`, with Cilium / Istio / Linkerd mesh overlays.
+- **Helm Chart Generation** — Deployment, Service, HPA, Ingress, and mesh overlays
+  rendered from `tonin.toml` with `tonin helm generate`. Built into the CLI — no
+  separate plugin needed.
 - **Multi-Language Clients** — generate Rust, Python, and TypeScript service skeletons
   and client SDKs from the same `.proto`.
 - **Pluggable Interfaces** — every capability above is a trait in `tonin-sdk` with
@@ -102,81 +102,40 @@ way rather than reimplementing what Cilium/Istio/Linkerd already do well.
 ## Install the CLI
 
 Pre-built archives are published for Linux (x86_64, ARM64), macOS (Intel, Apple Silicon),
-and Windows (x86_64) on every release.
+and Windows (x86_64) on every release. Helm chart generation is built in — no extra
+plugin needed.
 
-**Install tonin + tonin-helm (recommended):**
 ```bash
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
-  | bash -s -- --with-tonin-helm
-```
-
-**Install tonin only:**
-```bash
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
-  | bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
 ```
 
 **Custom install directory:**
 ```bash
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
-  | bash -s -- --with-tonin-helm --dir /usr/local/bin
+  | bash -s -- --dir /usr/local/bin
 ```
 
 **Via cargo-binstall:**
 ```bash
 cargo binstall tonin
-cargo binstall tonin-helm
 ```
 
 **Build from source:**
 ```bash
 cargo install tonin
-cargo install tonin-helm
 ```
 
 ## Update
 
-**Update everything in one step (recommended):**
 ```bash
 tonin upgrade          # upgrades the CLI + every installed plugin
 tonin upgrade --check  # preview the plan without changing anything
 ```
 
-`tonin upgrade` discovers the plugins on your `$PATH`, shows an upgrade plan, asks for
-confirmation (`--yes` to skip), then runs the install script for the CLI and each plugin.
-Each plugin reports its own repo via `--tonin-meta`, so new plugins are picked up
-automatically. Run `tonin doctor` any time to check that installed plugins are compatible
-with your CLI — a plugin dispatched by an out-of-date `tonin` also warns on its own.
-
-Re-running the install script directly works too. It detects the currently installed
-version and skips the download if already up to date.
-
-**Update tonin + tonin-helm to latest:**
-```bash
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
-  | bash -s -- --with-tonin-helm
-```
-
-**Install/update tonin + any plugin (repeatable `--plugin`):**
-```bash
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
-  | bash -s -- --plugin Rushit/tonin-helm
-```
-
-**Pin specific versions:**
-```bash
-curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
-  | bash -s -- \
-      --with-tonin-helm \
-      --version v0.5.4 \
-      --helm-version v0.1.1
-```
-
-**Via cargo-binstall:**
-```bash
-cargo binstall tonin
-cargo binstall tonin-helm
-```
+`tonin upgrade` discovers plugins on your `$PATH`, shows an upgrade plan, asks for
+confirmation (`--yes` to skip), then runs the install script for each. Re-running the
+install script directly works too — it detects the current version and skips if already
+up to date.
 
 ## What you write vs. what tonin handles
 
@@ -188,7 +147,7 @@ cargo binstall tonin-helm
 
 **tonin generates and wires everything else** from those three, and keeps it all in sync:
 
-- the **Dockerfile** and the **Kubernetes manifests** (Deployment, Service, HPA, Ingress)
+- the **Dockerfile** and **Helm charts** (Deployment, Service, HPA, Ingress)
 - the **service-mesh overlay** for Cilium, Istio, or Linkerd
 - **OpenTelemetry** tracing and structured logs, with trace context propagated across calls
 - the **MCP tool server** — every gRPC method exposed as an LLM-callable tool
@@ -199,19 +158,16 @@ cargo binstall tonin-helm
 The network concerns it deliberately *doesn't* implement — mTLS, retries, circuit breaking,
 cross-cluster routing — are delegated to your service mesh, where they belong.
 
-`tonin.toml` is the source of truth: re-run `tonin k8s generate` after editing it rather than
-hand-editing the YAML in `./k8s/`.
+`tonin.toml` is the source of truth: re-run `tonin helm generate` after editing it rather
+than hand-editing the generated charts.
 
 ## Everyday commands
 
 ```bash
 tonin service new <name>        # scaffold a service (Rust / Python / TS)
 tonin proto generate            # re-run codegen after editing .proto
-tonin k8s generate              # render k8s/ from tonin.toml
-tonin k8s validate              # kubectl apply --dry-run=server
-tonin k8s diff                  # kubectl diff against current context
-tonin k8s apply                 # render + kubectl apply
-tonin k8s apply --workspace     # render every tonin.toml under a path
+tonin helm generate             # render Helm charts from tonin.toml
+tonin helm check                # detect drift between tonin.toml and rendered charts
 ```
 
 The CLI binary is `tonin`. See `tonin --help` for the full surface.
@@ -240,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`src/main.rs` (the shape `tonin service new` scaffolds — `tonic-build` emits `GreeterServer` + the `Greeter` trait from the `.proto`; you implement the trait in `src/server.rs`):
+`src/main.rs`:
 
 ```rust,ignore
 use tonin::prelude::*;
@@ -252,11 +208,9 @@ use greeter_server::{
 
 #[tokio::main]
 async fn main() -> tonin::Result<()> {
-    // Pre-wired DB + cache from DATABASE_URL / REDIS_URL env (no-op if unset).
     let state = State::from_env().await?;
     let handler = GreeterImpl::new(state);
 
-    // Same impl serves gRPC (:50051) and MCP (:50052).
     let mcp_handler = handler.clone();
     Service::new("greeter")
         .with_auth(auth::verifier())
@@ -273,7 +227,7 @@ async fn main() -> tonin::Result<()> {
 [service]
 name    = "greeter"
 version = "0.1.0"
-codec   = "prost"      # what runs today (tonic-build); a buffa-based `protoc-gen-micro` codegen plugin is planned
+codec   = "prost"
 
 [deploy]
 replicas    = 2
@@ -307,31 +261,21 @@ engine = "redis"
 required = ["STRIPE_API_KEY"]
 ```
 
-`[database]` renders a Postgres StatefulSet + headless Service + a
-credentials Secret (`DATABASE_URL` + `DATABASE_PASSWORD` env vars are
-injected). `[cache]` renders a Redis StatefulSet + Service with `REDIS_URL`.
-`[secrets]` parses today and surfaces the required keys to your tooling; the
-renderer side (emitting a `Secret` / `ExternalSecret` for those keys) lands
-in a follow-up — until then, populate the Secret out-of-band. Auth is
-configured via env vars (`TONIN_AUTH_ISSUER`, `TONIN_AUTH_AUDIENCE`,
-`TONIN_AUTH_JWKS_URL`) and `.with_auth(JwtValidator::from_env()?)` on the
-`Service` builder; a dedicated `[auth]` TOML section is roadmapped.
 See [`docs/01-principles.md`](docs/01-principles.md) for the interface-first
 design rationale, and [`docs/07-cache.md`](docs/07-cache.md) through
 [`docs/10-secrets.md`](docs/10-secrets.md) for each capability's trait, TOML
-schema, and status (what ships today vs. 0.2+).
+schema, and status.
 
 ## Crate map
 
 | Crate | Role |
 | ----- | ---- |
-| [`tonin`](https://crates.io/crates/tonin) | Umbrella re-export. `use tonin::prelude::*;` is what most services pull in. |
+| [`tonin`](https://crates.io/crates/tonin) | Umbrella re-export + CLI binary. `use tonin::prelude::*;` is what most services pull in. |
 | [`tonin-sdk`](https://crates.io/crates/tonin-sdk) | `Service` builder, runtime, capability traits, auth, telemetry, MCP, transport, discovery. |
 | [`tonin-plugin`](https://crates.io/crates/tonin-plugin) | Minimal `tonin.toml` Plan API for plugin authors. No CLI deps. |
 | [`tonin-client`](https://crates.io/crates/tonin-client) | Tiny peer-service client primitives. No server framework deps. |
 | [`tonin-mcp-macros`](https://crates.io/crates/tonin-mcp-macros) | `#[mcp_expose]` proc-macro: auto-derives an MCP adapter from a gRPC `impl` block. |
 | [`tonin-build`](https://crates.io/crates/tonin-build) | `build.rs` helper that wraps `tonic-build` with tonin conventions. |
-| [`tonin`](https://crates.io/crates/tonin) | The CLI binary. `cargo install tonin`. |
 
 ## Documentation
 
@@ -341,24 +285,6 @@ for the four design rules (interface-first, mesh-delegated, MCP-by-default,
 `tonin.toml` as the single source of truth). Each capability has its own doc with a
 Status block listing what ships today vs. what's planned. Per-crate API reference is on
 [docs.rs](https://docs.rs).
-
-## Compatibility
-
-`tonin` (the CLI) and `tonin-plugin` share one workspace version, so they always match.
-The [`tonin-helm`](https://github.com/Rushit/tonin-helm) plugin tracks `tonin-plugin`
-independently:
-
-| tonin CLI / tonin-plugin | tonin-helm |
-| ------------------------ | ---------- |
-| 0.5.3 – 0.5.5            | 0.1.x      |
-| 0.5.6 – 0.5.x            | 0.2.x      |
-| 0.6.0+                   | 0.3.x      |
-
-HTTP services (`type = "http"`, and `[service.http]` for gRPC services that also serve
-HTTP) require **0.5.6+** (and tonin-helm 0.2.x for chart generation).
-
-Per-environment namespaces and dependencies (`{env}` placeholders and the Cargo-style
-`[depends_on]` table form) require **0.6.0+** (and tonin-helm 0.3.x for chart generation).
 
 ## Contributing
 
@@ -374,5 +300,3 @@ can reach out privately.
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
-</content>
-</invoke>
