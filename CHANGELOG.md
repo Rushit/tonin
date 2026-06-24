@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.7](https://github.com/Rushit/tonin/compare/v0.7.6...v0.7.7) (2026-06-24)
+
+
+### Bug Fixes
+
+* **helm:** apply containerSecurityContext to migrate and mcp containers ([#62](https://github.com/Rushit/tonin/issues/62)) ([cdda13a](https://github.com/Rushit/tonin/commit/cdda13ac74621b7a37895c9c067dcf86688a3552))
+
 ## [0.7.6](https://github.com/Rushit/tonin/compare/v0.7.5...v0.7.6) (2026-06-24)
 
 
