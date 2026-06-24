@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.5](https://github.com/Rushit/tonin/compare/v0.7.4...v0.7.5) (2026-06-24)
+
+
+### Features
+
+* **scaffold:** Python Makefile template, streaming RPCs, --template-repo support ([#53](https://github.com/Rushit/tonin/issues/53)) ([eb2862e](https://github.com/Rushit/tonin/commit/eb2862e60aef0af6238166df44ae492783f4c597))
+
+
+### Bug Fixes
+
+* **ci:** broaden idempotent publish check to catch both crates.io error messages ([#55](https://github.com/Rushit/tonin/issues/55)) ([6eb185c](https://github.com/Rushit/tonin/commit/6eb185c58751855b80bcfb8c20f1a6e0f35d4989))
+
 ## [0.7.4](https://github.com/Rushit/tonin/compare/v0.7.3...v0.7.4) (2026-06-24)
 
 
