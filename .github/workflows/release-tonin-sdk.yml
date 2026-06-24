@@ -51,7 +51,7 @@ jobs:
               exit
             }
           ' crates/tonin-sdk/Cargo.toml)
-          FILE_VERSION=$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)
+          FILE_VERSION=$(awk '{print $1}' crates/tonin-sdk/VERSION)
           echo "Tag version:         ${TAG_VERSION}"
           echo "Cargo.toml version:  ${CARGO_VERSION}"
           echo "VERSION file:        ${FILE_VERSION}"
