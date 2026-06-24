@@ -971,6 +971,70 @@ memory = "128Mi"
     }
 
     #[test]
+    fn grpc_backend_values_have_empty_path_and_grpc_true() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+
+        let values = read(&out.join("values.yaml"));
+        assert!(values.contains("grpc: true"), "gRPC backend must emit grpc:true");
+        assert!(values.contains("path: \"\""), "gRPC backend emits empty path: {values}");
+    }
+
+    #[test]
+    fn http_service_values_have_non_empty_path_and_grpc_false() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), HTTP_TOML);
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+
+        let values = read(&out.join("values.yaml"));
+        assert!(values.contains("grpc: false"), "HTTP service must emit grpc:false");
+        assert!(
+            !values.contains("path: \"\""),
+            "HTTP service must not emit empty path: {values}"
+        );
+    }
+
+    #[test]
+    fn deployment_template_contains_fail_guard_for_grpc_false_empty_path() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+
+        let deployment = read(&out.join("templates").join("deployment.yaml"));
+        assert!(
+            deployment.contains("service.health.path"),
+            "deployment must reference health.path: {deployment}"
+        );
+        assert!(
+            deployment.contains("fail"),
+            "deployment must contain the fail guard: {deployment}"
+        );
+        assert!(
+            deployment.contains("quote"),
+            "deployment must quote the path interpolation: {deployment}"
+        );
+    }
+
+    #[test]
     fn per_env_depends_on_resolves_namespaces_into_values() {
         let svc = tempfile::tempdir().unwrap();
         write_service(
