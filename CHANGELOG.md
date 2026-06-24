@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/Rushit/tonin/compare/v0.7.1...v0.7.2) (2026-06-24)
+
+
+### Bug Fixes
+
+* **ci:** use --auto on merge so Copilot review gate is honoured ([#44](https://github.com/Rushit/tonin/issues/44)) ([7886491](https://github.com/Rushit/tonin/commit/788649135ab9b9caf54ef24ae21447eab2fbf977))
+
 ## [0.7.1](https://github.com/Rushit/tonin/compare/v0.7.0...v0.7.1) (2026-06-24)
 
 
