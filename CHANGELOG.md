@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.6](https://github.com/Rushit/tonin/compare/v0.7.5...v0.7.6) (2026-06-24)
+
+
+### Bug Fixes
+
+* **ci:** rustfmt assert! expansions and portable commit-msg hook ([#60](https://github.com/Rushit/tonin/issues/60)) ([4b43943](https://github.com/Rushit/tonin/commit/4b439436da87cb99de0a8e756052eea8dd26e694))
+* **helm:** guard against grpc:false + empty health path ([#58](https://github.com/Rushit/tonin/issues/58)) ([e42f642](https://github.com/Rushit/tonin/commit/e42f64248b043dc161bd6b661a781c9bf44b9f68))
+
 ## [0.7.5](https://github.com/Rushit/tonin/compare/v0.7.4...v0.7.5) (2026-06-24)
 
 
