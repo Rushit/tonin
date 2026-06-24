@@ -12,6 +12,7 @@ set -euo pipefail
 # Does NOT tag and does NOT push — those belong to the `release` make target.
 #
 # Usage: scripts/bump-version.sh <X.Y.Z[-pre]>
+#        scripts/bump-version.sh <patch|minor|major>
 
 if [[ $# -ne 1 ]]; then
     echo "error: expected exactly one argument (the new version)" >&2
@@ -21,16 +22,34 @@ fi
 
 NEW="$1"
 
+# cd to repo root (script lives in <repo>/scripts).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+# If a bump type was given, auto-calculate the new version from VERSION file.
+case "$NEW" in
+  patch|minor|major)
+    [[ -f VERSION ]] || { echo "error: VERSION file not found" >&2; exit 1; }
+    CURRENT_AUTO="$(tr -d '[:space:]' < VERSION)"
+    C_MAJOR="${CURRENT_AUTO%%.*}"
+    C_REST="${CURRENT_AUTO#*.}"
+    C_MINOR="${C_REST%%.*}"
+    C_PATCH="${C_REST#*.}"
+    case "$NEW" in
+      major) NEW="$((C_MAJOR + 1)).0.0" ;;
+      minor) NEW="${C_MAJOR}.$((C_MINOR + 1)).0" ;;
+      patch) NEW="${C_MAJOR}.${C_MINOR}.$((C_PATCH + 1))" ;;
+    esac
+    echo "Auto-calculated bump → ${NEW}"
+    ;;
+esac
+
 # Validate SemVer (with optional pre-release suffix).
 if [[ ! "$NEW" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
     echo "error: '$NEW' is not a valid SemVer string (expected X.Y.Z or X.Y.Z-prerelease)" >&2
     exit 1
 fi
-
-# cd to repo root (script lives in <repo>/scripts).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$REPO_ROOT"
 
 # Refuse if the working tree is dirty — a clean bump-commit shouldn't
 # slurp up unrelated work.

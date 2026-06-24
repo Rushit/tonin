@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
-# install.sh — download and install the tonin CLI binary
+# install.sh — download and install the tonin CLI (+ optional plugins)
+#
+# Helm chart generation is built into the tonin binary itself — no separate
+# tonin-helm install is needed. Additional community plugins can be added
+# with --plugin.
 #
 # Usage:
-#   # Install latest to ~/.local/bin (if on PATH) or /usr/local/bin
+#   # Install latest tonin to ~/.cargo/bin
 #   curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
 #
-#   # Install a specific version
+#   # Install a specific tonin version
 #   curl -sSfL ... | bash -s -- --version v0.5.4
 #
 #   # Install to a custom directory
 #   curl -sSfL ... | bash -s -- --dir /usr/local/bin
 #
-#   # Install tonin plus one or more plugins (repeatable, any tonin-* plugin)
-#   curl -sSfL ... | bash -s -- --plugin Rushit/tonin-helm
-#   curl -sSfL ... | bash -s -- --plugin Rushit/tonin-helm@v0.2.6
-#
-#   # Back-compat alias for --plugin Rushit/tonin-helm
-#   curl -sSfL ... | bash -s -- --with-tonin-helm
+#   # Install tonin + additional plugins
+#   curl -sSfL ... | bash -s -- --plugin owner/tonin-myplugin
+#   curl -sSfL ... | bash -s -- --plugin owner/tonin-myplugin@v1.2.3
 #
 # Or run locally:
 #   ./scripts/install.sh [--version v0.5.4] [--dir ~/.local/bin] \
-#       [--plugin <owner/repo>[@vX.Y.Z]]... [--with-tonin-helm [--helm-version v0.1.1]]
+#       [--plugin <owner/repo>[@vX.Y.Z]]...
 
 set -euo pipefail
 
@@ -28,11 +29,8 @@ set -euo pipefail
 # Defaults
 # ---------------------------------------------------------------------------
 TONIN_VERSION=""          # empty = fetch latest from GitHub
-HELM_VERSION=""           # empty = fetch latest from GitHub
 INSTALL_DIR=""            # empty = auto-detect
-WITH_HELM=0
 REPO_TONIN="Rushit/tonin"
-REPO_HELM="Rushit/tonin-helm"
 PLUGIN_SPECS=()           # repeatable --plugin <owner/repo>[@vX.Y.Z]
 
 # ---------------------------------------------------------------------------
@@ -44,16 +42,10 @@ while [[ $# -gt 0 ]]; do
             TONIN_VERSION="$2"; shift 2 ;;
         --version=*)
             TONIN_VERSION="${1#--version=}"; shift ;;
-        --helm-version)
-            HELM_VERSION="$2"; shift 2 ;;
-        --helm-version=*)
-            HELM_VERSION="${1#--helm-version=}"; shift ;;
         --dir)
             INSTALL_DIR="$2"; shift 2 ;;
         --dir=*)
             INSTALL_DIR="${1#--dir=}"; shift ;;
-        --with-tonin-helm)
-            WITH_HELM=1; shift ;;
         --plugin)
             PLUGIN_SPECS+=("$2"); shift 2 ;;
         --plugin=*)
@@ -247,21 +239,12 @@ fi
 install_binary "$REPO_TONIN" "tonin" "$TONIN_VERSION" "$TARGET" "$DEST"
 
 # ---------------------------------------------------------------------------
-# Plugins
+# Extra plugins from --plugin flags
 # ---------------------------------------------------------------------------
-# Back-compat: --with-tonin-helm [--helm-version vX] == --plugin <helm repo>[@vX].
-if [[ "$WITH_HELM" -eq 1 ]]; then
-    if [[ -n "$HELM_VERSION" ]]; then
-        PLUGIN_SPECS+=("${REPO_HELM}@${HELM_VERSION}")
-    else
-        PLUGIN_SPECS+=("$REPO_HELM")
-    fi
-fi
+INSTALLED_PLUGINS=()
 
 # Each spec is `owner/repo` or `owner/repo@vX.Y.Z`. The binary name is the
-# repo's last path segment (e.g. Rushit/tonin-helm -> tonin-helm), which is
-# exactly the `tonin-<name>` plugin convention.
-INSTALLED_PLUGINS=()
+# repo's last path segment — exactly the `tonin-<name>` plugin convention.
 for spec in ${PLUGIN_SPECS+"${PLUGIN_SPECS[@]}"}; do
     repo="${spec%@*}"
     version=""
@@ -291,6 +274,7 @@ if ! echo ":$PATH:" | grep -q ":${DEST}:"; then
 fi
 
 ok "Done! Run 'tonin --version' to verify."
+ok "Helm chart generation is built in: 'tonin helm generate --help'"
 for bin in ${INSTALLED_PLUGINS+"${INSTALLED_PLUGINS[@]}"}; do
     name="${bin#tonin-}"
     ok "Run 'tonin ${name} --tonin-describe' to verify ${bin}."

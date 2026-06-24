@@ -1,13 +1,13 @@
-//! `tonin-helm generate` — render a Helm chart from `tonin.toml`.
+//! `tonin helm generate` — render a Helm chart from `tonin.toml`.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use tera::Tera;
 use tonin_plugin::{MigrationRunOn, Plan, SecuritySection, ServiceKind};
 
-static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates");
+static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
 
 /// Implemented by each optional `tonin.toml` section that contributes keys to the Tera context.
 /// Adding a new section means a new `impl` here — `build_context` stays stable.
@@ -528,8 +528,8 @@ gateway = "agnitiv-dev"
         assert!(values.contains("enabled: true")); // [migrations] present
         assert!(values.contains("mode: init-container")); // default mode
         assert!(values.contains("env: {}")); // migration-only env hatch
-                                             // Both the initContainer (deployment) and the Job hook template ship;
-                                             // mode selects which renders at deploy time.
+        // Both the initContainer (deployment) and the Job hook template ship;
+        // mode selects which renders at deploy time.
         assert!(out.join("templates").join("migration-job.yaml").exists());
         let job = read(&out.join("templates").join("migration-job.yaml"));
         assert!(job.contains("helm.sh/hook\": pre-install,pre-upgrade"));

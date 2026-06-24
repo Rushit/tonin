@@ -1,4 +1,4 @@
-//! `tonin-helm check` — verify that chart/ matches what `generate` would produce.
+//! `tonin helm check` — verify that chart/ matches what `generate` would produce.
 //!
 //! Runs the exact same render pipeline as `generate`, but into a temp dir, then
 //! diffs that output against the committed chart. Catches structural drift the

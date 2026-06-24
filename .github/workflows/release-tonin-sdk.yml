@@ -1,0 +1,147 @@
+# Release tonin-sdk to crates.io (library-only — no binary builds)
+#
+# Triggered by release-please pushing a tonin-sdk-vX.Y.Z tag to main (via
+# the Release PR automerge flow in release-please.yml).  The GitHub Release
+# is created by release-please before the tag push; this workflow publishes
+# leaf deps + tonin-sdk to crates.io.
+#
+# Can also be triggered manually via workflow_dispatch for re-runs or hotfixes.
+#
+# Required secrets:
+#   GITHUB_TOKEN         — auto-provided
+#   CARGO_REGISTRY_TOKEN — crates.io API token
+
+name: Release tonin-sdk
+
+on:
+  push:
+    tags:
+      - 'tonin-sdk-v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version tag (e.g. tonin-sdk-v0.8.0). Leave blank to use the ref this run targets.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Verify the tag matches crates/tonin-sdk/Cargo.toml [package].version.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Verify tag matches crates/tonin-sdk/Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify
+        run: |
+          set -euo pipefail
+          REF="${{ github.event.inputs.version || github.ref_name }}"
+          TAG_VERSION="${REF#tonin-sdk-v}"
+          CARGO_VERSION=$(awk '
+            /^\[package\]/ { in_section=1; next }
+            /^\[/ && in_section { in_section=0 }
+            in_section && /^version[[:space:]]*=/ {
+              match($0, /"[^"]+"/)
+              print substr($0, RSTART+1, RLENGTH-2)
+              exit
+            }
+          ' crates/tonin-sdk/Cargo.toml)
+          FILE_VERSION=$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)
+          echo "Tag version:         ${TAG_VERSION}"
+          echo "Cargo.toml version:  ${CARGO_VERSION}"
+          echo "VERSION file:        ${FILE_VERSION}"
+          if [ "${FILE_VERSION}" != "${CARGO_VERSION}" ]; then
+            echo "::error::crates/tonin-sdk/VERSION (${FILE_VERSION}) and Cargo.toml (${CARGO_VERSION}) are out of sync." >&2
+            echo "::error::Run crates/tonin-sdk/scripts/bump-version.sh ${CARGO_VERSION} to resync." >&2
+            exit 1
+          fi
+          if [ "${TAG_VERSION}" != "${CARGO_VERSION}" ]; then
+            echo "::error::Tag ${REF} does not match crates/tonin-sdk/Cargo.toml version (${CARGO_VERSION})." >&2
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Full test suite for tonin-sdk.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test tonin-sdk
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+          components: rustfmt, clippy
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: fmt + clippy + test + doc
+        run: |
+          cargo fmt -p tonin-sdk -- --check
+          cargo clippy -p tonin-sdk --all-targets -- -D warnings
+          cargo test -p tonin-sdk
+          RUSTDOCFLAGS="-D warnings" cargo doc -p tonin-sdk --no-deps
+
+  # ---------------------------------------------------------------------------
+  # Publish to crates.io (leaf deps first, then tonin-sdk).
+  # `cargo update` runs first to bring Cargo.lock in sync with the version
+  # bump committed by release-please.
+  # ---------------------------------------------------------------------------
+  publish-crate:
+    name: Publish tonin-sdk to crates.io
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Sync Cargo.lock with bumped version
+        run: cargo update --package tonin-sdk
+
+      - name: Publish leaf deps then tonin-sdk
+        run: |
+          set -euo pipefail
+          echo "Publishing tonin-client..."
+          cargo publish -p tonin-client
+          sleep 30
+          echo "Publishing tonin-mcp-macros..."
+          cargo publish -p tonin-mcp-macros
+          sleep 30
+          echo "Publishing tonin-sdk..."
+          cargo publish -p tonin-sdk

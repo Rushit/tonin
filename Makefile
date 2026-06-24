@@ -12,8 +12,10 @@ RUSTDOCFLAGS ?= -D warnings
 .DEFAULT_GOAL := help
 
 .PHONY: help build check test e2e test-all fmt fmt-check lint doc ci clean gen-example \
-        install-cli install-hooks publish-dry publish version release show-version check-version \
-        check-version-helm show-version-helm version-helm release-helm
+        install-cli install-hooks publish-dry publish show-version check-version version \
+        bump-patch bump-minor bump-major \
+        show-version-sdk check-version-sdk version-sdk \
+        bump-patch-sdk bump-minor-sdk bump-major-sdk
 
 help: ## Show this help table
 	@awk 'BEGIN {FS = ":.*##"; printf "Available targets:\n\n"} \
@@ -51,7 +53,7 @@ lint: ## Run clippy across the workspace, warnings denied
 doc: ## Build rustdoc for the workspace, warnings denied
 	RUSTDOCFLAGS="$(RUSTDOCFLAGS)" $(CARGO) doc --workspace --no-deps
 
-ci: fmt-check lint test doc check-version check-version-helm ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
+ci: fmt-check lint test doc check-version check-version-sdk ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
 	@echo "ci: all checks passed"
 
 install-hooks: ## Wire up git hooks (run once after cloning)
@@ -63,7 +65,7 @@ install-hooks: ## Wire up git hooks (run once after cloning)
 
 gen-example: ## Re-render examples/greeter Helm chart and confirm it builds
 	$(CARGO) build -p greeter
-	$(CARGO) run -p tonin-helm -- generate --path examples/greeter
+	$(CARGO) run -p tonin -- helm generate --path examples/greeter
 	@echo "gen-example: greeter builds and Helm chart renders"
 
 clean: ## Remove cargo build artifacts
@@ -120,12 +122,19 @@ publish: ## Publish all six crates to crates.io in dep order
 	@echo "publish: all six crates uploaded"
 
 # ---------------------------------------------------------------------------
-# Versioning + release
+# Versioning
 # ---------------------------------------------------------------------------
 #
-# /VERSION is the source of truth. `scripts/bump-version.sh` mirrors it
-# into Cargo.toml's [workspace.package].version and refreshes Cargo.lock,
-# all in a single bump-commit. The release workflow reads /VERSION directly.
+# Releases are fully automated via release-please (.github/workflows/release-please.yml):
+#   1. Merge a feature PR → release-please opens a Release PR with CHANGELOG +
+#      version bump (driven by Conventional Commits since the last tag).
+#   2. The Release PR is auto-squash-merged by the automerge job.
+#   3. release-please pushes the semver tag + creates the GitHub Release.
+#   4. release.yml / release-tonin-sdk.yml publish to crates.io and build binaries.
+#
+# The targets below are for LOCAL version management only (e.g. testing a
+# specific version, or bumping without committing to main). They do NOT tag or
+# push — release-please owns that.
 
 show-version: ## Print the current workspace version (from /VERSION)
 	@cat VERSION
@@ -144,61 +153,57 @@ check-version: ## Verify VERSION file and Cargo.toml [workspace.package].version
 	 fi; \
 	 echo "check-version: ok ($$FILE)"
 
-version: ## Bump /VERSION + Cargo.toml mirror and commit (VERSION=X.Y.Z)
+version: ## Bump /VERSION + Cargo.toml to an explicit X.Y.Z and commit locally (VERSION=X.Y.Z)
 	@test -n "$(VERSION)" || \
 	  (echo "usage: make version VERSION=X.Y.Z" >&2; exit 1)
 	./scripts/bump-version.sh "$(VERSION)"
 
-release: version ## Bump, tag, and push vX.Y.Z to origin (fires the publish workflow)
-	@echo "→ tagging v$(VERSION)"
-	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
-	@echo "→ pushing main"
-	git push origin main
-	@echo "→ pushing tag v$(VERSION)"
-	git push origin "v$(VERSION)"
-	@echo
-	@echo "✓ v$(VERSION) released. .github/workflows/release.yml is running:"
-	@echo "  https://github.com/Rushit/tonin/actions"
-	@echo "  (verify → make ci → publish 5 crates → cross-platform binaries → GitHub Release)"
+bump-patch: ## Bump workspace PATCH version locally (does not tag/push)
+	./scripts/bump-version.sh patch
+
+bump-minor: ## Bump workspace MINOR version locally (does not tag/push)
+	./scripts/bump-version.sh minor
+
+bump-major: ## Bump workspace MAJOR version locally (does not tag/push)
+	./scripts/bump-version.sh major
 
 # ---------------------------------------------------------------------------
-# tonin-helm versioning + release (independent from the core workspace version)
+# tonin-sdk versioning (independent from the core workspace version)
 # ---------------------------------------------------------------------------
 #
-# tonin-helm lives in crates/tonin-helm/ and carries its own version in
-# crates/tonin-helm/VERSION (mirrored into crates/tonin-helm/Cargo.toml
-# [package].version). Tags use the prefix "tonin-helm-v" to distinguish them
-# from core workspace releases (which use plain "v").
+# tonin-sdk lives in crates/tonin-sdk/ and carries its own version in
+# crates/tonin-sdk/VERSION (mirrored into crates/tonin-sdk/Cargo.toml
+# [package].version). Tags use the prefix "tonin-sdk-v" to distinguish them
+# from core workspace releases. Tagging and pushing are handled by
+# release-please; the targets below are for local version management only.
 
-show-version-helm: ## Print tonin-helm's current version (from crates/tonin-helm/VERSION)
-	@cat crates/tonin-helm/VERSION
+show-version-sdk: ## Print tonin-sdk's current version (from crates/tonin-sdk/VERSION)
+	@cat crates/tonin-sdk/VERSION
 
-check-version-helm: ## Verify crates/tonin-helm/VERSION and Cargo.toml [package].version are in sync
-	@FILE="$$(tr -d '[:space:]' < crates/tonin-helm/VERSION)"; \
+check-version-sdk: ## Verify crates/tonin-sdk/VERSION and Cargo.toml [package].version are in sync
+	@FILE="$$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)"; \
 	 CARGO="$$(awk ' \
 	   /^\[package\]/ { s=1; next } \
 	   /^\[/ && s { s=0 } \
 	   s && /^version[[:space:]]*=/ { match($$0, /"[^"]+"/) ; print substr($$0, RSTART+1, RLENGTH-2) ; exit } \
-	 ' crates/tonin-helm/Cargo.toml)"; \
+	 ' crates/tonin-sdk/Cargo.toml)"; \
 	 if [ "$$FILE" != "$$CARGO" ]; then \
-	   echo "error: crates/tonin-helm/VERSION ($$FILE) and crates/tonin-helm/Cargo.toml ($$CARGO) are out of sync" >&2; \
-	   echo "fix:   crates/tonin-helm/scripts/bump-version.sh $$CARGO" >&2; \
+	   echo "error: crates/tonin-sdk/VERSION ($$FILE) and crates/tonin-sdk/Cargo.toml ($$CARGO) are out of sync" >&2; \
+	   echo "fix:   crates/tonin-sdk/scripts/bump-version.sh $$CARGO" >&2; \
 	   exit 1; \
 	 fi; \
-	 echo "check-version-helm: ok ($$FILE)"
+	 echo "check-version-sdk: ok ($$FILE)"
 
-version-helm: ## Bump crates/tonin-helm VERSION + Cargo.toml and commit (VERSION=X.Y.Z)
+version-sdk: ## Bump crates/tonin-sdk VERSION + Cargo.toml and commit locally (VERSION=X.Y.Z)
 	@test -n "$(VERSION)" || \
-	  (echo "usage: make version-helm VERSION=X.Y.Z" >&2; exit 1)
-	./crates/tonin-helm/scripts/bump-version.sh "$(VERSION)"
+	  (echo "usage: make version-sdk VERSION=X.Y.Z" >&2; exit 1)
+	./crates/tonin-sdk/scripts/bump-version.sh "$(VERSION)"
 
-release-helm: version-helm ## Bump, tag tonin-helm-vX.Y.Z, and push to origin (fires release CI)
-	@echo "→ tagging tonin-helm-v$(VERSION)"
-	git tag -a "tonin-helm-v$(VERSION)" -m "Release tonin-helm v$(VERSION)"
-	@echo "→ pushing main"
-	git push origin main
-	@echo "→ pushing tag tonin-helm-v$(VERSION)"
-	git push origin "tonin-helm-v$(VERSION)"
-	@echo
-	@echo "✓ tonin-helm v$(VERSION) released. .github/workflows/release-tonin-helm.yml is running:"
-	@echo "  https://github.com/Rushit/tonin/actions"
+bump-patch-sdk: ## Bump tonin-sdk PATCH version locally (does not tag/push)
+	./crates/tonin-sdk/scripts/bump-version.sh patch
+
+bump-minor-sdk: ## Bump tonin-sdk MINOR version locally (does not tag/push)
+	./crates/tonin-sdk/scripts/bump-version.sh minor
+
+bump-major-sdk: ## Bump tonin-sdk MAJOR version locally (does not tag/push)
+	./crates/tonin-sdk/scripts/bump-version.sh major

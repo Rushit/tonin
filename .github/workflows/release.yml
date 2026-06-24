@@ -1,5 +1,12 @@
 # Release to crates.io + cross-platform binaries
 #
+# Triggered by release-please pushing a v*.*.* tag to main (via the Release PR
+# automerge flow in release-please.yml).  The GitHub Release itself is created
+# by release-please before the tag push; this workflow publishes crates and
+# uploads binary assets to that release.
+#
+# Can also be triggered manually via workflow_dispatch for re-runs or hotfixes.
+#
 # Setup: this workflow needs a crates.io API token exposed as a repository
 # secret named CARGO_REGISTRY_TOKEN. To create it:
 #   Settings -> Secrets and variables -> Actions -> New repository secret
@@ -38,8 +45,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. v0.1.0) - emergency manual run only'
-        required: true
+        description: 'Override version tag (e.g. v0.1.0). Leave blank to use the ref this run targets.'
+        required: false
         type: string
 
 permissions:
@@ -60,11 +67,7 @@ jobs:
       - name: Verify
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            REF="${{ github.event.inputs.version }}"
-          else
-            REF="${{ github.ref_name }}"
-          fi
+          REF="${{ github.event.inputs.version || github.ref_name }}"
           TAG_VERSION="${REF#v}"
           # /VERSION is the source of truth. scripts/bump-version.sh keeps
           # Cargo.toml's [workspace.package].version in sync; we still cross-
@@ -97,10 +100,7 @@ jobs:
 
   # ----------------------------------------------------------------------
   # Run the full `make ci` gate (fmt-check + clippy -D warnings + tests +
-  # doc -D warnings) at the tagged commit. Same gates ci.yml runs on push,
-  # repeated here so the release workflow is self-contained: a release tag
-  # whose commit doesn't pass tests never reaches crates.io and never
-  # produces uploaded binaries.
+  # doc -D warnings) at the tagged commit.
   # ----------------------------------------------------------------------
   test:
     name: Test (make ci)
@@ -120,11 +120,10 @@ jobs:
           toolchain: "1.90"
           components: rustfmt, clippy
 
-      # `etcd-client` (transitive via `tonin-config-etcd`) needs protoc
-      # in its build.rs; runner images don't ship it preinstalled.
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
+          version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
@@ -140,6 +139,9 @@ jobs:
 
   # ----------------------------------------------------------------------
   # Publish the five crates to crates.io in dep order.
+  # `cargo update --workspace` runs first to bring Cargo.lock in sync with
+  # the version bump committed by release-please (avoids stale-lock errors
+  # during `cargo publish`'s internal verification step).
   # ----------------------------------------------------------------------
   publish-crates:
     name: Publish crates to crates.io
@@ -158,50 +160,28 @@ jobs:
         with:
           toolchain: 1.90.0
 
-      # `cargo publish` re-verifies each crate by compiling it, which for
-      # any future config-impl crate (etcd, etc.) pulls in protoc users.
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
+          version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Sync Cargo.lock with bumped version
+        run: cargo update --workspace
+
       - name: Publish all crates to crates.io
         run: make publish
 
   # ----------------------------------------------------------------------
-  # Create a draft GitHub Release for the tag BEFORE the matrix binary
-  # builds start uploading assets to it. Without this, all 5 matrix jobs
-  # try to lazily create the same release in parallel via
-  # `taiki-e/upload-rust-binary-action`, race each other, and the losers
-  # see `release not found` × N retries because they can't see the
-  # release the winner just created until eventual-consistency settles.
-  #
-  # `softprops/action-gh-release@v2` is idempotent — `finalize-release`
-  # at the end of the workflow runs again with `draft: false` to flip
-  # this draft to a published release. No second release is created.
-  # ----------------------------------------------------------------------
-  create-release:
-    name: Create draft Release for ${{ github.ref_name }}
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          draft: true
-          prerelease: false
-
-  # ----------------------------------------------------------------------
   # Cross-platform binary builds. Each matrix entry produces one archive
-  # and uploads it to the draft Release created above.
+  # and uploads it to the GitHub Release created by release-please.
   # ----------------------------------------------------------------------
   build-binaries:
     name: Build ${{ matrix.target }}
-    needs: create-release
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -237,11 +217,10 @@ jobs:
           toolchain: 1.90.0
           targets: ${{ matrix.target }}
 
-      # protoc needed even for the binary build: cargo evaluates the full
-      # workspace dep graph before building -p tonin --bin tonin.
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
+          version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
@@ -249,12 +228,6 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # taiki-e/upload-rust-binary-action handles:
-      #   - cargo build --release --target <target> -p tonin --bin tonin
-      #   - cross-compile via `cross` when target != host (e.g. aarch64-linux on ubuntu-x86)
-      #   - tar.gz / zip with conventional naming (tonin-<target>.<ext>)
-      #   - gh release create (idempotent) + asset upload, signed checksums
-      #   - manifest is what `cargo binstall tonin` expects, so binstall works for free
       - name: Build and upload tonin
         uses: taiki-e/upload-rust-binary-action@v1
         with:
@@ -269,35 +242,13 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ----------------------------------------------------------------------
-  # Finalize the GitHub Release after both publish + binaries succeed.
-  # generate_release_notes pulls commit messages since the previous tag.
-  # ----------------------------------------------------------------------
-  finalize-release:
-    name: Finalize GitHub Release
-    needs: [publish-crates, build-binaries]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Finalize Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-
-  # ----------------------------------------------------------------------
-  # Smoke-test the installer end to end. install.sh stores no version — it
-  # resolves `releases/latest` at runtime — so the guarantee we need is
-  # "the published installer actually fetches the version we just tagged."
-  # This runs the real script and asserts the installed version matches the
-  # tag, failing the run if install.sh ever fetches the wrong version or
-  # breaks. Depends on finalize-release because `releases/latest` ignores
-  # draft releases, so it only resolves to this tag once it's published.
+  # Smoke-test the installer end to end once all binary assets are uploaded.
+  # Depends on finalize-release because `releases/latest` ignores draft
+  # releases, so it only resolves to this tag once it's published.
   # ----------------------------------------------------------------------
   verify-install:
     name: Smoke-test install.sh
-    needs: finalize-release
+    needs: build-binaries
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -306,11 +257,7 @@ jobs:
       - name: Install via install.sh and assert version
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            REF="${{ github.event.inputs.version }}"
-          else
-            REF="${{ github.ref_name }}"
-          fi
+          REF="${{ github.event.inputs.version || github.ref_name }}"
           WANT="${REF#v}"
           DEST="$(mktemp -d)"
           bash scripts/install.sh --dir "$DEST"

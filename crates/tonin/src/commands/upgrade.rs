@@ -1,10 +1,8 @@
 //! `tonin upgrade` — upgrade the tonin CLI and every installed plugin.
 //!
-//! Downloads the canonical `install.sh` and runs it with one `--plugin
-//! <owner/repo>` flag per plugin discovered on `$PATH`. The repo comes from
-//! each plugin's own `--tonin-meta`, so the CLI needs no hard-coded knowledge
-//! of which plugins exist — a new `tonin-<name>` plugin is picked up
-//! automatically as long as it reports its repo.
+//! Downloads the canonical `install.sh` and runs it with one `--plugin` flag
+//! per plugin discovered on `$PATH` (each plugin reports its own repo via
+//! `--tonin-meta`). Helm is built into tonin itself and upgrades with it.
 //!
 //! The plan is printed and confirmed before anything changes (`--yes` skips
 //! the prompt, `--check` previews only).
@@ -42,10 +40,6 @@ pub struct UpgradeArgs {
     /// Install directory (default: the directory of the running tonin binary).
     #[arg(long, value_name = "DIR")]
     pub dir: Option<PathBuf>,
-
-    /// Upgrade only the tonin CLI, leaving installed plugins untouched.
-    #[arg(long)]
-    pub self_only: bool,
 }
 
 /// One line of the upgrade plan.
@@ -82,26 +76,29 @@ pub fn run(args: UpgradeArgs) -> Result<()> {
         target: want_tonin,
     }];
 
+    // Discover every installed plugin.
     let mut upgradable: Vec<UpgradablePlugin> = Vec::new();
     let mut unmanaged: Vec<(String, String)> = Vec::new();
 
-    if !args.self_only {
-        for (name, path) in plugin::find_plugins() {
-            let meta = plugin::query_meta(&path);
-            let current = plugin_version(&meta, &path);
-            match meta.as_ref().and_then(|m| m.repo.clone()) {
-                Some(repo) => {
-                    let target = latest_tag(&repo).unwrap_or_else(|| "latest".to_string());
-                    rows.push(PlanRow {
-                        label: format!("tonin-{name}"),
-                        current,
-                        target,
-                    });
-                    upgradable.push(UpgradablePlugin { repo });
-                }
-                // No repo metadata → we can't drive install.sh for it.
-                None => unmanaged.push((name, current)),
+    for (name, path) in plugin::find_plugins() {
+        if name == "helm" {
+            // helm is now built into tonin — skip any stale tonin-helm binary on PATH.
+            continue;
+        }
+        let meta = plugin::query_meta(&path);
+        let current = plugin_version(&meta, &path);
+        match meta.as_ref().and_then(|m| m.repo.clone()) {
+            Some(repo) => {
+                let target = latest_tag(&repo).unwrap_or_else(|| "latest".to_string());
+                rows.push(PlanRow {
+                    label: format!("tonin-{name}"),
+                    current,
+                    target,
+                });
+                upgradable.push(UpgradablePlugin { repo });
             }
+            // No repo metadata → we can't drive install.sh for it.
+            None => unmanaged.push((name, current)),
         }
     }
 
