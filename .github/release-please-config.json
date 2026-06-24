@@ -23,7 +23,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "crates/tonin-sdk/VERSION"
+          "path": "VERSION"
         }
       ],
       "changelog-path": "CHANGELOG.md",
