@@ -78,3 +78,36 @@ async def test_say_hello_with_auth_header() -> None:
             assert "rushit" in reply.message
     finally:
         task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_say_hello_stream_returns_one_reply_per_word() -> None:
+    port, task = await _spawn_server()
+    try:
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = {{ ServiceCamel }}Stub(channel)
+            replies = [
+                r.message
+                async for r in stub.SayHelloStream(HelloRequest(name="foo bar"))
+            ]
+            assert replies == ["hello, foo", "hello, bar"]
+    finally:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_say_hello_client_stream_collects_all_names() -> None:
+    port, task = await _spawn_server()
+    try:
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = {{ ServiceCamel }}Stub(channel)
+
+            async def _requests():
+                for name in ("alice", "bob"):
+                    yield HelloRequest(name=name)
+
+            reply = await stub.SayHelloClientStream(_requests())
+            assert "alice" in reply.message
+            assert "bob" in reply.message
+    finally:
+        task.cancel()

@@ -1,0 +1,49 @@
+.DEFAULT_GOAL := help
+
+.PHONY: help codegen install fmt fmt-check lint typecheck test ci run clean
+
+# ── help ──────────────────────────────────────────────────────────────────────
+help:
+	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | \
+	  awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
+
+# ── setup ─────────────────────────────────────────────────────────────────────
+install: ## Sync all deps (server + client), create .venv if missing
+	(cd client-python && uv sync --extra codegen)
+	(cd server        && uv sync --extra codegen --extra test --extra lint)
+
+# ── codegen ───────────────────────────────────────────────────────────────────
+codegen: ## Regenerate gRPC stubs from proto/ (client + server)
+	(cd client-python && bash codegen.sh)
+	(cd server        && bash codegen.sh)
+
+# ── format ────────────────────────────────────────────────────────────────────
+fmt: ## Format code with ruff
+	cd server && uv run ruff format .
+
+fmt-check: ## Check formatting without writing (CI)
+	cd server && uv run ruff format --check .
+
+# ── lint ──────────────────────────────────────────────────────────────────────
+lint: ## Lint with ruff (errors only)
+	cd server && uv run ruff check .
+
+# ── type-check ────────────────────────────────────────────────────────────────
+typecheck: ## Type-check with mypy
+	cd server && uv run mypy src/
+
+# ── test ──────────────────────────────────────────────────────────────────────
+test: ## Run all tests (uv run pytest)
+	cd server && uv run pytest
+
+# ── CI gate ───────────────────────────────────────────────────────────────────
+ci: fmt-check lint test ## Full CI gate (fmt-check + lint + pytest)
+
+# ── run ───────────────────────────────────────────────────────────────────────
+run: ## Start the gRPC server on :50051 (dev mode, auth disabled)
+	cd server && TONIN_AUTH_INSECURE_DEV=1 uv run {{ service_name }}
+
+# ── clean ─────────────────────────────────────────────────────────────────────
+clean: ## Remove __pycache__ and egg-info trees (uv manages .venv — use 'uv venv --reset' to nuke it)
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true

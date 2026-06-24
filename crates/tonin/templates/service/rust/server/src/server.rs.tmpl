@@ -1,5 +1,10 @@
 //! Server-side handler implementations.
 
+use std::pin::Pin;
+
+use futures::Stream;
+use tokio_stream::StreamExt as _;
+use tonic::Streaming;
 use tonin::prelude::*;
 
 use crate::gen::{{ service_proto_module }}_server::{{ ServiceCamel }};
@@ -73,5 +78,40 @@ impl {{ ServiceCamel }} for {{ ServiceCamel }}Impl {
         );
 
         Ok(Response::new(HelloReply { message: greeting }))
+    }
+
+    // Server-streaming: push one reply per word in `name`, then close.
+    // Replace with your real fan-out / event-push / cursor logic.
+    type SayHelloStreamStream = Pin<Box<dyn Stream<Item = Result<HelloReply, Status>> + Send>>;
+
+    async fn say_hello_stream(
+        &self,
+        req: Request<HelloRequest>,
+    ) -> std::result::Result<Response<Self::SayHelloStreamStream>, Status> {
+        let name = req.into_inner().name;
+        let words: Vec<String> = name.split_whitespace().map(String::from).collect();
+        let stream = tokio_stream::iter(words.into_iter().map(|word| {
+            Ok(HelloReply {
+                message: format!("hello, {word}"),
+            })
+        }));
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    // Client-streaming: collect all names from the stream, reply once.
+    // Replace with your real aggregation / batch-ingest logic.
+    async fn say_hello_client_stream(
+        &self,
+        req: Request<Streaming<HelloRequest>>,
+    ) -> std::result::Result<Response<HelloReply>, Status> {
+        let mut stream = req.into_inner();
+        let mut names = Vec::new();
+        while let Some(msg) = stream.next().await {
+            names.push(msg?.name);
+        }
+        let combined = names.join(", ");
+        Ok(Response::new(HelloReply {
+            message: format!("hello, {combined}"),
+        }))
     }
 }
