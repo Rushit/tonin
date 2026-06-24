@@ -9,9 +9,16 @@
 # This means `make release VERSION=X.Y.Z` is no longer required after a merge —
 # bumping the version in a PR is enough.
 #
-# Pushes made by this workflow use GITHUB_TOKEN, which GitHub treats as a bot
-# actor; those pushes do NOT re-trigger push-based workflows, so there is no
-# feedback loop.
+# IMPORTANT: checkout must use RELEASE_PAT (not the default GITHUB_TOKEN).
+# GitHub suppresses push-triggered workflow runs when the push actor is
+# GITHUB_TOKEN. Using a PAT makes the tag push look like a user push, which
+# allows release.yml to fire on `push: tags: v*.*.*`.
+#
+# The VERSION-sync commit still carries [skip ci] as belt-and-suspenders to
+# prevent auto-tag.yml from re-triggering itself on that housekeeping push.
+#
+# Required secret: RELEASE_PAT — a fine-grained PAT with Contents: Read & Write
+# on this repository.
 
 name: Auto-tag on version bump
 
@@ -29,7 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # need full tag history to detect existing tags
+          fetch-depth: 0      # need full tag history to detect existing tags
+          token: ${{ secrets.RELEASE_PAT }}
 
       - name: Configure git identity
         run: |
