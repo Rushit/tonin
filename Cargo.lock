@@ -3854,6 +3854,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonin-helm"
+version = "0.3.3"
+dependencies = [
+ "anyhow",
+ "clap",
+ "include_dir",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "tera",
+ "toml",
+ "tonin-plugin",
+]
+
+[[package]]
 name = "tonin-mcp-macros"
 version = "0.6.4"
 dependencies = [

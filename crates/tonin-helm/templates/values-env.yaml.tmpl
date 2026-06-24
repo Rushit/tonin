@@ -1,0 +1,71 @@
+# {{ env_name }}-specific overrides — generated from the {{ env_name }} overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: {{ replicas }}
+
+image:
+  tag: "{{ version }}"
+
+autoscaling:
+  enabled: {% if has_autoscale %}true{% else %}false{% endif %}
+  minReplicas: {{ replicas }}
+  maxReplicas: {{ max_replicas }}
+{% if expose %}
+ingress:
+  enabled: true
+  host: "{{ expose }}"
+{% endif %}
+# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
+statefulEnv:{% if stateful_env_literals | length == 0 %} {}{% endif %}
+{%- for kv in stateful_env_literals %}
+  {{ kv.0 }}: "{{ kv.1 }}"
+{%- endfor %}
+
+database:
+  enabled: {{ db_enabled }}
+  shared: {% if db_shared %}true{% else %}false{% endif %}
+  engine: "{{ db_engine }}"
+  name: "{{ db_name }}"
+  namespace: "{{ db_namespace }}"
+  port: {{ db_port }}
+  image: "{{ db_image }}"
+  storage: "{{ db_size }}"
+
+cache:
+  enabled: {{ cache_enabled }}
+  shared: {% if cache_shared %}true{% else %}false{% endif %}
+  engine: "{{ cache_engine }}"
+  name: "{{ cache_name }}"
+  namespace: "{{ cache_namespace }}"
+  port: {{ cache_port }}
+  storage: "{{ cache_size }}"
+
+secrets:
+  keys:{% if secret_keys | length == 0 %} []{% endif %}
+{%- for key in secret_keys %}
+    - {{ key }}
+{%- endfor %}
+
+migrations:
+  enabled: {% if migrations_enabled %}true{% else %}false{% endif %}
+  mode: init-container
+  command:{% if migrations_command | length == 0 %} []{% endif %}
+{%- for c in migrations_command %}
+    - "{{ c }}"
+{%- endfor %}
+  env: {}
+
+networkPolicy:
+  enabled: {% if is_cilium %}true{% else %}false{% endif %}
+  port: {{ port }}
+  mcp: {{ mcp_sidecar }}
+  callers:{% if callers | length == 0 %} []{% endif %}
+{%- for c in callers %}
+    - name: {{ c.name }}
+      namespace: {{ c.namespace }}
+{%- endfor %}
+  dependsOn:{% if depends_on | length == 0 %} []{% endif %}
+{%- for d in depends_on %}
+    - name: {{ d.name }}
+      namespace: {{ d.namespace }}
+{%- endfor %}

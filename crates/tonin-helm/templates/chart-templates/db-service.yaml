@@ -1,0 +1,19 @@
+{{- if and .Values.database.enabled (not .Values.database.shared) }}
+# Headless Service for the database StatefulSet. Its name is the DNS host the
+# server resolves to via DATABASE_URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.database.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app: {{ .Values.database.name }}
+  ports:
+    - name: {{ .Values.database.engine }}
+      port: {{ .Values.database.port }}
+      targetPort: {{ .Values.database.port }}
+{{- end }}

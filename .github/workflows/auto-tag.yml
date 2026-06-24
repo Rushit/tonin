@@ -1,24 +1,28 @@
-# Auto-tag on version bump
+# Auto-tag on version bump (monorepo edition)
 #
-# Runs on every push to main. If the version in Cargo.toml [workspace.package]
-# has no matching vX.Y.Z tag yet, this workflow:
-#   1. Syncs the VERSION file to Cargo.toml if they disagree (handles PRs that
-#      bumped Cargo.toml without running scripts/bump-version.sh).
-#   2. Creates and pushes the tag, which triggers release.yml.
+# Runs on every push to main. There are two independent tagging jobs:
 #
-# This means `make release VERSION=X.Y.Z` is no longer required after a merge —
-# bumping the version in a PR is enough.
+#   auto-tag-tonin      — reads [workspace.package].version from Cargo.toml,
+#                         creates vX.Y.Z tags, triggers release.yml.
+#   auto-tag-tonin-helm — reads [package].version from crates/tonin-helm/Cargo.toml,
+#                         creates tonin-helm-vX.Y.Z tags, triggers release-tonin-helm.yml.
 #
-# IMPORTANT: checkout must use RELEASE_PAT (not the default GITHUB_TOKEN).
-# GitHub suppresses push-triggered workflow runs when the push actor is
-# GITHUB_TOKEN. Using a PAT makes the tag push look like a user push, which
-# allows release.yml to fire on `push: tags: v*.*.*`.
+# Each job is self-contained:
+#   1. Syncs the corresponding VERSION file if it lags behind Cargo.toml.
+#   2. Creates and pushes the namespaced tag if it does not yet exist.
 #
-# The VERSION-sync commit still carries [skip ci] as belt-and-suspenders to
-# prevent auto-tag.yml from re-triggering itself on that housekeeping push.
+# The jobs run in parallel and are idempotent — if the version did not change
+# on this push (i.e. the tag already exists) the job exits 0 immediately.
 #
-# Required secret: RELEASE_PAT — a fine-grained PAT with Contents: Read & Write
-# on this repository.
+# IMPORTANT: checkout uses RELEASE_PAT, not GITHUB_TOKEN. GitHub suppresses
+# push-triggered workflow runs when the push actor is GITHUB_TOKEN, so
+# release.yml / release-tonin-helm.yml would never fire. A PAT push is
+# attributed to a user actor and correctly triggers downstream workflows.
+#
+# The VERSION-sync commit carries [skip ci] to prevent auto-tag from
+# re-triggering itself on that housekeeping push.
+#
+# Required secret: RELEASE_PAT — fine-grained PAT, Contents: Read & Write.
 
 name: Auto-tag on version bump
 
@@ -30,8 +34,12 @@ permissions:
   contents: write
 
 jobs:
-  auto-tag:
-    name: Sync VERSION + tag if version is new
+  # ---------------------------------------------------------------------------
+  # Core workspace packages (tonin, tonin-plugin, tonin-sdk, …)
+  # Tag format: vX.Y.Z
+  # ---------------------------------------------------------------------------
+  auto-tag-tonin:
+    name: Sync VERSION + tag tonin vX.Y.Z if new
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,8 +56,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Read the version that was merged — Cargo.toml is authoritative after
-          # the PR lands. (VERSION may lag if the PR bypassed bump-version.sh.)
           CARGO_VERSION=$(awk '
             /^\[workspace\.package\]/ { in_section=1; next }
             /^\[/ && in_section        { in_section=0 }
@@ -64,17 +70,13 @@ jobs:
             echo "::error::Could not parse version from [workspace.package] in Cargo.toml"
             exit 1
           fi
+          echo "Cargo.toml [workspace.package].version : ${CARGO_VERSION}"
 
-          echo "Cargo.toml version : ${CARGO_VERSION}"
-
-          # Sync VERSION if it lags behind Cargo.toml.
           FILE_VERSION=$(tr -d '[:space:]' < VERSION)
           if [ "$FILE_VERSION" != "$CARGO_VERSION" ]; then
             echo "VERSION (${FILE_VERSION}) is behind Cargo.toml — syncing..."
             echo "$CARGO_VERSION" > VERSION
             git add VERSION
-            # [skip ci] prevents this housekeeping commit from re-triggering
-            # push-based workflows (belt-and-suspenders alongside the GITHUB_TOKEN rule).
             git commit -m "chore: sync VERSION to ${CARGO_VERSION} [skip ci]"
             git push origin main
             echo "Synced VERSION → ${CARGO_VERSION}"
@@ -83,8 +85,6 @@ jobs:
           fi
 
           TAG="v${CARGO_VERSION}"
-
-          # Nothing to do if the tag already exists on origin.
           if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
             echo "Tag ${TAG} already exists — skipping."
             exit 0
@@ -93,4 +93,65 @@ jobs:
           echo "Creating and pushing ${TAG}..."
           git tag -a "${TAG}" -m "Release ${TAG}"
           git push origin "${TAG}"
-          echo "Pushed ${TAG} — release workflow triggered."
+          echo "Pushed ${TAG} — release.yml triggered."
+
+  # ---------------------------------------------------------------------------
+  # tonin-helm (independent version, lives in crates/tonin-helm/)
+  # Tag format: tonin-helm-vX.Y.Z
+  # ---------------------------------------------------------------------------
+  auto-tag-tonin-helm:
+    name: Sync tonin-helm VERSION + tag tonin-helm-vX.Y.Z if new
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync tonin-helm VERSION + create tag if needed
+        run: |
+          set -euo pipefail
+
+          CARGO_VERSION=$(awk '
+            /^\[package\]/ { in_section=1; next }
+            /^\[/ && in_section { in_section=0 }
+            in_section && /^version[[:space:]]*=/ {
+              match($0, /"[^"]+"/)
+              print substr($0, RSTART+1, RLENGTH-2)
+              exit
+            }
+          ' crates/tonin-helm/Cargo.toml)
+
+          if [ -z "$CARGO_VERSION" ]; then
+            echo "::error::Could not parse version from [package] in crates/tonin-helm/Cargo.toml"
+            exit 1
+          fi
+          echo "crates/tonin-helm/Cargo.toml [package].version : ${CARGO_VERSION}"
+
+          FILE_VERSION=$(tr -d '[:space:]' < crates/tonin-helm/VERSION)
+          if [ "$FILE_VERSION" != "$CARGO_VERSION" ]; then
+            echo "crates/tonin-helm/VERSION (${FILE_VERSION}) is behind Cargo.toml — syncing..."
+            echo "$CARGO_VERSION" > crates/tonin-helm/VERSION
+            git add crates/tonin-helm/VERSION
+            git commit -m "chore: sync tonin-helm VERSION to ${CARGO_VERSION} [skip ci]"
+            git push origin main
+            echo "Synced crates/tonin-helm/VERSION → ${CARGO_VERSION}"
+          else
+            echo "tonin-helm VERSION already in sync (${FILE_VERSION})"
+          fi
+
+          TAG="tonin-helm-v${CARGO_VERSION}"
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+            echo "Tag ${TAG} already exists — skipping."
+            exit 0
+          fi
+
+          echo "Creating and pushing ${TAG}..."
+          git tag -a "${TAG}" -m "Release tonin-helm ${TAG}"
+          git push origin "${TAG}"
+          echo "Pushed ${TAG} — release-tonin-helm.yml triggered."

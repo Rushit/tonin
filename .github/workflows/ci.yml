@@ -69,7 +69,7 @@ jobs:
         run: make doc
 
   version-sync:
-    name: VERSION file matches Cargo.toml
+    name: VERSION file matches Cargo.toml [workspace.package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -92,5 +92,32 @@ jobs:
           if [ "${FILE_VERSION}" != "${CARGO_VERSION}" ]; then
             echo "::error::VERSION (${FILE_VERSION}) and Cargo.toml (${CARGO_VERSION}) are out of sync."
             echo "::error::Run  scripts/bump-version.sh ${CARGO_VERSION}  to fix both at once, or update VERSION manually."
+            exit 1
+          fi
+
+  version-sync-helm:
+    name: tonin-helm VERSION matches Cargo.toml [package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check crates/tonin-helm/VERSION == Cargo.toml [package].version
+        run: |
+          set -euo pipefail
+          FILE_VERSION=$(tr -d '[:space:]' < crates/tonin-helm/VERSION)
+          CARGO_VERSION=$(awk '
+            /^\[package\]/ { in_section=1; next }
+            /^\[/ && in_section { in_section=0 }
+            in_section && /^version[[:space:]]*=/ {
+              match($0, /"[^"]+"/)
+              print substr($0, RSTART+1, RLENGTH-2)
+              exit
+            }
+          ' crates/tonin-helm/Cargo.toml)
+          echo "VERSION file : ${FILE_VERSION}"
+          echo "Cargo.toml   : ${CARGO_VERSION}"
+          if [ "${FILE_VERSION}" != "${CARGO_VERSION}" ]; then
+            echo "::error::crates/tonin-helm/VERSION (${FILE_VERSION}) and crates/tonin-helm/Cargo.toml (${CARGO_VERSION}) are out of sync."
+            echo "::error::Run  crates/tonin-helm/scripts/bump-version.sh ${CARGO_VERSION}  to fix both at once."
             exit 1
           fi

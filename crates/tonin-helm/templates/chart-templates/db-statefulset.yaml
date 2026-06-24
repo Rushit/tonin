@@ -1,0 +1,57 @@
+{{- if and .Values.database.enabled (not .Values.database.shared) }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Values.database.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.database.name }}
+    service.identity: {{ .Values.database.name }}.{{ .Release.Namespace }}
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Values.database.name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.database.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.database.name }}
+        service.identity: {{ .Values.database.name }}.{{ .Release.Namespace }}
+    spec:
+      containers:
+        - name: {{ .Values.database.engine }}
+          image: {{ .Values.database.image | quote }}
+          ports:
+            - containerPort: {{ .Values.database.port }}
+              name: {{ .Values.database.engine }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ include "service.name" . | quote }}
+            - name: POSTGRES_USER
+              value: {{ include "service.name" . | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "service.name" . }}-secrets
+                  key: DATABASE_PASSWORD
+            # Postgres expects PGDATA on a subpath so lost+found doesn't trip initdb.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "1",    memory: "1Gi"   }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # storageClassName omitted — uses the cluster default.
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.database.storage }}
+{{- end }}

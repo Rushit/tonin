@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Strip "Co-Authored-By: Claude ..." lines injected by AI coding assistants.
+set -euo pipefail
+
+COMMIT_MSG_FILE="$1"
+
+sed -i '/^Co-Authored-By: Claude/d' "$COMMIT_MSG_FILE"
+
+# Remove blank lines that may be left at the end of the message.
+sed -i -e :a -e '/^\s*$/{$d;N;ba}' "$COMMIT_MSG_FILE"

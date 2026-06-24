@@ -1,0 +1,6 @@
+apiVersion: v2
+name: {{ name }}
+description: "{{ name }} {% if is_http %}HTTP{% elif is_web %}web{% else %}gRPC{% endif %} service (tonin)"
+type: application
+version: "{{ version }}"
+appVersion: "{{ version }}"

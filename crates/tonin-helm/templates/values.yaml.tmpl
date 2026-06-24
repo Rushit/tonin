@@ -1,0 +1,157 @@
+# Base values — environment-independent defaults.
+# Override per-environment with values-<env>.yaml.
+
+replicaCount: {{ replicas }}
+
+image:
+  repository: "{{ image_repository }}"
+  tag: "{{ version }}"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: {{ port }}
+  portName: {{ port_name }}
+  # Additional HTTP port for a gRPC backend that also serves HTTP (0 = none).
+  httpPort: {{ http_port }}
+  mcpPort: 50052
+  # HTTP health probe (httpGet). Rendered only when enabled.
+  health:
+    enabled: {% if health_enabled %}true{% else %}false{% endif %}
+    grpc: {% if health_grpc %}true{% else %}false{% endif %}
+    path: "{{ health_path }}"
+    port: {{ health_port }}
+
+# MCP tool surface.
+#   mode: in-process → the same server process serves MCP on service.mcpPort
+#         (tonin's default — one container, two ports, no separate binary).
+#   mode: sidecar    → a separate <name>-mcp container (only if the image ships
+#         that binary).
+mcp:
+  enabled: {{ mcp_sidecar }}
+  mode: in-process
+
+resources:
+  requests:
+    cpu: "{{ cpu }}"
+    memory: "{{ memory }}"
+  limits:
+    cpu: "{{ cpu }}"
+    memory: "{{ memory }}"
+
+autoscaling:
+  enabled: {% if has_autoscale %}true{% else %}false{% endif %}
+  minReplicas: {{ replicas }}
+  maxReplicas: {{ max_replicas }}
+
+{% if has_pod_security %}
+podSecurityContext:
+{{ pod_security_context_yaml }}
+{% endif %}
+{% if has_container_security %}
+containerSecurityContext:
+{{ container_security_context_yaml }}
+{% endif %}
+
+ingress:
+  enabled: {% if expose %}true{% else %}false{% endif %}
+  host: "{{ expose | default(value="") }}"
+
+mesh: "{{ mesh }}"
+
+observability:
+  otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
+
+# Extra env vars injected verbatim into the container.
+env: {}
+
+# Pod annotations. Mesh-derived entries (e.g. cilium transparent encryption) are
+# generated here; add your own at deploy time via --set podAnnotations.key=value.
+podAnnotations:{% if pod_annotations | length == 0 %} {}{% endif %}
+{%- for kv in pod_annotations %}
+  {{ kv.0 }}: "{{ kv.1 }}"
+{%- endfor %}
+
+# Escape hatches — empty by design so `tonin helm generate` never clobbers them.
+# Supply at DEPLOY time, not by hand-editing this file:
+#   extraEnv:       --set-json 'extraEnv=[{"name":"X","value":"y"}]'  (server + initContainer)
+#   extraManifests: -f extra.yaml  (each entry is a YAML string, run through tpl)
+# For a durable per-service manifest (e.g. a CronJob), prefer a custom template
+# under chart/templates/ — those survive regeneration.
+extraEnv: []
+extraManifests: []
+
+# Resolved stateful env (DATABASE_URL, REDIS_URL, …) injected verbatim.
+# Populated from tonin.toml [database]/[cache]; overridden per-env.
+statefulEnv:{% if stateful_env_literals | length == 0 %} {}{% endif %}
+{%- for kv in stateful_env_literals %}
+  {{ kv.0 }}: "{{ kv.1 }}"
+{%- endfor %}
+
+# Stateful dependencies — rendered when tonin.toml declares [database]/[cache].
+# `shared: true` points at an external instance and renders NO StatefulSet.
+database:
+  enabled: {{ db_enabled }}
+  shared: {% if db_shared %}true{% else %}false{% endif %}
+  engine: "{{ db_engine }}"
+  name: "{{ db_name }}"
+  namespace: "{{ db_namespace }}"
+  port: {{ db_port }}
+  image: "{{ db_image }}"
+  storage: "{{ db_size }}"
+
+cache:
+  enabled: {{ cache_enabled }}
+  shared: {% if cache_shared %}true{% else %}false{% endif %}
+  engine: "{{ cache_engine }}"
+  name: "{{ cache_name }}"
+  namespace: "{{ cache_namespace }}"
+  port: {{ cache_port }}
+  storage: "{{ cache_size }}"
+
+# Secrets the service requires (DATABASE_PASSWORD, JWT keys, …).
+# create=true templates a Secret from `values` — supply real values at deploy
+# time (`--set secrets.values.KEY=...` or a private values file); NEVER commit
+# them. create=false references an externally-managed Secret named
+# <release>-secrets (e.g. created by ExternalSecrets / Vault / kubectl).
+secrets:
+  create: true
+  keys:{% if secret_keys | length == 0 %} []{% endif %}
+{%- for key in secret_keys %}
+    - {{ key }}
+{%- endfor %}
+  values: {}
+
+# DB migrations.
+#   mode: init-container  → runs before the server container in every pod
+#         (default; correct for an owned/in-chart DB and for dev).
+#   mode: job             → a pre-install/pre-upgrade hook Job that Helm gates
+#         the rollout on. Needs the DB + Secret to already exist (managed/shared
+#         DB + secrets.create=false), since pre-upgrade hooks run before the
+#         chart's own StatefulSet/Secret.
+#   env: extra env for the migration step only (e.g. IDENTITY_MIGRATE_ONLY=1) —
+#         never reaches the server container.
+migrations:
+  enabled: {% if migrations_enabled %}true{% else %}false{% endif %}
+  mode: init-container
+  command:{% if migrations_command | length == 0 %} []{% endif %}
+{%- for c in migrations_command %}
+    - "{{ c }}"
+{%- endfor %}
+  env: {}
+
+# CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.
+networkPolicy:
+  enabled: {% if is_cilium %}true{% else %}false{% endif %}
+  port: {{ port }}
+  mcp: {{ mcp_sidecar }}
+  callers:{% if callers | length == 0 %} []{% endif %}
+{%- for c in callers %}
+    - name: {{ c.name }}
+      namespace: {{ c.namespace }}
+{%- endfor %}
+  dependsOn:{% if depends_on | length == 0 %} []{% endif %}
+{%- for d in depends_on %}
+    - name: {{ d.name }}
+      namespace: {{ d.namespace }}
+{%- endfor %}
