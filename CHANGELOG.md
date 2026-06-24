@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.1](https://github.com/Rushit/tonin/compare/v0.7.0...v0.7.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **ci:** fix automerge bypass, dispatch publish on release, name Release PRs ([#41](https://github.com/Rushit/tonin/issues/41)) ([e72c0dc](https://github.com/Rushit/tonin/commit/e72c0dc45967a2c762aa540aa07b29dff6d5b730))
+* **ci:** fix automerge for separate Release PRs; add workflow_dispatch ([#39](https://github.com/Rushit/tonin/issues/39)) ([d929014](https://github.com/Rushit/tonin/commit/d92901440a8c997446b895e1839b12feb63ca9e8))
+* **ci:** remove invalid 'administration:write' permission; robust dispatch ([#42](https://github.com/Rushit/tonin/issues/42)) ([ae8bb29](https://github.com/Rushit/tonin/commit/ae8bb29cc32df7231f923e483ed78db2720b16c3))
+
 ## [0.7.0](https://github.com/Rushit/tonin/compare/v0.6.9...v0.7.0) (2026-06-24)
 
 
