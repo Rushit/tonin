@@ -12,7 +12,7 @@ RUSTDOCFLAGS ?= -D warnings
 .DEFAULT_GOAL := help
 
 .PHONY: help build check test e2e test-all fmt fmt-check lint doc ci clean gen-example \
-        install-cli install-hooks publish-dry publish version release show-version
+        install-cli install-hooks publish-dry publish version release show-version check-version
 
 help: ## Show this help table
 	@awk 'BEGIN {FS = ":.*##"; printf "Available targets:\n\n"} \
@@ -50,7 +50,7 @@ lint: ## Run clippy across the workspace, warnings denied
 doc: ## Build rustdoc for the workspace, warnings denied
 	RUSTDOCFLAGS="$(RUSTDOCFLAGS)" $(CARGO) doc --workspace --no-deps
 
-ci: fmt-check lint test doc ## Run the same gate CI runs (fmt + lint + test + doc)
+ci: fmt-check lint test doc check-version ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
 	@echo "ci: all checks passed"
 
 install-hooks: ## Wire up git hooks (run once after cloning)
@@ -132,6 +132,20 @@ publish: ## Publish all six crates to crates.io in dep order
 
 show-version: ## Print the current workspace version (from /VERSION)
 	@cat VERSION
+
+check-version: ## Verify VERSION file and Cargo.toml [workspace.package].version are in sync
+	@FILE="$$(tr -d '[:space:]' < VERSION)"; \
+	 CARGO="$$(awk ' \
+	   /^\[workspace\.package\]/ { s=1; next } \
+	   /^\[/ && s { s=0 } \
+	   s && /^version[[:space:]]*=/ { match($$0, /"[^"]+"/) ; print substr($$0, RSTART+1, RLENGTH-2) ; exit } \
+	 ' Cargo.toml)"; \
+	 if [ "$$FILE" != "$$CARGO" ]; then \
+	   echo "error: VERSION ($$FILE) and Cargo.toml ($$CARGO) are out of sync" >&2; \
+	   echo "fix:   scripts/bump-version.sh $$CARGO" >&2; \
+	   exit 1; \
+	 fi; \
+	 echo "check-version: ok ($$FILE)"
 
 version: ## Bump /VERSION + Cargo.toml mirror and commit (VERSION=X.Y.Z)
 	@test -n "$(VERSION)" || \
