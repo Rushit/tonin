@@ -108,7 +108,7 @@ define cargo_publish
 	@out=$$($(CARGO) publish -p $(1) 2>&1); rc=$$?; \
 	printf '%s\n' "$$out"; \
 	if [ $$rc -ne 0 ]; then \
-	  echo "$$out" | grep -q "already uploaded" \
+	  echo "$$out" | grep -qE "already uploaded|already exists on crates\.io" \
 	    && echo "$(1): already on crates.io, skipping" \
 	    || exit $$rc; \
 	fi

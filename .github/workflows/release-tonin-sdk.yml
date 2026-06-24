@@ -143,7 +143,7 @@ jobs:
             local out
             out=$(cargo publish -p "$pkg" 2>&1) && { echo "$out"; return 0; }
             echo "$out"
-            echo "$out" | grep -q "already uploaded" \
+            echo "$out" | grep -qE "already uploaded|already exists on crates\.io" \
               && echo "$pkg: already on crates.io, skipping" \
               || { echo "::error::cargo publish -p $pkg failed"; exit 1; }
           }
