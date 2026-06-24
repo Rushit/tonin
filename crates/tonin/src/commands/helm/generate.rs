@@ -983,8 +983,14 @@ memory = "128Mi"
         .unwrap();
 
         let values = read(&out.join("values.yaml"));
-        assert!(values.contains("grpc: true"), "gRPC backend must emit grpc:true");
-        assert!(values.contains("path: \"\""), "gRPC backend emits empty path: {values}");
+        assert!(
+            values.contains("grpc: true"),
+            "gRPC backend must emit grpc:true"
+        );
+        assert!(
+            values.contains("path: \"\""),
+            "gRPC backend emits empty path: {values}"
+        );
     }
 
     #[test]
@@ -1000,7 +1006,10 @@ memory = "128Mi"
         .unwrap();
 
         let values = read(&out.join("values.yaml"));
-        assert!(values.contains("grpc: false"), "HTTP service must emit grpc:false");
+        assert!(
+            values.contains("grpc: false"),
+            "HTTP service must emit grpc:false"
+        );
         assert!(
             !values.contains("path: \"\""),
             "HTTP service must not emit empty path: {values}"

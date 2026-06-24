@@ -4,7 +4,8 @@ set -euo pipefail
 
 COMMIT_MSG_FILE="$1"
 
-sed -i '/^Co-Authored-By: Claude/d' "$COMMIT_MSG_FILE"
+grep -v '^Co-Authored-By: Claude' "$COMMIT_MSG_FILE" > "${COMMIT_MSG_FILE}.tmp" \
+  && mv "${COMMIT_MSG_FILE}.tmp" "$COMMIT_MSG_FILE" || true
 
 # Remove blank lines that may be left at the end of the message.
-sed -i -e :a -e '/^\s*$/{$d;N;ba}' "$COMMIT_MSG_FILE"
+perl -0777 -i -pe 's/\n+$/\n/' "$COMMIT_MSG_FILE"
