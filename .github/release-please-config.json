@@ -22,8 +22,8 @@
       "package-name": "tonin-sdk",
       "extra-files": [
         {
-          "type": "plain",
-          "path": "VERSION"
+          "type": "generic",
+          "path": "crates/tonin-sdk/VERSION"
         }
       ],
       "changelog-path": "CHANGELOG.md",
