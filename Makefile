@@ -178,10 +178,10 @@ bump-major: ## Bump workspace MAJOR version locally (does not tag/push)
 # release-please; the targets below are for local version management only.
 
 show-version-sdk: ## Print tonin-sdk's current version (from crates/tonin-sdk/VERSION)
-	@cat crates/tonin-sdk/VERSION
+	@awk '{print $$1}' crates/tonin-sdk/VERSION
 
 check-version-sdk: ## Verify crates/tonin-sdk/VERSION and Cargo.toml [package].version are in sync
-	@FILE="$$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)"; \
+	@FILE="$$(awk '{print $$1}' crates/tonin-sdk/VERSION)"; \
 	 CARGO="$$(awk ' \
 	   /^\[package\]/ { s=1; next } \
 	   /^\[/ && s { s=0 } \

@@ -7,7 +7,7 @@ set -euo pipefail
 CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "${CRATE_DIR}/../.." && pwd)"
 NEW="${1:?usage: $0 X.Y.Z}"
-CURRENT="$(tr -d '[:space:]' < "${CRATE_DIR}/VERSION")"
+CURRENT="$(awk '{print $1}' "${CRATE_DIR}/VERSION")"
 
 # If a bump type was given, auto-calculate the new version from the VERSION file.
 case "$NEW" in
@@ -28,8 +28,8 @@ esac
 echo "Current version: ${CURRENT}"
 echo "New version:     ${NEW}"
 
-# Update VERSION file
-echo "${NEW}" > "${CRATE_DIR}/VERSION"
+# Update VERSION file (preserve the # x-release-please-version marker)
+echo "${NEW} # x-release-please-version" > "${CRATE_DIR}/VERSION"
 
 # Update Cargo.toml [package].version (first occurrence only)
 sed -i "0,/^version = \"${CURRENT}\"/s//version = \"${NEW}\"/" \
