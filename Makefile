@@ -12,7 +12,8 @@ RUSTDOCFLAGS ?= -D warnings
 .DEFAULT_GOAL := help
 
 .PHONY: help build check test e2e test-all fmt fmt-check lint doc ci clean gen-example \
-        install-cli install-hooks publish-dry publish version release show-version check-version
+        install-cli install-hooks publish-dry publish version release show-version check-version \
+        check-version-helm show-version-helm version-helm release-helm
 
 help: ## Show this help table
 	@awk 'BEGIN {FS = ":.*##"; printf "Available targets:\n\n"} \
@@ -50,7 +51,7 @@ lint: ## Run clippy across the workspace, warnings denied
 doc: ## Build rustdoc for the workspace, warnings denied
 	RUSTDOCFLAGS="$(RUSTDOCFLAGS)" $(CARGO) doc --workspace --no-deps
 
-ci: fmt-check lint test doc check-version ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
+ci: fmt-check lint test doc check-version check-version-helm ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
 	@echo "ci: all checks passed"
 
 install-hooks: ## Wire up git hooks (run once after cloning)
@@ -163,3 +164,45 @@ release: version ## Bump, tag, and push vX.Y.Z to origin (fires the publish work
 	@echo "✓ v$(VERSION) released. .github/workflows/release.yml is running:"
 	@echo "  https://github.com/Rushit/tonin/actions"
 	@echo "  (verify → make ci → publish 5 crates → cross-platform binaries → GitHub Release)"
+
+# ---------------------------------------------------------------------------
+# tonin-helm versioning + release (independent from the core workspace version)
+# ---------------------------------------------------------------------------
+#
+# tonin-helm lives in crates/tonin-helm/ and carries its own version in
+# crates/tonin-helm/VERSION (mirrored into crates/tonin-helm/Cargo.toml
+# [package].version). Tags use the prefix "tonin-helm-v" to distinguish them
+# from core workspace releases (which use plain "v").
+
+show-version-helm: ## Print tonin-helm's current version (from crates/tonin-helm/VERSION)
+	@cat crates/tonin-helm/VERSION
+
+check-version-helm: ## Verify crates/tonin-helm/VERSION and Cargo.toml [package].version are in sync
+	@FILE="$$(tr -d '[:space:]' < crates/tonin-helm/VERSION)"; \
+	 CARGO="$$(awk ' \
+	   /^\[package\]/ { s=1; next } \
+	   /^\[/ && s { s=0 } \
+	   s && /^version[[:space:]]*=/ { match($$0, /"[^"]+"/) ; print substr($$0, RSTART+1, RLENGTH-2) ; exit } \
+	 ' crates/tonin-helm/Cargo.toml)"; \
+	 if [ "$$FILE" != "$$CARGO" ]; then \
+	   echo "error: crates/tonin-helm/VERSION ($$FILE) and crates/tonin-helm/Cargo.toml ($$CARGO) are out of sync" >&2; \
+	   echo "fix:   crates/tonin-helm/scripts/bump-version.sh $$CARGO" >&2; \
+	   exit 1; \
+	 fi; \
+	 echo "check-version-helm: ok ($$FILE)"
+
+version-helm: ## Bump crates/tonin-helm VERSION + Cargo.toml and commit (VERSION=X.Y.Z)
+	@test -n "$(VERSION)" || \
+	  (echo "usage: make version-helm VERSION=X.Y.Z" >&2; exit 1)
+	./crates/tonin-helm/scripts/bump-version.sh "$(VERSION)"
+
+release-helm: version-helm ## Bump, tag tonin-helm-vX.Y.Z, and push to origin (fires release CI)
+	@echo "→ tagging tonin-helm-v$(VERSION)"
+	git tag -a "tonin-helm-v$(VERSION)" -m "Release tonin-helm v$(VERSION)"
+	@echo "→ pushing main"
+	git push origin main
+	@echo "→ pushing tag tonin-helm-v$(VERSION)"
+	git push origin "tonin-helm-v$(VERSION)"
+	@echo
+	@echo "✓ tonin-helm v$(VERSION) released. .github/workflows/release-tonin-helm.yml is running:"
+	@echo "  https://github.com/Rushit/tonin/actions"

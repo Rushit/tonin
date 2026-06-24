@@ -1,0 +1,30 @@
+[package]
+name        = "tonin-helm"
+version     = "0.3.3"
+edition     = "2021"
+rust-version = "1.90"
+license     = "Apache-2.0"
+repository  = "https://github.com/Rushit/tonin"
+homepage    = "https://github.com/Rushit/tonin"
+description = "Helm chart generation and lifecycle management for tonin services."
+keywords    = ["tonin", "helm", "kubernetes", "microservices"]
+categories  = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "tonin-helm"
+path = "src/main.rs"
+
+[dependencies]
+# Use the workspace path dep so local changes to tonin-plugin are immediately
+# reflected in tonin-helm without a crates.io publish step.
+# `cargo publish -p tonin-helm` substitutes the path with the published version.
+tonin-plugin = { workspace = true }
+
+toml         = "0.8"
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
+tera         = "1"
+include_dir  = "0.7"
+serde        = { version = "1", features = ["derive"] }
+serde_yaml   = "0.9"
+tempfile     = "3"

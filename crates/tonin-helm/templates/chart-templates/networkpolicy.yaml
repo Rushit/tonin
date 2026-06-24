@@ -1,0 +1,79 @@
+{{- if and .Values.networkPolicy.enabled (eq .Values.mesh "cilium") }}
+# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
+# (observability, declared dependencies, own DB/cache). mTLS, retries, and
+# circuit breaking stay with the mesh, not this policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "service.name" . }}-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: {{ include "service.name" . }}.{{ .Release.Namespace }}
+  ingress:
+    {{- range .Values.networkPolicy.callers }}
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: {{ .name }}.{{ .namespace }}
+      toPorts:
+        - ports:
+            - { port: "{{ $.Values.networkPolicy.port }}", protocol: TCP }
+            {{- if gt (int $.Values.service.httpPort) 0 }}
+            - { port: "{{ $.Values.service.httpPort }}", protocol: TCP }
+            {{- end }}
+            {{- if $.Values.networkPolicy.mcp }}
+            - { port: "{{ $.Values.service.mcpPort }}", protocol: TCP }
+            {{- end }}
+    {{- end }}
+    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "{{ .Values.networkPolicy.port }}", protocol: TCP }
+            {{- if gt (int .Values.service.httpPort) 0 }}
+            - { port: "{{ .Values.service.httpPort }}", protocol: TCP }
+            {{- end }}
+            {{- if .Values.networkPolicy.mcp }}
+            - { port: "{{ .Values.service.mcpPort }}", protocol: TCP }
+            {{- end }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    {{- range .Values.networkPolicy.dependsOn }}
+    - toEndpoints:
+        - matchLabels:
+            service.identity: {{ .name }}.{{ .namespace }}
+      toPorts:
+        - ports:
+            - { port: "50051", protocol: TCP }
+    {{- end }}
+    {{- if .Values.database.enabled }}
+    # Database egress (shared or owned).
+    - toEndpoints:
+        - matchLabels:
+            service.identity: {{ .Values.database.name }}.{{ .Values.database.namespace }}
+      toPorts:
+        - ports:
+            - { port: "{{ .Values.database.port }}", protocol: TCP }
+    {{- end }}
+    {{- if .Values.cache.enabled }}
+    # Cache egress (shared or owned).
+    - toEndpoints:
+        - matchLabels:
+            service.identity: {{ .Values.cache.name }}.{{ .Values.cache.namespace }}
+      toPorts:
+        - ports:
+            - { port: "{{ .Values.cache.port }}", protocol: TCP }
+    {{- end }}
+{{- end }}

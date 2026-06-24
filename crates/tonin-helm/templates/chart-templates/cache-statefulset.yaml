@@ -1,0 +1,45 @@
+{{- if and .Values.cache.enabled (not .Values.cache.shared) }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Values.cache.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.cache.name }}
+    service.identity: {{ .Values.cache.name }}.{{ .Release.Namespace }}
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Values.cache.name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.cache.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.cache.name }}
+        service.identity: {{ .Values.cache.name }}.{{ .Release.Namespace }}
+    spec:
+      containers:
+        - name: {{ .Values.cache.engine }}
+          image: redis:7
+          # Persist for restart-survivability; drop if the cache is ephemeral.
+          args: ["--save", "60", "1", "--loglevel", "warning"]
+          ports:
+            - containerPort: {{ .Values.cache.port }}
+              name: {{ .Values.cache.engine }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "500m", memory: "512Mi" }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.cache.storage }}
+{{- end }}

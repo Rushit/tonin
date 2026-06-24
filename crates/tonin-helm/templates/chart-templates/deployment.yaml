@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "service.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "service.selectorLabels" . | nindent 8 }}
+        service.identity: {{ include "service.name" . }}.{{ .Release.Namespace }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and .Values.migrations.enabled (eq .Values.migrations.mode "init-container") }}
+      # DB migrations run to completion before the server starts. For the
+      # pre-upgrade Job alternative, set migrations.mode=job (see migration-job.yaml).
+      initContainers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- range .Values.migrations.command }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
+            # inside the DATABASE_URL literal that follows.
+            {{- range .Values.secrets.keys }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "service.name" $ }}-secrets
+                  key: {{ . }}
+            {{- end }}
+            {{- range $k, $v := .Values.statefulEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.migrations.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      {{- end }}
+      containers:
+        - name: server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["/usr/local/bin/{{ include "service.name" . }}"]
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: {{ include "service.name" . | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.otlpEndpoint | quote }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace={{ .Release.Namespace }},service.version={{ .Values.image.tag }}"
+            - name: RUST_LOG
+              value: "info"
+            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
+            # inside the DATABASE_URL literal that follows.
+            {{- range .Values.secrets.keys }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "service.name" $ }}-secrets
+                  key: {{ . }}
+            {{- end }}
+            {{- range $k, $v := .Values.statefulEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: {{ .Values.service.portName }}
+            {{- if gt (int .Values.service.httpPort) 0 }}
+            - containerPort: {{ .Values.service.httpPort }}
+              name: http
+            {{- end }}
+            {{- if and .Values.mcp.enabled (eq .Values.mcp.mode "in-process") }}
+            # In-process MCP: the same server process also serves MCP on this port.
+            - containerPort: {{ .Values.service.mcpPort }}
+              name: mcp
+            {{- end }}
+          {{- if .Values.service.health.enabled }}
+          livenessProbe:
+            {{- if .Values.service.health.grpc }}
+            grpc:
+              port: {{ .Values.service.health.port }}
+            {{- else }}
+            httpGet:
+              path: {{ .Values.service.health.path }}
+              port: {{ .Values.service.health.port }}
+            {{- end }}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            {{- if .Values.service.health.grpc }}
+            grpc:
+              port: {{ .Values.service.health.port }}
+            {{- else }}
+            httpGet:
+              path: {{ .Values.service.health.path }}
+              port: {{ .Values.service.health.port }}
+            {{- end }}
+            periodSeconds: 5
+            failureThreshold: 3
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        {{- if and .Values.mcp.enabled (eq .Values.mcp.mode "sidecar") }}
+        # Sidecar MCP: a separate <name>-mcp binary proxying to the gRPC server.
+        # Only valid if the image actually ships that binary.
+        - name: mcp
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["/usr/local/bin/{{ include "service.name" . }}-mcp"]
+          env:
+            - name: GRPC_ENDPOINT
+              value: "http://localhost:{{ .Values.service.port }}"
+            - name: OTEL_SERVICE_NAME
+              value: "{{ include "service.name" . }}-mcp"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.otlpEndpoint | quote }}
+          ports:
+            - containerPort: {{ .Values.service.mcpPort }}
+              name: mcp
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "200m", memory: "128Mi" }
+        {{- end }}

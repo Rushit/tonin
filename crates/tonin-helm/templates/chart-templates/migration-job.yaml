@@ -1,0 +1,61 @@
+{{- if and .Values.migrations.enabled (eq .Values.migrations.mode "job") }}
+# Migration Job — a pre-install/pre-upgrade hook. Helm runs it to completion
+# and only applies the rest of the release if it SUCCEEDS, so the rollout is
+# strictly gated on a successful migration ("migrate, then release"). With
+# `helm upgrade --wait --atomic`, a failed migration rolls the release back.
+#
+# Prerequisites (because pre-upgrade hooks run BEFORE the chart's own
+# StatefulSet/Secret are created):
+#   - the database must already exist  → use a managed/shared DB (database.shared=true)
+#   - the Secret must already exist     → use secrets.create=false (externally
+#     managed: Sealed Secrets / ExternalSecrets / kubectl)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "service.name" . }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "service.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- range .Values.migrations.command }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
+            # inside the DATABASE_URL literal that follows.
+            {{- range .Values.secrets.keys }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "service.name" $ }}-secrets
+                  key: {{ . }}
+            {{- end }}
+            {{- range $k, $v := .Values.statefulEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.migrations.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+{{- end }}

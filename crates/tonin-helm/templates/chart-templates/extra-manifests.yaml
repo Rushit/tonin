@@ -1,0 +1,12 @@
+{{- /*
+   Deploy-time escape hatch: render arbitrary manifests passed via
+   .Values.extraManifests (a list of YAML strings, each run through `tpl` so
+   they can reference .Values / .Release). Supply with `-f extra.yaml` or
+   --set-file at deploy time. For a durable per-service manifest, prefer a
+   custom template file under chart/templates/ instead — it survives
+   `tonin helm generate`.
+*/ -}}
+{{- range .Values.extraManifests }}
+---
+{{ tpl . $ }}
+{{- end }}
