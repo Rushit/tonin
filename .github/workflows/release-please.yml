@@ -1,0 +1,84 @@
+# Automated release management via release-please.
+#
+# On every push to main, release-please reads Conventional Commits since
+# the last release tag and either:
+#   a) Opens / updates a Release PR (chore: bump + CHANGELOG) when new
+#      commits are present, or
+#   b) Creates the GitHub Release + pushes the semver tag when a Release PR
+#      is merged into main.
+#
+# Conventional Commit → bump rules:
+#   fix:              → PATCH
+#   feat:             → MINOR
+#   feat! / BREAKING  → MAJOR
+#   anything else     → PATCH (safe default)
+#
+# Two packages are versioned independently:
+#   tonin         — root "."; tag  v*.*.*
+#   tonin-sdk     — crates/tonin-sdk; tag  tonin-sdk-v*.*.*
+#
+# Each package gets its own Release PR (separate-pull-requests: true).
+# The automerge job squash-merges any open Release PR immediately, which
+# re-triggers this workflow; release-please detects the merge and creates
+# the tag + GitHub Release in that second run.
+#
+# The actual crates.io publish + binary builds are handled by release.yml
+# (triggered by push to v*.*.* tags) and release-tonin-sdk.yml (triggered
+# by push to tonin-sdk-v*.*.* tags) — those workflows are unchanged.
+#
+# Required permissions: GITHUB_TOKEN with contents:write + pull-requests:write
+# (configured below; no additional secrets needed).
+
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Open / update Release PRs and, when a Release PR is merged, create the
+  # GitHub Release and push the version tag.
+  # ---------------------------------------------------------------------------
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      pr: ${{ steps.rp.outputs.pr }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: .github/release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Auto-merge the Release PR with a squash commit the moment it is opened or
+  # updated. Because the merge is a push to main, release-please fires again
+  # on the next run and creates the tag + GitHub Release.
+  #
+  # With branch protection + required status checks: --auto waits for CI to
+  # pass before merging. Without protection: merges immediately.
+  # ---------------------------------------------------------------------------
+  automerge:
+    name: Auto-merge Release PR
+    needs: release-please
+    if: ${{ needs.release-please.outputs.pr != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Squash-merge Release PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=$(echo '${{ needs.release-please.outputs.pr }}' | jq -r '.number')
+          gh pr merge "$PR_NUMBER" \
+            --squash \
+            --auto \
+            --repo "$GITHUB_REPOSITORY"

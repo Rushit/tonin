@@ -1,13 +1,11 @@
 # Release tonin-sdk to crates.io (library-only — no binary builds)
 #
-# Triggered by pushing a tonin-sdk-vX.Y.Z tag (via `make release-sdk VERSION=X.Y.Z`
-# or automatically by auto-tag.yml when a version bump is merged into main).
+# Triggered by release-please pushing a tonin-sdk-vX.Y.Z tag to main (via
+# the Release PR automerge flow in release-please.yml).  The GitHub Release
+# is created by release-please before the tag push; this workflow publishes
+# leaf deps + tonin-sdk to crates.io.
 #
-# Jobs:
-#   verify         — tag matches crates/tonin-sdk/Cargo.toml [package].version
-#   test           — cargo test -p tonin-sdk
-#   publish-crate  — cargo publish -p tonin-sdk to crates.io
-#   finalize-release — create/publish GitHub Release
+# Can also be triggered manually via workflow_dispatch for re-runs or hotfixes.
 #
 # Required secrets:
 #   GITHUB_TOKEN         — auto-provided
@@ -105,6 +103,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Publish to crates.io (leaf deps first, then tonin-sdk).
+  # `cargo update` runs first to bring Cargo.lock in sync with the version
+  # bump committed by release-please.
   # ---------------------------------------------------------------------------
   publish-crate:
     name: Publish tonin-sdk to crates.io
@@ -131,6 +131,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Sync Cargo.lock with bumped version
+        run: cargo update --package tonin-sdk
+
       - name: Publish leaf deps then tonin-sdk
         run: |
           set -euo pipefail
@@ -142,26 +145,3 @@ jobs:
           sleep 30
           echo "Publishing tonin-sdk..."
           cargo publish -p tonin-sdk
-
-  # ---------------------------------------------------------------------------
-  # Create/publish GitHub Release.
-  # ---------------------------------------------------------------------------
-  finalize-release:
-    name: Finalize GitHub Release
-    needs: publish-crate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve tag name
-        id: tag
-        run: |
-          echo "name=${{ github.event.inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          name: ${{ steps.tag.outputs.name }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false

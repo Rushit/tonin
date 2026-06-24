@@ -12,9 +12,9 @@ RUSTDOCFLAGS ?= -D warnings
 .DEFAULT_GOAL := help
 
 .PHONY: help build check test e2e test-all fmt fmt-check lint doc ci clean gen-example \
-        install-cli install-hooks publish-dry publish version release show-version check-version \
+        install-cli install-hooks publish-dry publish show-version check-version version \
         bump-patch bump-minor bump-major \
-        check-version-sdk show-version-sdk version-sdk release-sdk \
+        show-version-sdk check-version-sdk version-sdk \
         bump-patch-sdk bump-minor-sdk bump-major-sdk
 
 help: ## Show this help table
@@ -122,12 +122,19 @@ publish: ## Publish all six crates to crates.io in dep order
 	@echo "publish: all six crates uploaded"
 
 # ---------------------------------------------------------------------------
-# Versioning + release
+# Versioning
 # ---------------------------------------------------------------------------
 #
-# /VERSION is the source of truth. `scripts/bump-version.sh` mirrors it
-# into Cargo.toml's [workspace.package].version and refreshes Cargo.lock,
-# all in a single bump-commit. The release workflow reads /VERSION directly.
+# Releases are fully automated via release-please (.github/workflows/release-please.yml):
+#   1. Merge a feature PR → release-please opens a Release PR with CHANGELOG +
+#      version bump (driven by Conventional Commits since the last tag).
+#   2. The Release PR is auto-squash-merged by the automerge job.
+#   3. release-please pushes the semver tag + creates the GitHub Release.
+#   4. release.yml / release-tonin-sdk.yml publish to crates.io and build binaries.
+#
+# The targets below are for LOCAL version management only (e.g. testing a
+# specific version, or bumping without committing to main). They do NOT tag or
+# push — release-please owns that.
 
 show-version: ## Print the current workspace version (from /VERSION)
 	@cat VERSION
@@ -146,45 +153,29 @@ check-version: ## Verify VERSION file and Cargo.toml [workspace.package].version
 	 fi; \
 	 echo "check-version: ok ($$FILE)"
 
-version: ## Bump /VERSION + Cargo.toml to an explicit X.Y.Z and commit (VERSION=X.Y.Z)
+version: ## Bump /VERSION + Cargo.toml to an explicit X.Y.Z and commit locally (VERSION=X.Y.Z)
 	@test -n "$(VERSION)" || \
 	  (echo "usage: make version VERSION=X.Y.Z" >&2; exit 1)
 	./scripts/bump-version.sh "$(VERSION)"
 
-bump-patch: ## Bump workspace PATCH version locally (fix: commits)
+bump-patch: ## Bump workspace PATCH version locally (does not tag/push)
 	./scripts/bump-version.sh patch
 
-bump-minor: ## Bump workspace MINOR version locally (feat: commits)
+bump-minor: ## Bump workspace MINOR version locally (does not tag/push)
 	./scripts/bump-version.sh minor
 
-bump-major: ## Bump workspace MAJOR version locally (BREAKING CHANGE)
+bump-major: ## Bump workspace MAJOR version locally (does not tag/push)
 	./scripts/bump-version.sh major
 
-release: ## Tag and push to origin; pass BUMP=patch|minor|major or VERSION=X.Y.Z to bump first
-ifdef VERSION
-	./scripts/bump-version.sh "$(VERSION)"
-else ifdef BUMP
-	./scripts/bump-version.sh "$(BUMP)"
-endif
-	@TAG="v$$(tr -d '[:space:]' < VERSION)"; \
-	echo "→ tagging $$TAG"; \
-	git tag -a "$$TAG" -m "Release $$TAG"; \
-	echo "→ pushing main"; \
-	git push origin main; \
-	echo "→ pushing tag $$TAG"; \
-	git push origin "$$TAG"; \
-	echo; \
-	echo "✓ $$TAG released. .github/workflows/release.yml is running:"; \
-	echo "  https://github.com/Rushit/tonin/actions"
-
 # ---------------------------------------------------------------------------
-# tonin-sdk versioning + release (independent from the core workspace version)
+# tonin-sdk versioning (independent from the core workspace version)
 # ---------------------------------------------------------------------------
 #
 # tonin-sdk lives in crates/tonin-sdk/ and carries its own version in
 # crates/tonin-sdk/VERSION (mirrored into crates/tonin-sdk/Cargo.toml
 # [package].version). Tags use the prefix "tonin-sdk-v" to distinguish them
-# from core workspace releases (which use plain "v") and tonin-helm releases.
+# from core workspace releases. Tagging and pushing are handled by
+# release-please; the targets below are for local version management only.
 
 show-version-sdk: ## Print tonin-sdk's current version (from crates/tonin-sdk/VERSION)
 	@cat crates/tonin-sdk/VERSION
@@ -203,33 +194,16 @@ check-version-sdk: ## Verify crates/tonin-sdk/VERSION and Cargo.toml [package].v
 	 fi; \
 	 echo "check-version-sdk: ok ($$FILE)"
 
-version-sdk: ## Bump crates/tonin-sdk VERSION + Cargo.toml and commit (VERSION=X.Y.Z)
+version-sdk: ## Bump crates/tonin-sdk VERSION + Cargo.toml and commit locally (VERSION=X.Y.Z)
 	@test -n "$(VERSION)" || \
 	  (echo "usage: make version-sdk VERSION=X.Y.Z" >&2; exit 1)
 	./crates/tonin-sdk/scripts/bump-version.sh "$(VERSION)"
 
-bump-patch-sdk: ## Bump tonin-sdk PATCH version locally (fix: commits)
+bump-patch-sdk: ## Bump tonin-sdk PATCH version locally (does not tag/push)
 	./crates/tonin-sdk/scripts/bump-version.sh patch
 
-bump-minor-sdk: ## Bump tonin-sdk MINOR version locally (feat: commits)
+bump-minor-sdk: ## Bump tonin-sdk MINOR version locally (does not tag/push)
 	./crates/tonin-sdk/scripts/bump-version.sh minor
 
-bump-major-sdk: ## Bump tonin-sdk MAJOR version locally (BREAKING CHANGE)
+bump-major-sdk: ## Bump tonin-sdk MAJOR version locally (does not tag/push)
 	./crates/tonin-sdk/scripts/bump-version.sh major
-
-release-sdk: ## Tag and push tonin-sdk; pass BUMP=patch|minor|major or VERSION=X.Y.Z to bump first
-ifdef VERSION
-	./crates/tonin-sdk/scripts/bump-version.sh "$(VERSION)"
-else ifdef BUMP
-	./crates/tonin-sdk/scripts/bump-version.sh "$(BUMP)"
-endif
-	@TAG="tonin-sdk-v$$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)"; \
-	echo "→ tagging $$TAG"; \
-	git tag -a "$$TAG" -m "Release tonin-sdk $$TAG"; \
-	echo "→ pushing main"; \
-	git push origin main; \
-	echo "→ pushing tag $$TAG"; \
-	git push origin "$$TAG"; \
-	echo; \
-	echo "✓ $$TAG released. .github/workflows/release-tonin-sdk.yml is running:"; \
-	echo "  https://github.com/Rushit/tonin/actions"
