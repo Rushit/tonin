@@ -10,7 +10,8 @@
 # Conventional Commit → bump rules:
 #   fix:              → PATCH
 #   feat:             → MINOR
-#   feat! / BREAKING  → MAJOR
+#   feat! / BREAKING  → MINOR (capped by bump-minor-pre-major: true — no
+#                       auto-major while version < 1.0.0)
 #   anything else     → PATCH (safe default)
 #
 # Two packages are versioned independently:
@@ -26,10 +27,11 @@
 # (triggered by push to v*.*.* tags) and release-tonin-sdk.yml (triggered
 # by push to tonin-sdk-v*.*.* tags) — those workflows are unchanged.
 #
-# Required secrets:
-#   RELEASE_PAT — a PAT with repo + pull-requests scopes. GITHUB_TOKEN cannot
-#   create PRs when the repo setting "Allow GitHub Actions to create and approve
-#   pull requests" is disabled; a PAT bypasses that restriction.
+# Token: uses the default GITHUB_TOKEN (no extra secrets needed).
+# Prerequisite: Settings → Actions → General →
+#   "Allow GitHub Actions to create and approve pull requests" must be ON.
+#   Without that checkbox, GITHUB_TOKEN cannot open PRs regardless of the
+#   `permissions` block below.
 
 name: Release Please
 
@@ -56,7 +58,7 @@ jobs:
         with:
           config-file: .github/release-please-config.json
           manifest-file: .release-please-manifest.json
-          token: ${{ secrets.RELEASE_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
   # Auto-merge the Release PR with a squash commit the moment it is opened or
@@ -77,7 +79,7 @@ jobs:
     steps:
       - name: Squash-merge Release PR
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER=$(echo '${{ needs.release-please.outputs.pr }}' | jq -r '.number')
           gh pr merge "$PR_NUMBER" \
