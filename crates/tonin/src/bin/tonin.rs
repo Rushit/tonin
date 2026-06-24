@@ -1,19 +1,20 @@
 //! The `tonin` CLI — scaffold services, generate code from `.proto`, and
-//! render Kubernetes manifests for the [tonin](https://crates.io/crates/tonin)
-//! framework.
+//! deploy with Helm via the `tonin-helm` plugin.
 //!
 //! Three subcommand groups dispatched from [`TopCmd`]:
 //!
 //! - `tonin service new <name>` — scaffold a Rust / Python / TypeScript
-//!   service from the templates baked into this binary
-//!   (see `crates/tonin/templates/`).
-//! - `tonin proto generate` — `.proto` codegen entry point. Today the
-//!   scaffold's `build.rs` drives `tonic-build` via `tonin-build`; this
-//!   command is the placeholder for the future `protoc-gen-tonin`.
-//! - `tonin k8s` — render / validate / diff / apply Kubernetes manifests
-//!   from a service's `tonin.toml`. The rendering pipeline lives in
-//!   `tonin::codegen` (Tera + `include_dir`).
+//!   service from the templates baked into this binary.
+//! - `tonin proto generate` — `.proto` codegen entry point.
 //! - `tonin plugin` — list installed plugins discovered on `$PATH`.
+//!
+//! **Kubernetes / Helm deploy is handled by the `tonin-helm` plugin:**
+//!
+//!   ```text
+//!   tonin helm generate    # render Helm chart from tonin.toml
+//!   tonin helm upgrade     # helm upgrade --install …
+//!   tonin helm diff        # helm diff upgrade …
+//!   ```
 //!
 //! Any unrecognised subcommand triggers plugin dispatch: tonin looks for
 //! `tonin-<name>` on `$PATH` and `exec()`s it with the remaining arguments
@@ -31,8 +32,7 @@ use tonin::commands;
     name = "tonin",
     version,
     about = "Build gRPC microservices for Kubernetes — the tonin CLI",
-    long_about = "The tonin CLI scaffolds gRPC microservices, runs codegen, \
-                  and renders Kubernetes manifests for them.
+    long_about = "The tonin CLI scaffolds gRPC microservices and manages their lifecycle.
 
 COMMON WORKFLOWS
 
@@ -41,13 +41,13 @@ COMMON WORKFLOWS
     cd greeter
     cargo run -p greeter               # boots gRPC + MCP locally
 
-  Render manifests and apply to a cluster:
-    tonin k8s generate               # writes ./k8s/*.yaml from tonin.toml
-    tonin k8s validate               # server-side dry-run via kubectl
-    tonin k8s apply                  # actually applies to the current context
+  Render Helm chart and deploy (requires tonin-helm):
+    tonin helm generate              # writes ./chart/ from tonin.toml
+    tonin helm diff --env prod       # show what would change
+    tonin helm upgrade --env prod    # helm upgrade --install
 
-  Workspace-wide deploy:
-    tonin k8s apply --workspace --path ./services
+  Install tonin-helm:
+    cargo install tonin-helm
 
 PLUGINS
 
@@ -63,18 +63,15 @@ PLUGINS
 
 INTROSPECTION FOR CODING AGENTS
 
-  Every subcommand supports `--help` (short) and `--long-help` is what's
-  printed when you pass --help to a leaf command. For a machine-readable
-  manifest of every command + arg + prerequisite, use:
+  Every subcommand supports `--help`. For a machine-readable manifest of
+  every command + arg + prerequisite, use:
 
     tonin describe                   # text
     tonin describe --format json     # JSON
 
-  The JSON shape is documented at the top of `tonin describe --help`.
-
 ENVIRONMENT
 
-  TONIN_ENV         Default overlay env for k8s render (overlaid by --env).
+  TONIN_ENV         Default overlay env for Helm rendering (overlaid by --env).
   TONIN_TELEMETRY   Set to 'off' to disable OTLP exports in scaffolded svcs.
   OTEL_EXPORTER_OTLP_ENDPOINT   Where scaffolded services send traces.
 
@@ -90,15 +87,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum TopCmd {
-    /// Kubernetes operations: render, validate, diff, apply manifests.
-    ///
-    /// Every subcommand reads tonin.toml from `--path` (default: current
-    /// dir) and either writes YAML offline (`generate`) or talks to the
-    /// cluster (`validate` / `diff` / `apply`).
-    K8s {
-        #[command(subcommand)]
-        cmd: commands::k8s::K8sCmd,
-    },
     /// Protocol Buffers / gRPC codegen.
     ///
     /// Stub today — real codegen runs in the scaffolded service's
@@ -139,6 +127,18 @@ enum TopCmd {
     /// Reports any plugin that needs a newer `tonin` and offers to run
     /// `tonin upgrade`. Local only — no network access.
     Doctor(commands::doctor::DoctorArgs),
+
+    /// [removed] Kubernetes manifest generation has moved to `tonin helm`.
+    ///
+    /// Install tonin-helm and use:
+    ///   tonin helm generate    — render Helm chart from tonin.toml
+    ///   tonin helm diff        — show pending cluster changes
+    ///   tonin helm upgrade     — deploy / upgrade
+    #[command(hide = true)]
+    K8s {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        _args: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -167,13 +167,27 @@ fn main() -> Result<()> {
 
 fn dispatch(cli: Cli) -> Result<()> {
     match cli.cmd {
-        TopCmd::K8s { cmd } => commands::k8s::run(cmd),
         TopCmd::Proto { cmd } => commands::proto::run(cmd),
         TopCmd::Service { cmd } => commands::service::run(cmd),
         TopCmd::Describe(args) => commands::describe::run(args, &Cli::command()),
         TopCmd::Plugin { cmd } => commands::plugin::run(cmd),
         TopCmd::Upgrade(args) => commands::upgrade::run(args),
         TopCmd::Doctor(args) => commands::doctor::run(args),
+        TopCmd::K8s { .. } => {
+            eprintln!("error: `tonin k8s` has been removed.");
+            eprintln!();
+            eprintln!("  Kubernetes manifest generation is now handled by the tonin-helm plugin.");
+            eprintln!("  Install it once:");
+            eprintln!("    cargo install tonin-helm");
+            eprintln!();
+            eprintln!("  Then use the same workflow through `tonin helm`:");
+            eprintln!("    tonin helm generate              # was: tonin k8s generate");
+            eprintln!("    tonin helm diff --env prod       # was: tonin k8s diff");
+            eprintln!("    tonin helm upgrade --env prod    # was: tonin k8s apply");
+            eprintln!();
+            eprintln!("  See: https://github.com/Rushit/tonin#deploy-with-tonin-helm");
+            std::process::exit(1);
+        }
     }
 }
 

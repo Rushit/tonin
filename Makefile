@@ -61,14 +61,10 @@ install-hooks: ## Wire up git hooks (run once after cloning)
 	chmod +x .git/hooks/commit-msg
 	@echo "hooks installed: pre-commit, commit-msg"
 
-# Proves the templates + generated code still hold together: `cargo build`
-# runs the example's build.rs codegen (tonic-build) and compiles the result;
-# `k8s generate` re-renders its manifests from tonin.toml. Run after touching
-# any template under crates/tonin/templates/ or the codegen module.
-gen-example: ## Re-render examples/greeter manifests and confirm it builds
+gen-example: ## Re-render examples/greeter Helm chart and confirm it builds
 	$(CARGO) build -p greeter
-	$(CARGO) run -p tonin -- k8s generate --path examples/greeter
-	@echo "gen-example: greeter builds and manifests render"
+	$(CARGO) run -p tonin-helm -- generate --path examples/greeter
+	@echo "gen-example: greeter builds and Helm chart renders"
 
 clean: ## Remove cargo build artifacts
 	$(CARGO) clean

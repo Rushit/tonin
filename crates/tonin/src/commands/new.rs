@@ -8,7 +8,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::codegen::{plan::Plan, render};
 use anyhow::{Context, Result, anyhow, bail};
 use convert_case::{Case, Casing};
 use include_dir::{Dir, include_dir};
@@ -132,7 +131,6 @@ pub fn run(
     for extra in extra_clients {
         emit_extra_client(&dest, &vars, *extra)?;
     }
-    pregenerate_k8s(&dest)?;
     emit_claude_md(&dest, name, lang, st, wm)?;
     emit_gitignore(&dest)?;
     emit_docs_tree(&dest, name)?;
@@ -822,19 +820,19 @@ Service scaffolded by `tonin service new`.
 - **Framework:** `tonin` (the `tonin` framework)
 - **Observability:** OTLP traces wired via `Service::new`
 - **Config:** see `tonin.toml` for declared deps (database, cache, mesh, etc.)
-- **Manifests:** k8s YAML is generated; do not hand-edit. Re-run `tonin k8s generate`.
+- **Deploy:** via `tonin helm` (install `cargo install tonin-helm` once).
 
 ## How to develop
 
 ```sh
-# Generate / regenerate k8s manifests after editing tonin.toml
-tonin k8s generate
+# Generate / regenerate Helm chart after editing tonin.toml
+tonin helm generate
 
-# Validate against a real cluster (--dry-run=server)
-tonin k8s validate
+# Preview changes against a real cluster
+tonin helm diff --env prod
 
-# Apply
-tonin k8s apply
+# Deploy
+tonin helm upgrade --env prod
 ```
 
 ## Living documentation
@@ -852,9 +850,9 @@ This service uses the `docs/` convention. Before starting any feature:
 
 - Don't import implementation crates directly. Use the `tonin`
   prelude and let `Service::new` install telemetry + propagation.
-- Don't hand-write k8s YAML — re-run `tonin k8s generate`.
-- Don't commit `db-secret.yaml` with real values. Use `kubectl create
-  secret` or an `ExternalSecret` resource instead.
+- Don't hand-write Helm chart files — re-run `tonin helm generate`.
+- Don't commit secrets with real values. Use `kubectl create secret`
+  or an `ExternalSecret` resource instead.
 - Don't write code without a PRD + TechSpec in `docs/plans/<feature>/`.
 ",
         name = name,
@@ -866,15 +864,12 @@ This service uses the `docs/` convention. Before starting any feature:
 }
 
 fn emit_gitignore(dest: &Path) -> Result<()> {
-    std::fs::write(
-        dest.join(".gitignore"),
-        crate::codegen::default_rust_gitignore(),
-    )?;
+    std::fs::write(dest.join(".gitignore"), default_rust_gitignore())?;
     Ok(())
 }
 
 fn emit_docs_tree(dest: &Path, name: &str) -> Result<()> {
-    for (rel, contents) in crate::codegen::default_docs_tree(name) {
+    for (rel, contents) in default_docs_tree(name) {
         let path = dest.join(&rel);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -882,6 +877,127 @@ fn emit_docs_tree(dest: &Path, name: &str) -> Result<()> {
         std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
     }
     Ok(())
+}
+
+fn default_docs_tree(service_name: &str) -> Vec<(String, String)> {
+    vec![
+        ("AGENTS.md".to_string(), docs_agents_md(service_name)),
+        ("docs/README.md".to_string(), docs_readme_md(service_name)),
+        ("docs/roadmap.md".to_string(), docs_roadmap_md(service_name)),
+        ("docs/capabilities/.gitkeep".to_string(), "# Add one .md per capability the service offers.\n# See ../README.md for the convention.\n".to_string()),
+        ("docs/plans/.gitkeep".to_string(), "# Add one folder per active feature/project.\n# Each folder must contain PRD.md and TechSpec.md.\n# See ../README.md for the convention.\n".to_string()),
+        ("docs/plans/archive/.gitkeep".to_string(), "# Completed plans move here on feature close.\n# See ../../README.md for the convention.\n".to_string()),
+    ]
+}
+
+fn docs_agents_md(service_name: &str) -> String {
+    format!(
+        "# AGENTS.md — {name}
+
+This file is the entry point for any coding agent working in this repo.
+
+## Before you write code
+
+1. Read `docs/README.md` for the docs convention.
+2. Read `CLAUDE.md` for quick facts about this service (language, framework, config).
+3. Read `docs/roadmap.md` to understand what's done, active, and planned.
+4. Read `docs/capabilities/*.md` for what this service already does (no need to rediscover).
+
+## When starting a new feature / project
+
+Create `docs/plans/<feature-name>/` and seed it with two files:
+
+- **`PRD.md`** — Product Requirements Document.
+- **`TechSpec.md`** — Technical Specification.
+
+Both files exist before any code change.
+
+## When finishing a feature
+
+1. Move the plan to archive: `mv docs/plans/<feature> docs/plans/archive/<feature>`.
+2. Update `docs/capabilities/` with a new or updated `.md` for the capability.
+3. Update `docs/roadmap.md` — move the entry from \"active\" to \"done\".
+",
+        name = service_name,
+    )
+}
+
+fn docs_readme_md(service_name: &str) -> String {
+    format!(
+        "# docs/
+
+Living documentation for `{name}`.
+
+## Layout
+
+```
+docs/
+├── README.md              ← you are here
+├── roadmap.md             ← rolling list: done / active / future
+├── capabilities/          ← one .md per public capability (current state)
+└── plans/
+    ├── <feature>/         ← in-flight feature work (PRD.md + TechSpec.md)
+    └── archive/           ← finished work
+```
+",
+        name = service_name,
+    )
+}
+
+fn docs_roadmap_md(service_name: &str) -> String {
+    format!(
+        "# {name} — roadmap
+
+## Done
+
+(empty)
+
+## Active
+
+(empty)
+
+## Future
+
+(empty)
+",
+        name = service_name,
+    )
+}
+
+fn default_rust_gitignore() -> &'static str {
+    r#"# Rust build artifacts.
+/target
+**/*.rs.bk
+
+# Python (when scaffolded with --lang python).
+__pycache__/
+*.py[cod]
+.venv/
+.python-version
+
+# Node / TS (when scaffolded with --lang ts).
+node_modules/
+.next/
+dist/
+
+# IDE / OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local secrets — never commit.
+*.local.yaml
+*.local.toml
+.env
+.env.*
+
+# Claude Code per-user settings.
+.claude/settings.local.json
+
+# NOTE: Cargo.lock and proto/ are INTENTIONALLY committed.
+"#
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -1082,23 +1198,6 @@ fn emit_extra_client(dest: &Path, vars: &Vars, client: ClientLang) -> Result<()>
     Ok(())
 }
 
-fn pregenerate_k8s(dest: &Path) -> Result<()> {
-    let toml = dest.join("tonin.toml");
-    let plan = Plan::load(&toml).context("loading freshly-scaffolded tonin.toml")?;
-    let files = render::render(&plan).context("rendering k8s manifests")?;
-    let k8s_dir = dest.join("k8s");
-    std::fs::create_dir_all(&k8s_dir)?;
-    for f in &files {
-        std::fs::write(k8s_dir.join(&f.path), &f.contents)?;
-    }
-    eprintln!(
-        "✓ pre-generated {} k8s files in {}/k8s/",
-        files.len(),
-        dest.display()
-    );
-    Ok(())
-}
-
 fn maybe_add_to_workspace(dest: &Path) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let Some(ws_root) = find_workspace_root(&cwd) else {
@@ -1191,7 +1290,7 @@ fn print_next_steps(
     match (lang, st, wm) {
         (Lang::Rust, _, _) => {
             eprintln!("  cargo build                  # compile the stub server");
-            eprintln!("  tonin k8s validate        # check generated YAML against your cluster");
+            eprintln!("  tonin helm generate          # render Helm chart from tonin.toml");
         }
         (Lang::Python, _, _) => {
             eprintln!("  (cd client-python && bash codegen.sh)   # generate client stubs");
@@ -1216,7 +1315,7 @@ fn print_next_steps(
             eprintln!("  npm run dev                  # tsx watch on :50051");
         }
     }
-    eprintln!("  tonin k8s apply            # deploy to current kubectl context");
+    eprintln!("  tonin helm upgrade --env prod   # deploy to cluster (install tonin-helm once)");
     if !jobs.is_empty() {
         eprintln!();
         eprintln!("background jobs:");
@@ -1383,9 +1482,6 @@ fn emit_workspace_layout(dest: &Path, vars: &Vars, extras: &[ClientLang]) -> Res
     write_file(&e2e_dir.join("tests/common/mod.rs"), &e2e_common_mod(name))?;
     write_file(&e2e_dir.join("tests/contract.rs"), &e2e_contract_test(name))?;
 
-    // Pre-generate k8s manifests from the server's tonin.toml.
-    pregenerate_k8s(&server_dir)?;
-
     // Optional language clients: <name>-py, <name>-ts, etc.
     for &client in extras {
         emit_workspace_client(dest, vars, client)?;
@@ -1549,7 +1645,7 @@ Extra clients (if scaffolded): `{name}-py` (Python), `{name}-ts` (TypeScript).
 ```bash
 cargo build && cargo test --workspace
 cargo clippy --workspace -- -D warnings
-cd {name}-server && tonin k8s generate   # regenerate k8s/ manifests
+cd {name}-server && tonin helm generate  # render Helm chart from tonin.toml
 ```
 
 ## Versioning policy
@@ -1582,7 +1678,7 @@ cd {name}-server && tonin k8s generate   # regenerate k8s/ manifests
 ## Workspace-level rules
 - `edition = "2024"`, `license = "LicenseRef-Commercial"` on all crates (inherited via workspace)
 - Cargo target dir: `/tmp/{name}-target` (`.cargo/config.toml`) — never commit `/target/`
-- Never hand-edit `k8s/*.yaml` — always regenerate with `tonin k8s generate`
+- Never hand-edit generated Helm chart files — always re-run `tonin helm generate`
 - `k8s/secrets.yaml` and `k8s/db-secret.yaml` are auto-gitignored; never commit with real values
 "#
     )
@@ -1602,7 +1698,7 @@ fn ws_agents_md(name: &str) -> String {
 ```bash
 cargo build && cargo test --workspace
 cargo clippy --workspace -- -D warnings
-cd {name}-server && tonin k8s generate
+cd {name}-server && tonin helm generate  # render Helm chart from tonin.toml
 ```
 
 ## Non-negotiable rules
@@ -1610,7 +1706,7 @@ cd {name}-server && tonin k8s generate
 1. **Proto field numbers are immutable** — never renumber; add `reserved N;` instead of removing.
 2. **DB migrations are immutable once merged** — never edit a committed `.sql` file.
 3. **Only additive changes** to proto and DB schema without a version bump.
-4. **Never hand-edit** generated `k8s/*.yaml` — always re-run `tonin k8s generate`.
+4. **Never hand-edit** generated Helm chart files — always re-run `tonin helm generate`.
 5. **Never commit** `k8s/secrets.yaml` or `k8s/db-secret.yaml` with real values.
 6. All crates: `edition = "2024"`, `license = "LicenseRef-Commercial"`.
 7. Backward-compat breakage requires a proto package version bump (`v1` → `v2`).
@@ -1985,7 +2081,7 @@ tonin gRPC binary. Handlers start as stubs (`UNIMPLEMENTED`); fill in real logic
 cargo build -p {name}-server
 cargo test --test contract_e2e_test   # in-process gRPC, no Docker needed
 cargo test -p {name}-server           # all tests including unit tests
-tonin k8s generate                    # regenerate k8s/*.yaml + update .gitignore
+tonin helm generate                   # render Helm chart from tonin.toml
 ```
 
 ## Rust / tonin coding standards
@@ -2380,7 +2476,7 @@ fn server_makefile(name: &str) -> String {
          \tcargo nextest run --test migrations_test\n\
          \n\
          k8s-generate: ## Regenerate k8s manifests via tonin\n\
-         \ttonin k8s generate\n\
+         \ttonin helm generate\n\
          \n\
          migrate: ## Apply migrations to DATABASE_URL (dev/local)\n\
          \tsqlx migrate run --source migrations\n\
@@ -2820,7 +2916,7 @@ fn print_workspace_next_steps(name: &str, extras: &[ClientLang]) {
     eprintln!("  cd {name}");
     eprintln!("  cargo build --workspace          # compiles Rust crates");
     eprintln!("  cargo test --workspace           # contract test should pass");
-    eprintln!("  cd {name}-server && tonin k8s generate   # regenerate k8s/");
+    eprintln!("  cd {name}-server && tonin helm generate  # render Helm chart from tonin.toml");
     for client in extras {
         match client {
             ClientLang::Python => {
