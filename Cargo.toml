@@ -9,8 +9,6 @@ members = [
     "crates/tonin-build",
     "crates/tonin-config-etcd",
     "crates/tonin-config-github",
-    # Plugin binaries — versioned independently from the core workspace packages.
-    "crates/tonin-helm",
     "examples/greeter",
     "examples/orders",
     "examples/inventory",

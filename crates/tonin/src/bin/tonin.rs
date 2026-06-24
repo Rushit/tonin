@@ -1,20 +1,14 @@
 //! The `tonin` CLI — scaffold services, generate code from `.proto`, and
-//! deploy with Helm via the `tonin-helm` plugin.
+//! deploy with Helm (`tonin helm`).
 //!
-//! Three subcommand groups dispatched from [`TopCmd`]:
+//! Subcommand groups dispatched from [`TopCmd`]:
 //!
 //! - `tonin service new <name>` — scaffold a Rust / Python / TypeScript
 //!   service from the templates baked into this binary.
 //! - `tonin proto generate` — `.proto` codegen entry point.
+//! - `tonin helm generate / upgrade / diff / …` — Helm chart generation and
+//!   lifecycle management (built-in; no separate install required).
 //! - `tonin plugin` — list installed plugins discovered on `$PATH`.
-//!
-//! **Kubernetes / Helm deploy is handled by the `tonin-helm` plugin:**
-//!
-//!   ```text
-//!   tonin helm generate    # render Helm chart from tonin.toml
-//!   tonin helm upgrade     # helm upgrade --install …
-//!   tonin helm diff        # helm diff upgrade …
-//!   ```
 //!
 //! Any unrecognised subcommand triggers plugin dispatch: tonin looks for
 //! `tonin-<name>` on `$PATH` and `exec()`s it with the remaining arguments
@@ -41,13 +35,10 @@ COMMON WORKFLOWS
     cd greeter
     cargo run -p greeter               # boots gRPC + MCP locally
 
-  Render Helm chart and deploy (requires tonin-helm):
+  Render Helm chart and deploy (built-in, no separate install needed):
     tonin helm generate              # writes ./chart/ from tonin.toml
     tonin helm diff --env prod       # show what would change
     tonin helm upgrade --env prod    # helm upgrade --install
-
-  Install tonin-helm:
-    cargo install tonin-helm
 
 PLUGINS
 
@@ -55,7 +46,7 @@ PLUGINS
   $PATH. Install a plugin with `cargo install tonin-<name>`, then use it
   as a first-class subcommand:
 
-    tonin helm upgrade --env prod    # delegates to tonin-helm
+    tonin myplugin <args>            # delegates to tonin-myplugin on PATH
 
   List installed plugins:
     tonin plugin list
@@ -128,6 +119,21 @@ enum TopCmd {
     /// `tonin upgrade`. Local only — no network access.
     Doctor(commands::doctor::DoctorArgs),
 
+    /// Helm chart generation and lifecycle management for tonin services.
+    ///
+    /// Reads `tonin.toml` and either generates a complete Helm chart
+    /// (`helm generate`) or wraps helm commands with auto-resolved release
+    /// name, namespace, and values files.
+    ///
+    ///   tonin helm generate            # render chart/ from tonin.toml
+    ///   tonin helm upgrade --env prod  # helm upgrade --install
+    ///   tonin helm diff    --env prod  # helm diff upgrade (requires helm-diff)
+    ///   tonin helm -- lint chart/      # raw passthrough to helm
+    Helm {
+        #[command(subcommand)]
+        cmd: commands::helm::HelmCmd,
+    },
+
     /// [removed] Kubernetes manifest generation has moved to `tonin helm`.
     ///
     /// Install tonin-helm and use:
@@ -173,19 +179,14 @@ fn dispatch(cli: Cli) -> Result<()> {
         TopCmd::Plugin { cmd } => commands::plugin::run(cmd),
         TopCmd::Upgrade(args) => commands::upgrade::run(args),
         TopCmd::Doctor(args) => commands::doctor::run(args),
+        TopCmd::Helm { cmd } => commands::helm::run(cmd),
         TopCmd::K8s { .. } => {
             eprintln!("error: `tonin k8s` has been removed.");
             eprintln!();
-            eprintln!("  Kubernetes manifest generation is now handled by the tonin-helm plugin.");
-            eprintln!("  Install it once:");
-            eprintln!("    cargo install tonin-helm");
-            eprintln!();
-            eprintln!("  Then use the same workflow through `tonin helm`:");
+            eprintln!("  Kubernetes manifest generation is now `tonin helm` (built-in):");
             eprintln!("    tonin helm generate              # was: tonin k8s generate");
             eprintln!("    tonin helm diff --env prod       # was: tonin k8s diff");
             eprintln!("    tonin helm upgrade --env prod    # was: tonin k8s apply");
-            eprintln!();
-            eprintln!("  See: https://github.com/Rushit/tonin#deploy-with-tonin-helm");
             std::process::exit(1);
         }
     }

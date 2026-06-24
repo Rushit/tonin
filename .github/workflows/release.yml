@@ -38,8 +38,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. v0.1.0) - emergency manual run only'
-        required: true
+        description: 'Override version tag (e.g. v0.1.0). Leave blank to use the ref this run targets.'
+        required: false
         type: string
 
 permissions:
@@ -60,11 +60,7 @@ jobs:
       - name: Verify
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            REF="${{ github.event.inputs.version }}"
-          else
-            REF="${{ github.ref_name }}"
-          fi
+          REF="${{ github.event.inputs.version || github.ref_name }}"
           TAG_VERSION="${REF#v}"
           # /VERSION is the source of truth. scripts/bump-version.sh keeps
           # Cargo.toml's [workspace.package].version in sync; we still cross-
@@ -125,6 +121,7 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
+          version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
@@ -163,6 +160,7 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
+          version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
@@ -242,6 +240,7 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
+          version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
@@ -306,11 +305,7 @@ jobs:
       - name: Install via install.sh and assert version
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            REF="${{ github.event.inputs.version }}"
-          else
-            REF="${{ github.ref_name }}"
-          fi
+          REF="${{ github.event.inputs.version || github.ref_name }}"
           WANT="${REF#v}"
           DEST="$(mktemp -d)"
           bash scripts/install.sh --dir "$DEST"

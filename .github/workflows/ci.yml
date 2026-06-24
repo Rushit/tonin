@@ -43,6 +43,7 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
+          version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo registry + target
@@ -95,16 +96,16 @@ jobs:
             exit 1
           fi
 
-  version-sync-helm:
-    name: tonin-helm VERSION matches Cargo.toml [package]
+  version-sync-sdk:
+    name: tonin-sdk VERSION matches Cargo.toml [package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check crates/tonin-helm/VERSION == Cargo.toml [package].version
+      - name: Check crates/tonin-sdk/VERSION == Cargo.toml [package].version
         run: |
           set -euo pipefail
-          FILE_VERSION=$(tr -d '[:space:]' < crates/tonin-helm/VERSION)
+          FILE_VERSION=$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)
           CARGO_VERSION=$(awk '
             /^\[package\]/ { in_section=1; next }
             /^\[/ && in_section { in_section=0 }
@@ -113,11 +114,11 @@ jobs:
               print substr($0, RSTART+1, RLENGTH-2)
               exit
             }
-          ' crates/tonin-helm/Cargo.toml)
+          ' crates/tonin-sdk/Cargo.toml)
           echo "VERSION file : ${FILE_VERSION}"
           echo "Cargo.toml   : ${CARGO_VERSION}"
           if [ "${FILE_VERSION}" != "${CARGO_VERSION}" ]; then
-            echo "::error::crates/tonin-helm/VERSION (${FILE_VERSION}) and crates/tonin-helm/Cargo.toml (${CARGO_VERSION}) are out of sync."
-            echo "::error::Run  crates/tonin-helm/scripts/bump-version.sh ${CARGO_VERSION}  to fix both at once."
+            echo "::error::crates/tonin-sdk/VERSION (${FILE_VERSION}) and crates/tonin-sdk/Cargo.toml (${CARGO_VERSION}) are out of sync."
+            echo "::error::Run  crates/tonin-sdk/scripts/bump-version.sh ${CARGO_VERSION}  to fix both at once."
             exit 1
           fi

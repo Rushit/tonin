@@ -1,0 +1,47 @@
+# Prune stale GHCR container images and package versions.
+#
+# Runs weekly (Sunday midnight UTC) and on manual dispatch.
+# Always dry-run on manual dispatch unless explicitly set to false.
+#
+# Image classification:
+#   stable   — tagged vX.Y.Z or tonin-sdk-vX.Y.Z   → keep 10 most recent
+#   ephemeral — tagged sha-* or pr-*                 → keep 0 (delete all)
+#   untagged  — no tags (orphaned layers)            → delete all
+#
+# NOTE: If this repository has no packages in GHCR yet, this job will
+# complete with a warning rather than an error (continue-on-error: true).
+
+name: Registry Cleanup
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # Every Sunday at midnight UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview deletions without removing anything'
+        type: boolean
+        default: true
+
+jobs:
+  prune-ghcr:
+    name: Prune GHCR images
+    runs-on: ubuntu-latest
+    continue-on-error: true   # no-op when no packages exist yet
+    permissions:
+      packages: write
+
+    steps:
+      - name: Delete stale and untagged container images
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          # Keep the 10 most-recently-pushed tagged versions (stable + pre-releases).
+          # Ephemeral builds tagged sha-* or pr-* are never counted here because
+          # they match a delete rule below first.
+          keep-n-tagged: 10
+          # Remove any image tagged sha-* or pr-* (ephemeral CI builds).
+          delete-tags: 'sha-*,pr-*'
+          # Remove orphaned untagged layers left behind after tag overwrites.
+          delete-untagged: true
+          dry-run: ${{ github.event_name == 'schedule' && false || inputs.dry_run }}
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -18,16 +18,16 @@ if [ "$FILE" != "$CARGO" ]; then
   exit 1
 fi
 
-echo "pre-commit: version-sync (tonin-helm)..."
-HELM_FILE="$(tr -d '[:space:]' < crates/tonin-helm/VERSION)"
-HELM_CARGO="$(awk '
+echo "pre-commit: version-sync (tonin-sdk)..."
+SDK_FILE="$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)"
+SDK_CARGO="$(awk '
   /^\[package\]/ { s=1; next }
   /^\[/ && s { s=0 }
   s && /^version[[:space:]]*=/ { match($0, /"[^"]+"/) ; print substr($0, RSTART+1, RLENGTH-2) ; exit }
-' crates/tonin-helm/Cargo.toml)"
-if [ "$HELM_FILE" != "$HELM_CARGO" ]; then
-  echo "error: crates/tonin-helm/VERSION ($HELM_FILE) and crates/tonin-helm/Cargo.toml ($HELM_CARGO) are out of sync" >&2
-  echo "fix:   crates/tonin-helm/scripts/bump-version.sh $HELM_CARGO" >&2
+' crates/tonin-sdk/Cargo.toml)"
+if [ "$SDK_FILE" != "$SDK_CARGO" ]; then
+  echo "error: crates/tonin-sdk/VERSION ($SDK_FILE) and crates/tonin-sdk/Cargo.toml ($SDK_CARGO) are out of sync" >&2
+  echo "fix:   crates/tonin-sdk/scripts/bump-version.sh $SDK_CARGO" >&2
   exit 1
 fi
 
