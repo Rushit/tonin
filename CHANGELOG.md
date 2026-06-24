@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/Rushit/tonin/compare/v0.7.2...v0.7.3) (2026-06-24)
+
+
+### Bug Fixes
+
+* **ci:** make crates.io publish idempotent (skip already-uploaded versions) ([#49](https://github.com/Rushit/tonin/issues/49)) ([46dee23](https://github.com/Rushit/tonin/commit/46dee237ae2f79e966bd4fbad32ad2f6fabecd80))
+
 ## [0.7.2](https://github.com/Rushit/tonin/compare/v0.7.1...v0.7.2) (2026-06-24)
 
 
