@@ -260,7 +260,10 @@ jobs:
           REF="${{ github.event.inputs.version || github.ref_name }}"
           WANT="${REF#v}"
           DEST="$(mktemp -d)"
-          bash scripts/install.sh --dir "$DEST"
+          # Pass --version explicitly so install.sh skips the GitHub API
+          # "latest release" lookup — that unauthenticated call returns 403
+          # on shared Actions runners due to rate limiting.
+          bash scripts/install.sh --dir "$DEST" --version "$REF"
           GOT="$("$DEST/tonin" --version | awk '{print $NF}')"
           echo "install.sh installed tonin ${GOT} (expected ${WANT})"
           if [ "${GOT}" != "${WANT}" ]; then
