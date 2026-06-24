@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4](https://github.com/Rushit/tonin/compare/v0.7.3...v0.7.4) (2026-06-24)
+
+
+### Bug Fixes
+
+* **ci:** broaden idempotent publish check to catch both crates.io error messages ([#51](https://github.com/Rushit/tonin/issues/51)) ([0e5b137](https://github.com/Rushit/tonin/commit/0e5b137b9e1260316a06550568e97e8fe9251df4))
+
 ## [0.7.3](https://github.com/Rushit/tonin/compare/v0.7.2...v0.7.3) (2026-06-24)
 
 
