@@ -148,31 +148,36 @@ VERIFY=$(awk '
 ' Cargo.toml)
 
 # 3. Update intra-workspace dep pins in [workspace.dependencies].
-# Every tonin* sibling entry has the shape:
-#   tonin-core = { path = "...", version = "X.Y.Z" }
+# Every workspace-versioned tonin* entry has the shape:
+#   tonin-plugin = { path = "...", version = "X.Y.Z" }
 # When [workspace.package].version bumps, those pins must bump too —
-# otherwise downstream crates (e.g. `tonin` depending on `tonin-core`)
-# fail to resolve because the path crate now has the new version but the
-# dep declaration still asks for the old one.
+# otherwise downstream crates fail to resolve because the path crate now
+# has the new version but the dep declaration still asks for the old one.
+#
+# tonin-sdk is EXCLUDED: it carries an independent version (crates/tonin-sdk/
+# VERSION is managed separately) and must NOT be bumped here.
 #
 # State machine: enter the block at [workspace.dependencies], leave at the
 # next [section] header, rewrite every `version = "..."` field on lines
-# whose key starts with `tonin`.
+# whose key starts with `tonin` but is not `tonin-sdk`.
 awk -v new="$NEW" '
     /^\[workspace\.dependencies\]/ { in_block = 1; print; next }
     /^\[/ && in_block              { in_block = 0 }
-    in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=.*version[[:space:]]*=/ {
+    in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=.*version[[:space:]]*=/ \
+             && !/^tonin-sdk[[:space:]]*=/ {
         sub(/version[[:space:]]*=[[:space:]]*"[^"]+"/, "version = \"" new "\"")
     }
     { print }
 ' Cargo.toml > Cargo.toml.bak
 mv Cargo.toml.bak Cargo.toml
 
-# Sanity check: every tonin* dep pin should now read the new version.
+# Sanity check: every workspace-versioned tonin* dep pin should now read
+# the new version. tonin-sdk is excluded (independent version).
 STALE=$(awk -v want="$NEW" '
     /^\[workspace\.dependencies\]/ { in_block = 1; next }
     /^\[/ && in_block              { in_block = 0 }
-    in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=/ {
+    in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=/ \
+             && !/^tonin-sdk[[:space:]]*=/ {
         if (match($0, /version[[:space:]]*=[[:space:]]*"[^"]+"/)) {
             v = substr($0, RSTART, RLENGTH)
             sub(/^version[[:space:]]*=[[:space:]]*"/, "", v)
