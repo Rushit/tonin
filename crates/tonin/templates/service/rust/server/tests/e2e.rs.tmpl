@@ -5,6 +5,7 @@
 //! Uses the published `{{ service_name }}-client` crate (via path dep) for
 //! the client side — same SDK peer services would use.
 
+use tokio_stream::StreamExt as _;
 use {{ service_name_snake }}_client::{ {{ ServiceCamel }}Client, HelloRequest, AuthCtx};
 use {{ service_name_snake }}_server::test_helpers;
 
@@ -46,4 +47,45 @@ async fn say_hello_with_auth_header() {
     // surfaced into the reply.
     let reply = client.say_hello(req).await.unwrap().into_inner();
     assert!(reply.message.contains("rushit"));
+}
+
+#[tokio::test]
+async fn say_hello_stream_returns_one_reply_per_word() {
+    let (addr, _server) = test_helpers::spawn_server().await;
+    let mut client = {{ ServiceCamel }}Client::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    let mut stream = client
+        .say_hello_stream(HelloRequest { name: "foo bar".into() })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut replies = Vec::new();
+    while let Some(msg) = stream.next().await {
+        replies.push(msg.unwrap().message);
+    }
+    assert_eq!(replies, vec!["hello, foo", "hello, bar"]);
+}
+
+#[tokio::test]
+async fn say_hello_client_stream_collects_all_names() {
+    let (addr, _server) = test_helpers::spawn_server().await;
+    let mut client = {{ ServiceCamel }}Client::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    let requests = vec![
+        HelloRequest { name: "alice".into() },
+        HelloRequest { name: "bob".into() },
+    ];
+    let reply = client
+        .say_hello_client_stream(tokio_stream::iter(requests))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(reply.message.contains("alice"));
+    assert!(reply.message.contains("bob"));
 }

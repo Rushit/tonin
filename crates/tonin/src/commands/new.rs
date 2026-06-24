@@ -10,11 +10,185 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use convert_case::{Case, Casing};
+use flate2::read::GzDecoder;
 use include_dir::{Dir, include_dir};
+use tempfile::TempDir;
 
 use super::service::{ClientLang, Lang, ServiceType, StorageKind, WebMode};
 
 static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates/service");
+
+/// Which set of templates to use for this scaffolding invocation.
+enum TemplateSource {
+    /// Use the templates baked into the binary at compile time (default).
+    Embedded,
+    /// Use a template repo downloaded from GitHub. `_tmpdir` keeps the
+    /// extracted archive on disk until the end of `run()`; `variant_root`
+    /// points at `<tmpdir>/<archive-top-level>/variants/<variant>/`.
+    Fetched {
+        _tmpdir: TempDir,
+        variant_root: PathBuf,
+    },
+}
+
+/// Parse `--template-repo` into `(owner/repo, git_ref, is_tag)`.
+///
+/// Accepts:
+///   "github.com/Org/repo"          → ("Org/repo", "main", false)
+///   "Org/repo"                     → ("Org/repo", "main", false)
+///   "github.com/Org/repo@v1.2.3"   → ("Org/repo", "v1.2.3", true)
+///   "Org/repo@some-branch"         → ("Org/repo", "some-branch", false)
+fn parse_repo_ref(raw: &str) -> (String, String, bool) {
+    let stripped = raw.trim_start_matches("github.com/");
+    let (repo, git_ref) = stripped.split_once('@').unwrap_or((stripped, "main"));
+    let is_tag = git_ref
+        .strip_prefix('v')
+        .map(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        .unwrap_or(false);
+    (repo.to_string(), git_ref.to_string(), is_tag)
+}
+
+/// Download the tarball for `repo_str` from GitHub, extract to a `TempDir`,
+/// locate `variants/<variant>/` inside, and return a `TemplateSource::Fetched`.
+fn fetch_template_repo(repo_str: &str, variant: &str) -> Result<TemplateSource> {
+    let (repo, git_ref, is_tag) = parse_repo_ref(repo_str);
+    let url = if is_tag {
+        format!("https://github.com/{repo}/archive/refs/tags/{git_ref}.tar.gz")
+    } else {
+        format!("https://github.com/{repo}/archive/refs/heads/{git_ref}.tar.gz")
+    };
+
+    eprintln!("fetching template repo: {url}");
+
+    let rt = tokio::runtime::Runtime::new().context("creating tokio runtime for template fetch")?;
+    let bytes: Vec<u8> = rt
+        .block_on(async {
+            reqwest::Client::builder()
+                .user_agent(concat!("tonin-cli/", env!("CARGO_PKG_VERSION")))
+                .build()?
+                .get(&url)
+                .send()
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await
+        })
+        .map_err(|e| anyhow!("downloading template repo {url}: {e}"))?
+        .to_vec();
+
+    let tmpdir = TempDir::new().context("creating tempdir for template repo")?;
+    let gz = GzDecoder::new(std::io::Cursor::new(&bytes));
+    let mut archive = tar::Archive::new(gz);
+    archive.set_overwrite(true);
+    archive
+        .unpack(tmpdir.path())
+        .context("extracting template repo tarball")?;
+
+    // GitHub tarballs have a single top-level directory named `<repo>-<ref>/`.
+    let top_level = std::fs::read_dir(tmpdir.path())
+        .context("reading extracted tempdir")?
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.path())
+        .ok_or_else(|| anyhow!("template repo tarball is empty or malformed"))?;
+
+    // Warn if the repo declares a minimum CLI version we don't meet.
+    let version_toml = top_level.join("version.toml");
+    if version_toml.exists() {
+        check_version_compat(&version_toml);
+    }
+
+    let variant_root = top_level.join("variants").join(variant);
+    if !variant_root.exists() {
+        let available = list_dir_names(&top_level.join("variants"));
+        bail!(
+            "template repo has no 'variants/{variant}/' directory (available: {available}). \
+             Try a different --template-repo or omit --flat."
+        );
+    }
+
+    Ok(TemplateSource::Fetched {
+        _tmpdir: tmpdir,
+        variant_root,
+    })
+}
+
+/// Parse `version.toml` from the fetched repo and print a warning if
+/// `cli_min_version` exceeds the running binary. Non-fatal.
+fn check_version_compat(path: &Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return;
+    };
+    if let Some(min) = doc.get("cli_min_version").and_then(|v| v.as_str()) {
+        let current = env!("CARGO_PKG_VERSION");
+        if super::plugin::version_lt(current, min) {
+            eprintln!(
+                "warning: template repo requires tonin >= {min} (you have {current}). \
+                 Run `tonin upgrade` if scaffolding fails."
+            );
+        }
+    }
+}
+
+/// Comma-separated list of sub-directory names inside `dir` for error messages.
+fn list_dir_names(dir: &Path) -> String {
+    std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Filesystem analog of `walk_and_render` — renders `.tmpl` files from `cur`
+/// (rooted at `root`) into `dest`, substituting template vars in both content
+/// and path components.
+fn walk_and_render_fs(root: &Path, cur: &Path, dest: &Path, vars: &Vars) -> Result<()> {
+    for entry in std::fs::read_dir(cur).with_context(|| format!("reading {}", cur.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            walk_and_render_fs(root, &path, dest, vars)?;
+        } else if ft.is_file() {
+            let fname = entry.file_name();
+            let fname_str = fname.to_string_lossy();
+            if !fname_str.ends_with(".tmpl") {
+                continue;
+            }
+            let rel = path.strip_prefix(root).with_context(|| {
+                format!("strip_prefix {} from {}", root.display(), path.display())
+            })?;
+            let mut out_rel = rel.to_path_buf();
+            let stem = out_rel
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .trim_end_matches(".tmpl")
+                .to_string();
+            out_rel.set_file_name(stem);
+            let rendered_path = vars.apply(&out_rel.to_string_lossy());
+            let out_path = dest.join(PathBuf::from(rendered_path));
+            let src = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading template {}", path.display()))?;
+            write_file(&out_path, &vars.apply(&src))?;
+        }
+    }
+    Ok(())
+}
+
+/// Filesystem analog of `read_shared_file` — reads a named file from `shared_dir`.
+fn read_shared_file_fs(shared_dir: &Path, name: &str) -> Result<String> {
+    let path = shared_dir.join(name);
+    std::fs::read_to_string(&path)
+        .with_context(|| format!("reading shared template {}", path.display()))
+}
 
 struct Vars {
     service_name: String,
@@ -61,7 +235,7 @@ pub fn run(
     st: ServiceType,
     wm: Option<WebMode>,
     no_workspace: bool,
-    _template_repo: Option<&str>,
+    template_repo: Option<&str>,
     flat: bool,
     with_jobs: &[String],
     with_storage: Option<StorageKind>,
@@ -79,6 +253,16 @@ pub fn run(
             dest.display()
         );
     }
+
+    // Resolve the template source once. `TemplateSource::Fetched` holds the
+    // `TempDir` alive for the entire duration of `run()`.
+    let source = match template_repo {
+        None => TemplateSource::Embedded,
+        Some(repo) => {
+            let variant = if flat { "flat" } else { "default" };
+            fetch_template_repo(repo, variant)?
+        }
+    };
 
     use heck::ToSnakeCase as _;
     let service_camel = name.to_case(Case::Pascal);
@@ -104,12 +288,12 @@ pub fn run(
             );
         }
         std::fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
-        emit_workspace_layout(&dest, &vars, extra_clients)?;
+        emit_workspace_layout(&dest, &vars, extra_clients, &source)?;
         print_workspace_next_steps(name, extra_clients);
         return Ok(());
     }
 
-    scaffold(&dest, lang, st, wm, &vars)?;
+    scaffold(&dest, lang, st, wm, &vars, &source)?;
     write_service_toml(&dest, &vars, st, wm)?;
     if let Some(kind) = with_storage {
         emit_storage_block_in_micro_toml(&dest, kind)?;
@@ -129,7 +313,7 @@ pub fn run(
         }
     }
     for extra in extra_clients {
-        emit_extra_client(&dest, &vars, *extra)?;
+        emit_extra_client(&dest, &vars, *extra, &source)?;
     }
     emit_claude_md(&dest, name, lang, st, wm)?;
     emit_gitignore(&dest)?;
@@ -817,18 +1001,40 @@ Service scaffolded by `tonin service new`.
 
 - **Language:** {lang}
 - **Type:** {kind}
-- **Framework:** `tonin` (the `tonin` framework)
+- **Framework:** `tonin`
 - **Observability:** OTLP traces wired via `Service::new`
-- **Config:** see `tonin.toml` for declared deps (database, cache, mesh, etc.)
-- **Deploy:** via `tonin helm` (install `cargo install tonin-helm` once).
+- **Config:** `tonin.toml` — single source of truth for deps, mesh, replicas, resources
+
+## Scaffolding a new sibling service
+
+Use `tonin service new` with `--template-repo` to pull from the canonical
+template repository instead of the CLI's built-in copy:
+
+```sh
+# Scaffold with the standard tonin templates
+tonin service new <name> --lang rust --template-repo github.com/Rushit/tonin-templates
+
+# Scaffold with the Agnitiv production templates (distroless, CI workflows, migration checks)
+tonin service new <name> --lang rust --template-repo github.com/Rushit/agnitiv-templates
+
+# Pin to a specific release
+tonin service new <name> --lang rust --template-repo github.com/Rushit/tonin-templates@v0.4.0
+
+# Without --template-repo the CLI uses its built-in embedded templates
+tonin service new <name> --lang python
+```
+
+The flag accepts `github.com/Org/repo` or just `Org/repo`. Append `@ref` for a branch
+or tag. The CLI downloads the tarball, checks `version.toml` compatibility, and renders
+`variants/default/<lang>/` (or `variants/flat/<lang>/` with `--flat`).
 
 ## How to develop
 
 ```sh
-# Generate / regenerate Helm chart after editing tonin.toml
+# Regenerate Helm charts after editing tonin.toml
 tonin helm generate
 
-# Preview changes against a real cluster
+# Preview against a real cluster
 tonin helm diff --env prod
 
 # Deploy
@@ -902,6 +1108,26 @@ This file is the entry point for any coding agent working in this repo.
 2. Read `CLAUDE.md` for quick facts about this service (language, framework, config).
 3. Read `docs/roadmap.md` to understand what's done, active, and planned.
 4. Read `docs/capabilities/*.md` for what this service already does (no need to rediscover).
+
+## Scaffolding a new service
+
+Use `tonin service new` with `--template-repo` to pull from a remote template repo:
+
+```sh
+# Standard tonin templates
+tonin service new <name> --lang rust --template-repo github.com/Rushit/tonin-templates
+
+# Production templates (distroless, CI, migration safety, CLAUDE.md)
+tonin service new <name> --lang rust --template-repo github.com/Rushit/agnitiv-templates
+
+# Pin to a tag
+tonin service new <name> --lang rust --template-repo github.com/Rushit/tonin-templates@v0.4.0
+
+# Built-in embedded templates (no network required)
+tonin service new <name> --lang python
+```
+
+See `CLAUDE.md` for the full flag reference.
 
 ## When starting a new feature / project
 
@@ -1022,6 +1248,7 @@ fn scaffold(
     st: ServiceType,
     wm: Option<WebMode>,
     vars: &Vars,
+    source: &TemplateSource,
 ) -> Result<()> {
     std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
 
@@ -1032,14 +1259,18 @@ fn scaffold(
         (Lang::Ts, ServiceType::Backend, _) => "ts/backend".to_string(),
         _ => lang.as_str().to_string(),
     };
-    let lang_dir = TEMPLATES
-        .get_dir(&lang_dir_path)
-        .ok_or_else(|| anyhow!("no templates at {lang_dir_path}"))?;
-    let shared_dir = TEMPLATES
-        .get_dir("_shared")
-        .ok_or_else(|| anyhow!("missing _shared templates"))?;
 
-    let proto_src = read_shared_file(shared_dir, "proto.tmpl")?;
+    let proto_src = match source {
+        TemplateSource::Embedded => {
+            let shared_dir = TEMPLATES
+                .get_dir("_shared")
+                .ok_or_else(|| anyhow!("missing _shared templates"))?;
+            read_shared_file(shared_dir, "proto.tmpl")?
+        }
+        TemplateSource::Fetched { variant_root, .. } => {
+            read_shared_file_fs(&variant_root.join("_shared"), "proto.tmpl")?
+        }
+    };
     // Proto file is named after `service_name_snake` so it doubles as a
     // valid Python module name (kebab-case isn't legal in Python imports).
     let proto_out = dest
@@ -1047,7 +1278,21 @@ fn scaffold(
         .join(format!("{}.proto", vars.service_name_snake));
     write_file(&proto_out, &vars.apply(&proto_src))?;
 
-    walk_and_render(lang_dir, lang_dir, dest, vars)?;
+    match source {
+        TemplateSource::Embedded => {
+            let lang_dir = TEMPLATES
+                .get_dir(&lang_dir_path)
+                .ok_or_else(|| anyhow!("no templates at {lang_dir_path}"))?;
+            walk_and_render(lang_dir, lang_dir, dest, vars)?;
+        }
+        TemplateSource::Fetched { variant_root, .. } => {
+            let lang_dir = variant_root.join(&lang_dir_path);
+            if !lang_dir.exists() {
+                bail!("fetched template repo has no directory for '{lang_dir_path}'");
+            }
+            walk_and_render_fs(&lang_dir, &lang_dir, dest, vars)?;
+        }
+    }
 
     // Ensure migrations/ exists so the Dockerfile's `COPY migrations` works
     // for every scaffolded service (Rust/Python only; web services don't
@@ -1178,21 +1423,37 @@ max_replicas = 3
 /// the matching `--lang` scaffolds — so a Rust server can ship a
 /// Python client SDK using the exact same template that
 /// `--lang python` would generate (just the client side).
-fn emit_extra_client(dest: &Path, vars: &Vars, client: ClientLang) -> Result<()> {
+fn emit_extra_client(
+    dest: &Path,
+    vars: &Vars,
+    client: ClientLang,
+    source: &TemplateSource,
+) -> Result<()> {
     let (template_path, out_subdir) = match client {
         ClientLang::Rust => ("rust/client-rust", "client-rust"),
         ClientLang::Python => ("python/client-python", "client-python"),
         ClientLang::Ts => ("ts/client-ts", "client-ts"),
     };
-    let dir = TEMPLATES.get_dir(template_path).ok_or_else(|| {
-        anyhow!("no template directory for client-lang {client:?} at {template_path}")
-    })?;
 
     // walk_and_render computes output paths relative to the template
     // root. Since we want output under `<dest>/<out_subdir>/...`, we
     // pass a dest path that already includes the subdir.
     let out_root = dest.join(out_subdir);
-    walk_and_render(dir, dir, &out_root, vars)?;
+    match source {
+        TemplateSource::Embedded => {
+            let dir = TEMPLATES.get_dir(template_path).ok_or_else(|| {
+                anyhow!("no template directory for client-lang {client:?} at {template_path}")
+            })?;
+            walk_and_render(dir, dir, &out_root, vars)?;
+        }
+        TemplateSource::Fetched { variant_root, .. } => {
+            let dir = variant_root.join(template_path);
+            if !dir.exists() {
+                bail!("fetched template repo has no client template at '{template_path}'");
+            }
+            walk_and_render_fs(&dir, &dir, &out_root, vars)?;
+        }
+    }
 
     eprintln!("✓ emitted {} client SDK at {out_subdir}/", client.as_str());
     Ok(())
@@ -1376,17 +1637,30 @@ fn print_next_steps(
 
 /// Scaffold the workspace layout: <name>-proto, <name>-server, <name>-rs,
 /// plus optional language clients (<name>-py, <name>-ts).
-fn emit_workspace_layout(dest: &Path, vars: &Vars, extras: &[ClientLang]) -> Result<()> {
+fn emit_workspace_layout(
+    dest: &Path,
+    vars: &Vars,
+    extras: &[ClientLang],
+    source: &TemplateSource,
+) -> Result<()> {
     let name = &vars.service_name;
     let snake = &vars.service_name_snake;
     let camel = &vars.service_camel;
     let proto_mod = &vars.service_proto_module;
 
     // Proto content from the shared template.
-    let shared = TEMPLATES
-        .get_dir("_shared")
-        .ok_or_else(|| anyhow!("missing _shared templates"))?;
-    let proto_content = vars.apply(&read_shared_file(shared, "proto.tmpl")?);
+    let proto_content = match source {
+        TemplateSource::Embedded => {
+            let shared = TEMPLATES
+                .get_dir("_shared")
+                .ok_or_else(|| anyhow!("missing _shared templates"))?;
+            vars.apply(&read_shared_file(shared, "proto.tmpl")?)
+        }
+        TemplateSource::Fetched { variant_root, .. } => vars.apply(&read_shared_file_fs(
+            &variant_root.join("_shared"),
+            "proto.tmpl",
+        )?),
+    };
 
     // ── workspace root ──────────────────────────────────────────────────
     write_file(&dest.join("Cargo.toml"), &ws_cargo_toml(name))?;
@@ -1484,7 +1758,7 @@ fn emit_workspace_layout(dest: &Path, vars: &Vars, extras: &[ClientLang]) -> Res
 
     // Optional language clients: <name>-py, <name>-ts, etc.
     for &client in extras {
-        emit_workspace_client(dest, vars, client)?;
+        emit_workspace_client(dest, vars, client, source)?;
     }
 
     let extra_labels: Vec<&str> = extras
@@ -1522,20 +1796,35 @@ fn emit_workspace_layout(dest: &Path, vars: &Vars, extras: &[ClientLang]) -> Res
 
 /// Render a language client into the workspace as `<name>-py` or `<name>-ts`.
 /// Skips Rust (already covered by `<name>-rs`).
-fn emit_workspace_client(dest: &Path, vars: &Vars, client: ClientLang) -> Result<()> {
+fn emit_workspace_client(
+    dest: &Path,
+    vars: &Vars,
+    client: ClientLang,
+    source: &TemplateSource,
+) -> Result<()> {
     let (template_path, suffix) = match client {
         ClientLang::Python => ("python/client-python", "py"),
         ClientLang::Ts => ("ts/client-ts", "ts"),
         ClientLang::Rust => return Ok(()), // already emitted as <name>-rs
     };
 
-    let dir = TEMPLATES
-        .get_dir(template_path)
-        .ok_or_else(|| anyhow!("no template at {template_path}"))?;
-
     let name = &vars.service_name;
     let out_dir = dest.join(format!("{name}-{suffix}"));
-    walk_and_render(dir, dir, &out_dir, vars)?;
+    match source {
+        TemplateSource::Embedded => {
+            let dir = TEMPLATES
+                .get_dir(template_path)
+                .ok_or_else(|| anyhow!("no template at {template_path}"))?;
+            walk_and_render(dir, dir, &out_dir, vars)?;
+        }
+        TemplateSource::Fetched { variant_root, .. } => {
+            let dir = variant_root.join(template_path);
+            if !dir.exists() {
+                bail!("fetched template repo has no client template at '{template_path}'");
+            }
+            walk_and_render_fs(&dir, &dir, &out_dir, vars)?;
+        }
+    }
 
     // Patch the package name from `<name>-client` → `<name>-{suffix}` so
     // the directory name and the published package name align.
