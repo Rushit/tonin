@@ -92,6 +92,11 @@ publish-dry: ## Dry-run `cargo publish` for the leaf crates
 # step so the crates.io index has time to propagate before the next crate
 # (which depends on the previous one) is uploaded.
 #
+# Idempotent: if a crate version is already on crates.io ("already uploaded"),
+# the step prints a notice and continues rather than failing. This allows
+# re-running a release workflow after a partial failure without needing a new
+# version bump.
+#
 # Publish order (must respect the internal dep graph):
 #   1. tonin-client      — leaf, no internal deps
 #   2. tonin-mcp-macros  — leaf, no internal deps
@@ -99,27 +104,37 @@ publish-dry: ## Dry-run `cargo publish` for the leaf crates
 #   4. tonin-plugin      — leaf, no internal deps
 #   5. tonin-sdk         — depends on tonin-client + tonin-mcp-macros
 #   6. tonin             — CLI binary, depends on tonin-plugin
+define cargo_publish
+	@out=$$($(CARGO) publish -p $(1) 2>&1); rc=$$?; \
+	printf '%s\n' "$$out"; \
+	if [ $$rc -ne 0 ]; then \
+	  echo "$$out" | grep -q "already uploaded" \
+	    && echo "$(1): already on crates.io, skipping" \
+	    || exit $$rc; \
+	fi
+endef
+
 publish: ## Publish all six crates to crates.io in dep order
 	@test -n "$${CARGO_REGISTRY_TOKEN}" || \
 	  (echo "CARGO_REGISTRY_TOKEN not set" >&2; exit 1)
 	@echo "publish: tonin-client"
-	$(CARGO) publish -p tonin-client
+	$(call cargo_publish,tonin-client)
 	sleep 30
 	@echo "publish: tonin-mcp-macros"
-	$(CARGO) publish -p tonin-mcp-macros
+	$(call cargo_publish,tonin-mcp-macros)
 	sleep 30
 	@echo "publish: tonin-build"
-	$(CARGO) publish -p tonin-build
+	$(call cargo_publish,tonin-build)
 	sleep 30
 	@echo "publish: tonin-plugin"
-	$(CARGO) publish -p tonin-plugin
+	$(call cargo_publish,tonin-plugin)
 	sleep 30
 	@echo "publish: tonin-sdk (larger crate, longer sleep after)"
-	$(CARGO) publish -p tonin-sdk
+	$(call cargo_publish,tonin-sdk)
 	sleep 60
 	@echo "publish: tonin (CLI binary)"
-	$(CARGO) publish -p tonin
-	@echo "publish: all six crates uploaded"
+	$(call cargo_publish,tonin)
+	@echo "publish: all six crates done"
 
 # ---------------------------------------------------------------------------
 # Versioning

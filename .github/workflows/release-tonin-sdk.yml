@@ -137,11 +137,21 @@ jobs:
       - name: Publish leaf deps then tonin-sdk
         run: |
           set -euo pipefail
+          # Idempotent publish: skip a crate if already uploaded at this version.
+          publish_crate() {
+            local pkg="$1"
+            local out
+            out=$(cargo publish -p "$pkg" 2>&1) && { echo "$out"; return 0; }
+            echo "$out"
+            echo "$out" | grep -q "already uploaded" \
+              && echo "$pkg: already on crates.io, skipping" \
+              || { echo "::error::cargo publish -p $pkg failed"; exit 1; }
+          }
           echo "Publishing tonin-client..."
-          cargo publish -p tonin-client
+          publish_crate tonin-client
           sleep 30
           echo "Publishing tonin-mcp-macros..."
-          cargo publish -p tonin-mcp-macros
+          publish_crate tonin-mcp-macros
           sleep 30
           echo "Publishing tonin-sdk..."
-          cargo publish -p tonin-sdk
+          publish_crate tonin-sdk
