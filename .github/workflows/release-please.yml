@@ -86,6 +86,7 @@ jobs:
                 echo "Merging release PR #${pr_number}..."
                 gh pr merge "$pr_number" \
                   --squash \
+                  --auto \
                   --repo "$GITHUB_REPOSITORY"
               done
 
