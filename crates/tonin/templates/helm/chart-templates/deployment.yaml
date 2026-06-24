@@ -33,6 +33,10 @@ spec:
         - name: migrate
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command:
             {{- range .Values.migrations.command }}
             - {{ . | quote }}
@@ -140,6 +144,10 @@ spec:
         # Only valid if the image actually ships that binary.
         - name: mcp
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command: ["/usr/local/bin/{{ include "service.name" . }}-mcp"]
           env:
             - name: GRPC_ENDPOINT
