@@ -110,13 +110,16 @@ spec:
               name: mcp
             {{- end }}
           {{- if .Values.service.health.enabled }}
+          {{- if and (not .Values.service.health.grpc) (not .Values.service.health.path) }}
+          {{- fail "service.health.grpc is false but service.health.path is empty. A pure gRPC service has no HTTP surface to probe. Either keep grpc: true, or add [service.http] in tonin.toml to expose an HTTP health endpoint, then set service.health.path to its path." }}
+          {{- end }}
           livenessProbe:
             {{- if .Values.service.health.grpc }}
             grpc:
               port: {{ .Values.service.health.port }}
             {{- else }}
             httpGet:
-              path: {{ .Values.service.health.path }}
+              path: {{ .Values.service.health.path | quote }}
               port: {{ .Values.service.health.port }}
             {{- end }}
             periodSeconds: 10
@@ -127,7 +130,7 @@ spec:
               port: {{ .Values.service.health.port }}
             {{- else }}
             httpGet:
-              path: {{ .Values.service.health.path }}
+              path: {{ .Values.service.health.path | quote }}
               port: {{ .Values.service.health.port }}
             {{- end }}
             periodSeconds: 5

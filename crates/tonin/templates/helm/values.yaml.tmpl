@@ -18,6 +18,11 @@ service:
   # HTTP health probe (httpGet). Rendered only when enabled.
   health:
     enabled: {% if health_enabled %}true{% else %}false{% endif %}
+    # grpc: true  → native grpc: probe (gRPC Health Protocol v1). Requires k8s ≥ 1.24.
+    # grpc: false → httpGet probe. Only safe when the service exposes an HTTP surface
+    #               (add [service.http] in tonin.toml). Setting grpc: false on a
+    #               gRPC-only service will fail at `helm template` time with a
+    #               clear error — see deployment.yaml.
     grpc: {% if health_grpc %}true{% else %}false{% endif %}
     path: "{{ health_path }}"
     port: {{ health_port }}
