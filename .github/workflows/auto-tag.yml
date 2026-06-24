@@ -1,0 +1,88 @@
+# Auto-tag on version bump
+#
+# Runs on every push to main. If the version in Cargo.toml [workspace.package]
+# has no matching vX.Y.Z tag yet, this workflow:
+#   1. Syncs the VERSION file to Cargo.toml if they disagree (handles PRs that
+#      bumped Cargo.toml without running scripts/bump-version.sh).
+#   2. Creates and pushes the tag, which triggers release.yml.
+#
+# This means `make release VERSION=X.Y.Z` is no longer required after a merge —
+# bumping the version in a PR is enough.
+#
+# Pushes made by this workflow use GITHUB_TOKEN, which GitHub treats as a bot
+# actor; those pushes do NOT re-trigger push-based workflows, so there is no
+# feedback loop.
+
+name: Auto-tag on version bump
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  auto-tag:
+    name: Sync VERSION + tag if version is new
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full tag history to detect existing tags
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync VERSION + create tag if needed
+        run: |
+          set -euo pipefail
+
+          # Read the version that was merged — Cargo.toml is authoritative after
+          # the PR lands. (VERSION may lag if the PR bypassed bump-version.sh.)
+          CARGO_VERSION=$(awk '
+            /^\[workspace\.package\]/ { in_section=1; next }
+            /^\[/ && in_section        { in_section=0 }
+            in_section && /^version[[:space:]]*=/ {
+              match($0, /"[^"]+"/)
+              print substr($0, RSTART+1, RLENGTH-2)
+              exit
+            }
+          ' Cargo.toml)
+
+          if [ -z "$CARGO_VERSION" ]; then
+            echo "::error::Could not parse version from [workspace.package] in Cargo.toml"
+            exit 1
+          fi
+
+          echo "Cargo.toml version : ${CARGO_VERSION}"
+
+          # Sync VERSION if it lags behind Cargo.toml.
+          FILE_VERSION=$(tr -d '[:space:]' < VERSION)
+          if [ "$FILE_VERSION" != "$CARGO_VERSION" ]; then
+            echo "VERSION (${FILE_VERSION}) is behind Cargo.toml — syncing..."
+            echo "$CARGO_VERSION" > VERSION
+            git add VERSION
+            # [skip ci] prevents this housekeeping commit from re-triggering
+            # push-based workflows (belt-and-suspenders alongside the GITHUB_TOKEN rule).
+            git commit -m "chore: sync VERSION to ${CARGO_VERSION} [skip ci]"
+            git push origin main
+            echo "Synced VERSION → ${CARGO_VERSION}"
+          else
+            echo "VERSION already in sync (${FILE_VERSION})"
+          fi
+
+          TAG="v${CARGO_VERSION}"
+
+          # Nothing to do if the tag already exists on origin.
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+            echo "Tag ${TAG} already exists — skipping."
+            exit 0
+          fi
+
+          echo "Creating and pushing ${TAG}..."
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"
+          echo "Pushed ${TAG} — release workflow triggered."
