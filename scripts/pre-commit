@@ -19,7 +19,7 @@ if [ "$FILE" != "$CARGO" ]; then
 fi
 
 echo "pre-commit: version-sync (tonin-sdk)..."
-SDK_FILE="$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)"
+SDK_FILE="$(awk '{print $1}' crates/tonin-sdk/VERSION)"
 SDK_CARGO="$(awk '
   /^\[package\]/ { s=1; next }
   /^\[/ && s { s=0 }
