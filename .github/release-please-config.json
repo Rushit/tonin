@@ -15,7 +15,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "tag-name": "v${version}",
-      "include-component-in-tag": false
+      "include-component-in-tag": false,
+      "pull-request-title-pattern": "chore(main): release tonin ${version}"
     },
     "crates/tonin-sdk": {
       "release-type": "rust",
@@ -28,7 +29,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "tag-name": "tonin-sdk-v${version}",
-      "include-component-in-tag": false
+      "include-component-in-tag": false,
+      "pull-request-title-pattern": "chore(main): release tonin-sdk ${version}"
     }
   }
 }
