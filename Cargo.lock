@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "greeter"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "futures-util",
  "prost",
@@ -1690,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "inventory"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "prost",
  "tokio",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "orders"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "prost",
  "tokio",
@@ -3780,7 +3780,7 @@ dependencies = [
 
 [[package]]
 name = "tonin"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3805,14 +3805,14 @@ dependencies = [
 
 [[package]]
 name = "tonin-build"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "tonic-build",
 ]
 
 [[package]]
 name = "tonin-client"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "dashmap",
  "futures-util",
@@ -3828,7 +3828,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-config-etcd"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "etcd-client",
@@ -3840,7 +3840,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-config-github"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3870,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-mcp-macros"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -3880,7 +3880,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-plugin"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -3890,7 +3890,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-sdk"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "async-stream",
  "async-trait",
