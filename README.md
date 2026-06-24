@@ -164,13 +164,41 @@ than hand-editing the generated charts.
 ## Everyday commands
 
 ```bash
-tonin service new <name>        # scaffold a service (Rust / Python / TS)
-tonin proto generate            # re-run codegen after editing .proto
-tonin helm generate             # render Helm charts from tonin.toml
-tonin helm check                # detect drift between tonin.toml and rendered charts
+tonin service new <name>                                        # scaffold (built-in templates)
+tonin service new <name> --template-repo github.com/Org/repo   # scaffold from a GitHub template repo
+tonin proto generate                                            # re-run codegen after editing .proto
+tonin helm generate                                             # render Helm charts from tonin.toml
+tonin helm check                                                # detect drift between tonin.toml and rendered charts
 ```
 
 The CLI binary is `tonin`. See `tonin --help` for the full surface.
+
+## Scaffolding from a template repo
+
+`tonin service new` has built-in templates compiled into the binary. For production use, pass
+`--template-repo` to download templates from a GitHub repository at scaffold time:
+
+```bash
+# Standard templates (all languages: Rust, Python, TypeScript)
+tonin service new my-svc --lang rust \
+  --template-repo github.com/Rushit/tonin-templates
+
+# Pin to a release tag
+tonin service new my-svc --lang rust \
+  --template-repo github.com/Rushit/tonin-templates@v0.4.0
+
+# Custom / private template repo
+tonin service new my-svc --lang rust \
+  --template-repo github.com/myorg/my-templates
+```
+
+The flag accepts `github.com/Org/repo` or just `Org/repo`. Append `@ref` for a branch or tag
+(`@v0.4.0` is a tag; `@my-branch` is a branch). The CLI downloads the tarball, checks
+`version.toml` for `cli_min_version` compatibility, and renders `variants/default/<lang>/`
+(or `variants/flat/<lang>/` when `--flat` is passed).
+
+Template repos must follow the `variants/default/<lang>/` layout — see
+[tonin-templates](https://github.com/Rushit/tonin-templates) as the reference.
 
 ## Example: hello-world service
 
@@ -231,7 +259,7 @@ codec   = "prost"
 
 [deploy]
 replicas    = 2
-mesh        = "cilium" # cilium | istio | linkerd | none
+mesh        = "cilium"
 mcp_sidecar = true
 namespace   = "default"
 

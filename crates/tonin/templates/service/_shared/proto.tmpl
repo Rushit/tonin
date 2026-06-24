@@ -7,7 +7,16 @@ package {{ service_name_snake }}.v1;
 //   - a method on the generated client struct in client-rust/src
 //   - an MCP tool exposed by the `<service>-mcp` sidecar (future)
 service {{ ServiceCamel }} {
+  // Unary: single request, single response.
   rpc SayHello (HelloRequest) returns (HelloReply);
+
+  // Server-streaming: single request, stream of responses.
+  // The server pushes multiple HelloReply messages until it closes the stream.
+  rpc SayHelloStream (HelloRequest) returns (stream HelloReply);
+
+  // Client-streaming: stream of requests, single response.
+  // The client sends multiple HelloRequest messages; the server replies once.
+  rpc SayHelloClientStream (stream HelloRequest) returns (HelloReply);
 }
 
 message HelloRequest { string name = 1; }
