@@ -26,11 +26,9 @@ mesh = "cilium"   # "cilium" | "istio" | "linkerd" | "none"
 
 Default is `"cilium"` — both the `Mesh` enum's `#[default]` and the scaffold `tonin service new` lands. Set `mesh = "none"` explicitly to run on bare Kubernetes with no mesh overlays. Picking a mesh tells the CLI to render the right overlays alongside the base `Deployment` / `Service` manifests.
 
-Adding a new mesh today is a code change, not a pure template drop — the `Mesh` enum in `crates/tonin/src/codegen/plan.rs` is closed (`Cilium | Istio | Linkerd | None`), and serde rejects unknown values. A new mesh requires (1) a new enum variant + parse mapping in `plan.rs` and (2) a sibling directory under `crates/tonin/templates/k8s/mesh/<name>/`. PRs welcome — see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Adding a new mesh today is a code change, not a pure template drop — the `Mesh` enum in `crates/tonin-plugin/src/plan.rs` is closed (`Cilium | Istio | Linkerd | None`), and serde rejects unknown values. A new mesh requires (1) a new enum variant + parse mapping in `plan.rs` and (2) a sibling template file or conditional block under the Helm templates. PRs welcome — see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-## What gets rendered per mesh
-
-`tonin k8s generate` emits a base set of manifests plus mesh-specific overlays. The mesh overlays live under `crates/tonin/templates/k8s/mesh/<engine>/` and produce one YAML file each in the rendered output.
+`tonin helm generate` emits a base set of manifests plus mesh-specific overlays. The mesh overlays are defined under `crates/tonin/templates/helm/` and are rendered conditionally based on your mesh choice.
 
 ### `mesh = "cilium"`
 
@@ -53,7 +51,7 @@ Adding a new mesh today is a code change, not a pure template drop — the `Mesh
 
 - `pod-annotations.yaml` — empty placeholder, kept so downstream tooling can patch annotations without a conditional.
 
-You do not hand-edit these files. They are re-rendered from `tonin.toml` every time you run `tonin k8s generate`. See [12-kubernetes-deploy.md](12-kubernetes-deploy.md) for the full render pipeline.
+You do not hand-edit these files. They are re-rendered from `tonin.toml` every time you run `tonin helm generate`. See [12-kubernetes-deploy.md](12-kubernetes-deploy.md) for the full render pipeline.
 
 ## Mesh dependencies
 
@@ -96,7 +94,7 @@ flowchart LR
     classDef policy fill:#fef3c7,stroke:#b45309
 ```
 
-Your code talks plaintext to `localhost`. The sidecar terminates and originates mTLS. Policy CRDs (rendered by `tonin k8s generate`) decide who can talk to whom and how retries are budgeted.
+Your code talks plaintext to `localhost`. The sidecar terminates and originates mTLS. Policy CRDs (rendered by `tonin helm generate`) decide who can talk to whom and how retries are budgeted.
 
 ## Why mTLS is NOT in the framework
 

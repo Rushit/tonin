@@ -144,10 +144,10 @@ flowchart LR
   impl --> cargo
   cargo --> binary["service binary"]
 
-  toml --> cli["tonin k8s render"]
-  cli --> yaml["k8s/*.yaml"]
+  toml --> cli["tonin helm generate"]
+  cli --> yaml["chart/templates/"]
   binary --> image["container image"]
-  yaml --> apply["kubectl apply"]
+  yaml --> apply["tonin helm upgrade"]
   image --> apply
   apply --> pod[Running pod]
 ```
@@ -157,8 +157,8 @@ The pipeline in words:
 1. **Author** the `.proto`, the handler impl in `src/main.rs`, and the `tonin.toml` (service name, mesh, replicas, capability engines).
 2. **Codegen.** The service's `build.rs` calls `tonin_build` (a thin wrapper around `tonic-build`) on every `cargo build`. The generated server trait, client stub, and any `#[mcp_expose]` adapters land in `OUT_DIR`.
 3. **Compile.** `cargo build` produces a single binary. No `micro` step required at this stage — the CLI is not in the build hot path.
-4. **Render manifests.** `tonin k8s render` reads `tonin.toml`, picks the right mesh overlay (Cilium / Istio / Linkerd) and stateful templates (`db-*`, `cache-*`), writes YAML under `examples/<svc>/k8s/`. Generated YAML is gitignored — the source of truth is `tonin.toml`. See [12-kubernetes-deploy.md](12-kubernetes-deploy.md) when written.
-5. **Deploy.** `kubectl apply -f k8s/` (or the equivalent CD step). The mesh injects its sidecar; the pod comes up serving gRPC on `:50051` and — if enabled — MCP on `:50052`.
+4. **Render manifests.** `tonin helm generate` reads `tonin.toml`, picks the right mesh overlay (Cilium / Istio / Linkerd) and stateful templates (`db-*`, `cache-*`), writes the Helm chart under `examples/<svc>/chart/`. The generated chart is part of the deployment artifact. See [12-kubernetes-deploy.md](12-kubernetes-deploy.md).
+5. **Deploy.** `tonin helm upgrade` runs `helm upgrade --install` with values and namespace resolved. The mesh injects its sidecar; the pod comes up serving gRPC on `:50051` and — if enabled — MCP on `:50052`.
 
 The canonical end-to-end shape: [examples/greeter](https://github.com/Rushit/tonin/tree/main/examples/greeter).
 

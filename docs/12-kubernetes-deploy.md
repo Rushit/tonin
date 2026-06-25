@@ -10,7 +10,7 @@ One `tonin.toml` renders every manifest your service needs to ship.
   - A Postgres `StatefulSet` + headless `Service` + credentials `Secret` when `[database]` is set
   - A Redis `StatefulSet` + `Service` when `[cache]` is set
   - Mesh-specific overlays (Cilium `CiliumNetworkPolicy`, Istio `PeerAuthentication`, Linkerd annotations) when `[deploy].mesh` is set
-- **`tonin k8s generate`** writes them to `./k8s/`. **`tonin k8s apply`** ships them. No hand-edited YAML, ever — the next `generate` would overwrite it.
+- **`tonin helm generate`** writes them as a complete Helm chart inside the `./chart/` directory. **`tonin helm upgrade`** ships them. No hand-edited YAML, ever — the next `generate` would overwrite it.
 - **Multi-env overlays.** The same `tonin.toml` describes `dev`, `staging`, and `prod` — `--env` picks the right block.
 - **Workspace mode.** One command walks every `tonin.toml` under a directory and renders the cross-service dependency graph.
 
@@ -41,11 +41,9 @@ size = "10Gi"
 engine = "redis"
 ```
 
-That's the whole input. `tonin k8s generate` turns it into roughly a dozen YAML files.
+That's the whole input. `tonin helm generate` turns it into a structured Helm chart with generic template files and configuration values.
 
-## Image registry (`[image]`)
-
-By default, `tonin k8s generate` and `tonin-helm generate` use `micro/<name>:<version>` as the container image. Override this with `[image].registry`:
+By default, `tonin helm generate` uses `micro/<name>:<version>` as the container image. Override this with `[image].registry`:
 
 ```toml
 [image]
@@ -57,9 +55,7 @@ Priority (highest to lowest):
 2. `[image].registry` in `tonin.toml` — the default for this service
 3. `micro/` prefix — built-in fallback when neither is set
 
-## Security context (`[security]`)
-
-Declare pod and container security context natively in `tonin.toml`. When present, `tonin-helm generate` emits `podSecurityContext` and `containerSecurityContext` blocks in `values.yaml` and wires them into the Deployment. When absent, no security context fields are generated — fully backward compatible.
+Declare pod and container security context natively in `tonin.toml`. When present, `tonin helm generate` emits `podSecurityContext` and `containerSecurityContext` blocks in `values.yaml` and wires them into the Deployment. When absent, no security context fields are generated — fully backward compatible.
 
 Keys may be written in `snake_case` (auto-converted to `camelCase`) or already in `camelCase` — both work:
 
@@ -142,11 +138,7 @@ health_path = "/health" # optional httpGet probe on :8081
 
 This renders a Service with both `grpc` and `http` ports, a Deployment with both container ports plus the HTTP probe, and (under Cilium) caller ingress rules for both.
 
-## Local cluster setup
-
-`tonin k8s generate` is offline — it only writes YAML. Anything that talks
-to a cluster (`validate`, `diff`, `apply`, `setup`) needs a reachable
-Kubernetes API. There is no embedded cluster; bring your own.
+`tonin helm generate` is offline — it only writes Helm templates. Anything that talks to a cluster (`diff`, `upgrade`, `uninstall`) needs a reachable Kubernetes API. There is no embedded cluster; bring your own.
 
 **On a dev machine,** any of the following works:
 
@@ -181,36 +173,28 @@ linkerd install | kubectl apply -f -    # Linkerd
 istioctl install --set profile=demo     # Istio
 ```
 
-`tonin k8s apply` will succeed without the mesh installed, but the
+`tonin helm upgrade` will succeed without the mesh installed, but the
 mesh-specific overlays (CiliumNetworkPolicy, PeerAuthentication, etc.)
 will sit dormant until the mesh CRDs exist.
 
 ## Commands
 
 ```bash
-# Render to ./k8s/
-tonin k8s generate
+# Render Helm chart to ./chart/
+tonin helm generate
 
-# Server-side dry-run against the live cluster
-tonin k8s validate
+# Render templates locally to stdout (dry-run)
+tonin helm template
 
-# Show the diff vs. what's currently applied
-tonin k8s diff
+# Show the diff vs. what's currently deployed (requires helm-diff plugin)
+tonin helm diff --env prod
 
-# Render and kubectl apply
-tonin k8s apply
+# Deploy to the cluster (helm upgrade --install)
+tonin helm upgrade --env prod
 
-# Render every tonin.toml under the current dir, apply them all
-tonin k8s apply --workspace
-
-# Pick the [database.staging] / [cache.staging] overlay
-tonin k8s generate --env staging
-
-# Print to stdout instead of writing files
-tonin k8s generate --dry-run
+# Pick the [database.staging] / [cache.staging] overlay during chart generation
+tonin helm generate --env staging
 ```
-
-`--workspace` walks the tree, finds every `tonin.toml`, and builds the cross-service `depends_on` graph so generated network policies cover the real call paths.
 
 ## Multi-env overlays
 
@@ -228,9 +212,9 @@ size = "100Gi"
 ```
 
 ```bash
-tonin k8s generate --env prod      # renders with size = "100Gi"
-tonin k8s generate --env staging   # renders with size = "5Gi"
-tonin k8s generate                 # uses TONIN_ENV, then defaults to dev
+tonin helm generate --env prod      # renders with size = "100Gi"
+tonin helm generate --env staging   # renders with size = "5Gi"
+tonin helm generate                 # uses TONIN_ENV, then defaults to dev
 ```
 
 The same pattern works for `[cache.<env>]`, and for any field that differs between environments (replicas, resources, mesh choice).
@@ -276,9 +260,9 @@ Both the shorthand string form and literal namespaces (no `{env}`) keep working 
 ```mermaid
 flowchart LR
     A[tonin.toml] --> B[planner<br/>parses every section<br/>+ --env overlay]
-    B --> C[renderer<br/>pulls templates from<br/>crates/tonin/templates/k8s/]
-    C --> D[./k8s/*.yaml]
-    D --> E[kubectl apply]
+    B --> C[renderer<br/>pulls templates from<br/>embedded templates]
+    C --> D[./chart/templates/]
+    D --> E[tonin helm upgrade]
     E --> F[Kubernetes cluster]
 ```
 

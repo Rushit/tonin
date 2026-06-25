@@ -44,7 +44,7 @@ size   = "10Gi"
 shared = false
 ```
 
-What this drives at `tonin k8s generate`:
+What this drives at `tonin helm generate`:
 
 - `db-statefulset.yaml` — Postgres StatefulSet with a 10Gi PVC
 - `db-service.yaml` — headless Service in front of the StatefulSet

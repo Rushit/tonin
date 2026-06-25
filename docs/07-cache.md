@@ -5,7 +5,7 @@ A KV cache capability your handlers call through a trait — the backend is sele
 ## What you get
 
 - A `Cache` trait you call from handlers (`get`, `set`, `set_nx`, `del`) — no Redis client types leak into your code.
-- A `[cache]` section in `tonin.toml` that picks the implementation and renders the matching k8s manifests — a Redis `StatefulSet` + headless `Service` for owned mode, or just a `REDIS_URL` env var for shared mode.
+- A `[cache]` section in `tonin.toml` that picks the implementation and renders the matching templates inside the Helm chart — a Redis `StatefulSet` + headless `Service` for owned mode, or just a `REDIS_URL` env var for shared mode.
 - Automatic telemetry on every call once you wrap your impl in `Instrumented<Cache>`: a `cache.op` span, a duration histogram, and a `WARN` log when an op crosses the slow-op threshold.
 - Swap engines without touching handler code — change `engine = "..."` in `tonin.toml` and the dep in `Cargo.toml`.
 
@@ -46,7 +46,7 @@ engine = "redis"   # only impl shipping in 0.2
 shared = false     # true to point at a cluster-wide Redis instead of a per-service StatefulSet
 ```
 
-`engine` drives both the rendered k8s manifests and the conceptual contract — once `tonin-redis` ships in 0.2, the same TOML entry will also pick the runtime impl. With `shared = false`, the CLI renders a dedicated Redis `StatefulSet` + `Service` alongside your Deployment and injects a `REDIS_URL` env var. With `shared = true`, no StatefulSet is rendered; the renderer only injects the `REDIS_URL` env var pointing at the conventional in-cluster name, and you bring the Redis yourself.
+`engine` drives both the rendered Helm chart templates and the conceptual contract — once `tonin-redis` ships in 0.2, the same TOML entry will also pick the runtime impl. With `shared = false`, the CLI renders a dedicated Redis `StatefulSet` + `Service` alongside your Deployment and injects a `REDIS_URL` env var. With `shared = true`, no StatefulSet is rendered; the renderer only injects the `REDIS_URL` env var pointing at the conventional in-cluster name, and you bring the Redis yourself.
 
 See [12-kubernetes-deploy.md](12-kubernetes-deploy.md) for the rendered manifest shape.
 
@@ -121,7 +121,7 @@ The handler only sees the trait. `Instrumented` is invisible at the call site bu
 
 ## Status (0.1)
 
-- **Ships now** — `Cache` trait, `Instrumented<Cache>` decorator, slow-op thresholds, and metric handles all live in `tonin-core` today. The `[cache]` TOML section is parsed and renders a Redis `StatefulSet` + `Service` via the k8s templates; `REDIS_URL` lands as an env var on the Deployment.
+- **Ships now** — `Cache` trait, `Instrumented<Cache>` decorator, slow-op thresholds, and metric handles all live in `tonin-core` today. The `[cache]` TOML section is parsed and renders a Redis `StatefulSet` + `Service` via the Helm templates; `REDIS_URL` lands as an env var on the Deployment.
 - **Not yet in 0.1**
   - No `tonin-redis` impl crate. Services that need a cache implement `Cache` themselves (a few dozen lines of `redis-rs` glue) and wrap it in `Instrumented::with_defaults(...)`.
   - No `Service::with_cache` / `Service::cache()` accessor. Hold `Arc<dyn Cache>` in your own state struct.

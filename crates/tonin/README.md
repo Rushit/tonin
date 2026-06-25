@@ -65,19 +65,27 @@ and break macro-generated code. Write `tonin::Result<T>` explicitly when you wan
 ## CLI
 
 This crate is **dual-purpose** — library + binary. `cargo install tonin`
-installs the `tonin` command (scaffold services, run codegen, render k8s
-manifests). The CLI deps live behind the `cli` feature (default-on), so
+installs the `tonin` command (scaffold services, run codegen, and manage Helm-based deployments).
+
+```bash
+tonin service new greeter       # scaffold a new service
+tonin helm generate             # render Helm chart from tonin.toml
+tonin helm upgrade --env prod   # deploy to production using Helm
+```
+
+The CLI deps live behind the `cli` feature (default-on), so
 library-only consumers should pin:
 
 ```toml
 [dependencies]
-tonin = { version = "0.1", default-features = false }
+tonin = { version = "0.7", default-features = false }
 ```
 
 ## Companion crates
 
 - [`tonin-build`](https://crates.io/crates/tonin-build) — `build.rs` helper wrapping `tonic-build` with tonin conventions.
 - [`tonin-mcp-macros`](https://crates.io/crates/tonin-mcp-macros) — the proc-macro crate behind `#[mcp_expose]`.
+- [`tonin-proxy`](https://github.com/Rushit/tonin/tree/main/crates/tonin-proxy) — Outbound gRPC proxy sidecar for non-Rust tonin services, providing caching, request coalescing, circuit breaking, and retries.
 
 ## Status
 
