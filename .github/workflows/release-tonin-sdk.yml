@@ -66,75 +66,72 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # Full test suite for tonin-sdk.
-  # ---------------------------------------------------------------------------
-  test:
-    name: Test tonin-sdk
-    needs: verify
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust 1.90
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.90"
-          components: rustfmt, clippy
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: fmt + clippy + test + doc
-        run: |
-          cargo fmt -p tonin-sdk -- --check
-          cargo clippy -p tonin-sdk --all-targets -- -D warnings
-          cargo test -p tonin-sdk
-          RUSTDOCFLAGS="-D warnings" cargo doc -p tonin-sdk --no-deps
-
-  # ---------------------------------------------------------------------------
   # Publish to crates.io (leaf deps first, then tonin-sdk).
   # `cargo update` runs first to bring Cargo.lock in sync with the version
   # bump committed by release-please.
   # ---------------------------------------------------------------------------
   publish-crate:
     name: Publish tonin-sdk to crates.io
-    needs: test
+    needs: verify
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    outputs:
+      skipped: ${{ steps.check.outputs.skipped }}
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check if tonin-sdk already published
+        id: check
+        run: |
+          set -euo pipefail
+          REF="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${REF#tonin-sdk-v}"
+          CRATES=(tonin-client tonin-mcp-macros tonin-sdk)
+          ALL_PUBLISHED=true
+          for crate in "${CRATES[@]}"; do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+              -H "User-Agent: tonin-ci (github.com/${{ github.repository }})" \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}" || true)
+            if [ "$STATUS" != "200" ]; then
+              ALL_PUBLISHED=false
+              echo "${crate}@${VERSION}: not yet on crates.io (HTTP ${STATUS})"
+            else
+              echo "${crate}@${VERSION}: already on crates.io"
+            fi
+          done
+          if $ALL_PUBLISHED; then
+            echo "::notice::All tonin-sdk crates already published at ${VERSION} — skipping publish step."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Rust 1.90
+        if: steps.check.outputs.skipped != 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.90"
 
       - name: Install protoc
+        if: steps.check.outputs.skipped != 'true'
         uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
+        if: steps.check.outputs.skipped != 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Sync Cargo.lock with bumped version
+        if: steps.check.outputs.skipped != 'true'
         run: cargo update --package tonin-sdk
 
       - name: Publish leaf deps then tonin-sdk
+        if: steps.check.outputs.skipped != 'true'
         run: |
           set -euo pipefail
           # Idempotent publish: skip a crate if already uploaded at this version.

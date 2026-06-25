@@ -28,6 +28,11 @@ esac
 echo "Current version: ${CURRENT}"
 echo "New version:     ${NEW}"
 
+if [[ "${NEW}" == "${CURRENT}" ]]; then
+    echo "Notice: New version equals current version (${CURRENT}). Skipping version bump."
+    exit 0
+fi
+
 # Update VERSION file (preserve the # x-release-please-version marker)
 echo "${NEW} # x-release-please-version" > "${CRATE_DIR}/VERSION"
 
