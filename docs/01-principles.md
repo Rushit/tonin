@@ -83,7 +83,7 @@ See [04-mcp-exposure.md](04-mcp-exposure.md).
 
 **Consequence you see.**
 
-- No hand-edited YAML drift between repo and cluster. Edit `tonin.toml`, run `tonin k8s render`, commit the regenerated manifests.
+- No hand-edited YAML drift between repo and cluster. Edit `tonin.toml`, run `tonin helm generate`, commit the regenerated chart.
 - Code review focuses on the declarative change, not 200 lines of YAML churn.
 - New environments are a TOML overlay, not a YAML fork.
 

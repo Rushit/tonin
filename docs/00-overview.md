@@ -4,7 +4,7 @@ The docs landing page — what tonin is, who should use it, and where to read ne
 
 ## What is tonin
 
-tonin lets you build gRPC microservices for Kubernetes in Rust without writing the Dockerfile, the k8s YAML, the OpenTelemetry wiring, or the LLM tool-calling plumbing yourself. The runtime is a one-liner: `Service::new(...).handler(...).run()` boots the gRPC server, OTLP tracing, JWT auth, and (optionally) an MCP sidecar from values in `tonin.toml`. The deploy story is two commands: `tonin service new <name>` scaffolds the crate; `tonin k8s generate` renders Deployment, Service, HPA, Ingress, and mesh overlays from the same `tonin.toml`.
+tonin lets you build gRPC microservices for Kubernetes in Rust without writing the Dockerfile, the k8s YAML, the OpenTelemetry wiring, or the LLM tool-calling plumbing yourself. The runtime is a one-liner: `Service::new(...).handler(...).run()` boots the gRPC server, OTLP tracing, JWT auth, and (optionally) an MCP sidecar from values in `tonin.toml`. The deploy story is two commands: `tonin service new <name>` scaffolds the crate; `tonin helm generate` renders a complete Helm chart from the same `tonin.toml`.
 
 ## Who is it for
 
@@ -77,9 +77,9 @@ cd greeter
 # Run locally (no cluster needed)
 cargo run -p greeter
 
-# Generate and apply k8s manifests (needs a reachable cluster)
-tonin k8s generate
-tonin k8s apply
+# Generate Helm charts and deploy (needs a reachable cluster)
+tonin helm generate
+tonin helm upgrade
 ```
 
 The full reference service — proto, `tonin.toml`, handler, `build.rs`, generated manifests — lives at [examples/greeter](https://github.com/Rushit/tonin/tree/main/examples/greeter).
