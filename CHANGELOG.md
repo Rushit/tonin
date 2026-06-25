@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.9](https://github.com/Rushit/tonin/compare/v0.7.8...v0.7.9) (2026-06-25)
+
+
+### Features
+
+* **proxy:** outbound gRPC proxy sidecar for non-Rust services ([#66](https://github.com/Rushit/tonin/issues/66)) ([3248895](https://github.com/Rushit/tonin/commit/3248895a067d0817b71621ab94569d0b96dee09f))
+
 ## [0.7.7](https://github.com/Rushit/tonin/compare/v0.7.6...v0.7.7) (2026-06-24)
 
 
