@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.8](https://github.com/Rushit/tonin/compare/v0.7.7...v0.7.8) (2026-06-25)
+
+
+### Bug Fixes
+
+* **helm:** gate RUST_LOG and command on service type ([#64](https://github.com/Rushit/tonin/issues/64)) ([b84bff0](https://github.com/Rushit/tonin/commit/b84bff03d1211df7c8c3f806f496db2654de798b))
+
 ## [0.7.7](https://github.com/Rushit/tonin/compare/v0.7.6...v0.7.7) (2026-06-24)
 
 
