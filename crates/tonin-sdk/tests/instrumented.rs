@@ -10,7 +10,7 @@ use std::{
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use opentelemetry::{global, propagation::TextMapPropagator, trace::TracerProvider as _};
-use opentelemetry_sdk::{propagation::TraceContextPropagator, trace::TracerProvider};
+use opentelemetry_sdk::{propagation::TraceContextPropagator, trace::SdkTracerProvider};
 use tonin_sdk::telemetry::capability_metrics::SlowThresholds;
 use tonin_sdk::{
     Error,
@@ -224,10 +224,10 @@ impl EventBus for InMemoryBus {
 fn otel_subscriber() -> (
     impl tracing::Subscriber + Send + Sync,
     Arc<Mutex<Vec<u8>>>,
-    TracerProvider,
+    SdkTracerProvider,
 ) {
     global::set_text_map_propagator(TraceContextPropagator::new());
-    let provider = TracerProvider::builder().build();
+    let provider = SdkTracerProvider::builder().build();
     let tracer = provider.tracer("test");
     let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
     let writer = CaptureWriter(buf.clone());

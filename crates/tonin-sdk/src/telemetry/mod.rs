@@ -17,9 +17,7 @@ use std::sync::OnceLock;
 
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{
-    Resource, propagation::TraceContextPropagator, runtime, trace::TracerProvider,
-};
+use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
 use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -34,13 +32,14 @@ pub use propagate::{
 };
 
 static INITIALIZED: OnceLock<()> = OnceLock::new();
+static PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 const DEFAULT_ENDPOINT: &str = "http://otel-collector.observability.svc.cluster.local:4317";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("otlp exporter init failed: {0}")]
-    Exporter(#[from] opentelemetry::trace::TraceError),
+    Exporter(#[from] opentelemetry_otlp::ExporterBuildError),
 }
 
 /// Install the global tracing subscriber + OTLP exporter + W3C propagator.
@@ -72,13 +71,16 @@ pub fn init(service_name: &str) -> Result<(), Error> {
         .with_endpoint(endpoint)
         .build()?;
 
-    let resource = Resource::new(vec![KeyValue::new(SERVICE_NAME, name.clone())]);
-    let provider = TracerProvider::builder()
-        .with_batch_exporter(exporter, runtime::Tokio)
+    let resource = Resource::builder()
+        .with_attributes(vec![KeyValue::new(SERVICE_NAME, name.clone())])
+        .build();
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
         .with_resource(resource)
         .build();
     let tracer = provider.tracer(name);
-    global::set_tracer_provider(provider);
+    global::set_tracer_provider(provider.clone());
+    let _ = PROVIDER.set(provider);
 
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
     let fmt_layer = tracing_subscriber::fmt::layer().with_target(false);
@@ -97,5 +99,7 @@ pub fn init(service_name: &str) -> Result<(), Error> {
 
 /// Flush + shut down the OTLP exporter. Call before process exit.
 pub fn shutdown() {
-    global::shutdown_tracer_provider();
+    if let Some(provider) = PROVIDER.get() {
+        let _ = provider.shutdown();
+    }
 }
