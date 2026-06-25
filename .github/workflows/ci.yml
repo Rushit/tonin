@@ -123,6 +123,34 @@ jobs:
             exit 1
           fi
 
+  version-sync-proxy:
+    name: tonin-proxy VERSION matches Cargo.toml [package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check crates/tonin-proxy/VERSION == Cargo.toml [package].version
+        run: |
+          set -euo pipefail
+          FILE_VERSION=$(awk '{print $1}' crates/tonin-proxy/VERSION)
+          CARGO_VERSION=$(awk '
+            /^\[package\]/ { in_section=1; next }
+            /^\[/ && in_section { in_section=0 }
+            in_section && /^version[[:space:]]*=/ {
+              match($0, /"[^"]+"/)
+              print substr($0, RSTART+1, RLENGTH-2)
+              exit
+            }
+          ' crates/tonin-proxy/Cargo.toml)
+          echo "VERSION file : ${FILE_VERSION}"
+          echo "Cargo.toml   : ${CARGO_VERSION}"
+          if [ "${FILE_VERSION}" != "${CARGO_VERSION}" ]; then
+            echo "::error::crates/tonin-proxy/VERSION (${FILE_VERSION}) and crates/tonin-proxy/Cargo.toml (${CARGO_VERSION}) are out of sync."
+            echo "::error::Run  crates/tonin-proxy/scripts/bump-version.sh ${CARGO_VERSION}  to fix both at once."
+            exit 1
+          fi
+
+
   # ---------------------------------------------------------------------------
   # tonin-proxy smoke test
   #
@@ -217,8 +245,10 @@ jobs:
           docker pull ghcr.io/rushit/tonin-proxy:latest 2>/dev/null || \
             { echo "::notice::ghcr.io/rushit/tonin-proxy:latest not yet published — skipping image smoke test"; exit 0; }
           # Verify the binary inside the image starts and exits cleanly with bad config.
-          docker run --rm \
-            -e TONIN_PROXY_UPSTREAM="" \
+          # We omit TONIN_PROXY_UPSTREAM so both the old and new image exit immediately
+          # instead of hanging in the accept loop, and use timeout as a safeguard.
+          timeout 15 docker run --rm \
             ghcr.io/rushit/tonin-proxy:latest 2>&1 | grep -q "TONIN_PROXY_UPSTREAM" \
             && echo "published image starts correctly (missing upstream detected)" \
             || echo "::warning::published image did not emit expected startup error"
+

@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "separate-pull-requests": true,
+  "separate-pull-requests": false,
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
   "packages": {
@@ -32,6 +32,20 @@
       "tag-name": "tonin-sdk-v${version}",
       "include-component-in-tag": false,
       "pull-request-title-pattern": "chore(main): release tonin-sdk ${version}"
+    },
+    "crates/tonin-proxy": {
+      "release-type": "rust",
+      "package-name": "tonin-proxy",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "VERSION"
+        }
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "tag-name": "tonin-proxy-v${version}",
+      "include-component-in-tag": false,
+      "pull-request-title-pattern": "chore(main): release tonin-proxy ${version}"
     }
   }
 }

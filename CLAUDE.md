@@ -18,6 +18,9 @@ commit to `main` directly.
   `test:`, `docs:`, `chore:`) with a one-line subject; add a body only when it
   explains *why*. Do **not** add a `Co-authored-by` trailer.
 - **Green before pushing.** Run `make ci` (the pre-commit hook also runs it).
+- **Independent Versioning & Unified Releases.** The workspace contains three independently versioned components: the root CLI/workspace (`.`), `tonin-sdk` (`crates/tonin-sdk`), and `tonin-proxy` (`crates/tonin-proxy`).
+  - We use a unified Release PR configuration (`separate-pull-requests: false` in `.github/release-please-config.json`) to release modified components concurrently while preventing manifest conflicts.
+  - The `release-please.yml` workflow uses the `paths_released` output to dynamically trigger CD pipelines (`release.yml`, `release-tonin-sdk.yml`, `release-tonin-proxy.yml`) only for the packages that were actually updated and bumped.
 
 ## Common commands
 
