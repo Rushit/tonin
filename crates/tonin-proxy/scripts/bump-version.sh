@@ -33,8 +33,8 @@ if [[ "${NEW}" == "${CURRENT}" ]]; then
     exit 0
 fi
 
-# Update VERSION file (preserve the # x-release-please-version marker)
-echo "${NEW} # x-release-please-version" > "${CRATE_DIR}/VERSION"
+# Update VERSION file — bare version only (no comments; the marker belongs in Cargo.toml)
+echo "${NEW}" > "${CRATE_DIR}/VERSION"
 
 # Update Cargo.toml [package].version (first occurrence only)
 sed -i "0,/^version = \"${CURRENT}\"/s//version = \"${NEW}\"/" \
