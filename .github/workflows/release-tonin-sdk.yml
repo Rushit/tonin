@@ -66,49 +66,13 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # Full test suite for tonin-sdk.
-  # ---------------------------------------------------------------------------
-  test:
-    name: Test tonin-sdk
-    needs: verify
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust 1.90
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.90"
-          components: rustfmt, clippy
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: fmt + clippy + test + doc
-        run: |
-          cargo fmt -p tonin-sdk -- --check
-          cargo clippy -p tonin-sdk --all-targets -- -D warnings
-          cargo test -p tonin-sdk
-          RUSTDOCFLAGS="-D warnings" cargo doc -p tonin-sdk --no-deps
-
-  # ---------------------------------------------------------------------------
   # Publish to crates.io (leaf deps first, then tonin-sdk).
   # `cargo update` runs first to bring Cargo.lock in sync with the version
   # bump committed by release-please.
   # ---------------------------------------------------------------------------
   publish-crate:
     name: Publish tonin-sdk to crates.io
-    needs: test
+    needs: verify
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always

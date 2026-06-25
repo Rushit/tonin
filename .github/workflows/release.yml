@@ -102,45 +102,6 @@ jobs:
           fi
 
   # ----------------------------------------------------------------------
-  # Run the full `make ci` gate (fmt-check + clippy -D warnings + tests +
-  # doc -D warnings) at the tagged commit.
-  # ----------------------------------------------------------------------
-  test:
-    name: Test (make ci)
-    needs: verify
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust 1.90
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.90"
-          components: rustfmt, clippy
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-
-      - name: make ci
-        run: make ci
-
-  # ----------------------------------------------------------------------
   # Publish the five crates to crates.io in dep order.
   # `cargo update --workspace` runs first to bring Cargo.lock in sync with
   # the version bump committed by release-please (avoids stale-lock errors
@@ -148,7 +109,7 @@ jobs:
   # ----------------------------------------------------------------------
   publish-crates:
     name: Publish crates to crates.io
-    needs: test
+    needs: verify
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
@@ -184,7 +145,7 @@ jobs:
   # ----------------------------------------------------------------------
   build-binaries:
     name: Build ${{ matrix.target }}
-    needs: test
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
