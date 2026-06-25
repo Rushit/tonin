@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/Rushit/tonin/compare/v0.8.1...v0.8.2) (2026-06-25)
+
+
+### Bug Fixes
+
+* **deps:** configure reqwest to use rustls-tls to fix cross-compilation ([#76](https://github.com/Rushit/tonin/issues/76)) ([e86f495](https://github.com/Rushit/tonin/commit/e86f495e1248ca2a997bf772e4dfe381a7053020))
+
 ## [0.8.1](https://github.com/Rushit/tonin/compare/v0.8.0...v0.8.1) (2026-06-25)
 
 
