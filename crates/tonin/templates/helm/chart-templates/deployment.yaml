@@ -171,3 +171,26 @@ spec:
             requests: { cpu: "50m",  memory: "64Mi"  }
             limits:   { cpu: "200m", memory: "128Mi" }
         {{- end }}
+        {{- if .Values.outboundProxy.enabled }}
+        # Outbound proxy sidecar. Auto-injected for non-Rust services with declared
+        # depends_on. App connects to localhost:{{ .Values.outboundProxy.port }}; proxy
+        # handles coalescing, caching, retry, and circuit breaking.
+        - name: tonin-proxy
+          image: {{ .Values.outboundProxy.image | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TONIN_PROXY_UPSTREAM
+              value: "http://localhost:{{ .Values.service.port }}"
+            - name: TONIN_PROXY_PORT
+              value: {{ .Values.outboundProxy.port | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "{{ include "service.name" . }}-proxy"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.otlpEndpoint | quote }}
+          ports:
+            - containerPort: {{ .Values.outboundProxy.port }}
+              name: proxy
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "200m", memory: "128Mi" }
+        {{- end }}

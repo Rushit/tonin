@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use include_dir::{Dir, include_dir};
 use tera::Tera;
-use tonin_plugin::{MigrationRunOn, Plan, SecuritySection, ServiceKind};
+use tonin_plugin::{McpMode, MigrationRunOn, Plan, SecuritySection, ServiceKind};
 
 static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
 
@@ -173,7 +173,10 @@ fn build_context(plan: &Plan) -> tera::Context {
     ctx.insert("replicas", &plan.replicas);
     ctx.insert("max_replicas", &plan.max_replicas);
     ctx.insert("has_autoscale", &(plan.max_replicas > plan.replicas));
-    ctx.insert("mcp_sidecar", &plan.mcp_sidecar);
+    ctx.insert("mcp_enabled", &(plan.mcp_mode != McpMode::None));
+    ctx.insert("mcp_mode", &plan.mcp_mode.as_str());
+    ctx.insert("needs_proxy", &plan.needs_outbound_proxy);
+    ctx.insert("proxy_port", &6565_u16);
     ctx.insert("cpu", &plan.cpu);
     ctx.insert("memory", &plan.memory);
     ctx.insert("namespace", &plan.namespace);
@@ -1106,5 +1109,96 @@ audit    = { namespace = "security-{env}", envs = ["prod"] }
             "prod override must not leak into dev: {dev}"
         );
         assert!(!dev.contains("name: audit"), "audit is prod-only: {dev}");
+    }
+
+    #[test]
+    fn python_service_with_depends_on_gets_proxy_sidecar_mcp() {
+        const PYTHON_TOML: &str = r#"
+schema = "v1"
+[service]
+name     = "notifier"
+version  = "0.1.0"
+language = "python"
+
+[deploy]
+replicas  = 1
+mesh      = "none"
+namespace = "shop"
+
+[resources]
+cpu    = "50m"
+memory = "64Mi"
+
+[depends_on]
+orders = "shop"
+"#;
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), PYTHON_TOML);
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+
+        let values = read(&out.join("values.yaml"));
+        // Proxy injected — Python + depends_on
+        assert!(
+            values.contains("outboundProxy:"),
+            "outboundProxy section must be present: {values}"
+        );
+        assert!(
+            values.contains("enabled: true"),
+            "proxy must be enabled: {values}"
+        );
+        assert!(
+            values.contains("port: 6565"),
+            "proxy port must be 6565: {values}"
+        );
+        // MCP is sidecar for Python
+        assert!(
+            values.contains("mode: sidecar"),
+            "Python gets sidecar MCP: {values}"
+        );
+
+        // deployment.yaml must include the tonin-proxy container block
+        let deployment = read(&out.join("templates").join("deployment.yaml"));
+        assert!(
+            deployment.contains("tonin-proxy"),
+            "deployment must reference tonin-proxy: {deployment}"
+        );
+        assert!(
+            deployment.contains("TONIN_PROXY_UPSTREAM"),
+            "proxy must have upstream env var: {deployment}"
+        );
+    }
+
+    #[test]
+    fn rust_service_gets_no_proxy_and_in_process_mcp() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+
+        let values = read(&out.join("values.yaml"));
+        // Rust never gets the proxy even though RICH_TOML has depends_on
+        assert!(
+            values.contains("outboundProxy:"),
+            "outboundProxy section present: {values}"
+        );
+        assert!(
+            values.contains("enabled: false"),
+            "proxy must be disabled for Rust: {values}"
+        );
+        assert!(
+            values.contains("mode: in-process"),
+            "Rust gets in-process MCP: {values}"
+        );
     }
 }

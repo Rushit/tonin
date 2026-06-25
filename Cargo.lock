@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "greeter"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "futures-util",
  "prost",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "inventory"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "prost",
  "tokio",
@@ -2242,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "orders"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "prost",
  "tokio",
@@ -4013,7 +4013,7 @@ dependencies = [
 
 [[package]]
 name = "tonin"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -4041,14 +4041,14 @@ dependencies = [
 
 [[package]]
 name = "tonin-build"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "tonic-build",
 ]
 
 [[package]]
 name = "tonin-client"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "dashmap",
  "futures-util",
@@ -4064,7 +4064,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-config-etcd"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "async-trait",
  "etcd-client",
@@ -4076,7 +4076,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-config-github"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "async-trait",
  "base64",
@@ -4091,7 +4091,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-mcp-macros"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -4101,12 +4101,29 @@ dependencies = [
 
 [[package]]
 name = "tonin-plugin"
-version = "0.7.3"
+version = "0.7.8"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
  "toml",
  "walkdir",
+]
+
+[[package]]
+name = "tonin-proxy"
+version = "0.7.8"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "dashmap",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

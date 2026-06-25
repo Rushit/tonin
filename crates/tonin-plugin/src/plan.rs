@@ -331,8 +331,10 @@ struct RawDeploy {
     replicas: u32,
     #[serde(default)]
     mesh: Option<Mesh>,
-    #[serde(default = "default_true")]
-    mcp_sidecar: bool,
+    /// Explicit override for auto-derived MCP mode.
+    /// `false` → force McpMode::None; `true` / absent → auto-derive.
+    #[serde(default)]
+    mcp_sidecar: Option<bool>,
     namespace: String,
     #[serde(default)]
     expose: Option<String>,
@@ -375,6 +377,9 @@ struct RawClientConfig {
     coalesce: bool,
     #[serde(default)]
     cache: std::collections::BTreeMap<String, RawMethodCacheConfig>,
+    /// Escape hatch: `[client] proxy = false` disables auto-injected outbound proxy.
+    #[serde(default)]
+    proxy: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,6 +403,8 @@ pub struct MethodCacheSpec {
 pub struct ClientSpec {
     pub coalesce: bool,
     pub caches: Vec<(String, MethodCacheSpec)>,
+    /// `Some(false)` = developer explicitly opted out of the auto-injected proxy.
+    pub proxy_override: Option<bool>,
 }
 
 impl Default for ClientSpec {
@@ -405,6 +412,7 @@ impl Default for ClientSpec {
         Self {
             coalesce: true,
             caches: Vec::new(),
+            proxy_override: None,
         }
     }
 }
@@ -467,6 +475,31 @@ impl WebMode {
     }
 }
 
+/// How the MCP tool surface is served for this service.
+///
+/// Derived automatically from `[service].language` and `[service].type` —
+/// never needs to be declared manually in `tonin.toml`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpMode {
+    /// MCP server runs in the same process as the gRPC server (Rust services).
+    InProcess,
+    /// MCP server runs as a separate sidecar container (Python, TypeScript, …).
+    Sidecar,
+    /// MCP is disabled — HTTP/web services have no gRPC surface to expose.
+    None,
+}
+
+impl McpMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            McpMode::InProcess => "in-process",
+            McpMode::Sidecar => "sidecar",
+            McpMode::None => "none",
+        }
+    }
+}
+
 /// Free-form pod and container security context from `[security]` in `tonin.toml`.
 ///
 /// Keys may be written in `snake_case` (tonin-helm converts to camelCase automatically)
@@ -496,7 +529,10 @@ pub struct Plan {
     pub mesh: Mesh,
     pub replicas: u32,
     pub max_replicas: u32,
-    pub mcp_sidecar: bool,
+    /// How MCP is served — derived from language + kind, never declared manually.
+    pub mcp_mode: McpMode,
+    /// Whether the outbound proxy sidecar is injected — derived from language + depends_on.
+    pub needs_outbound_proxy: bool,
     pub expose: Option<String>,
     pub cpu: String,
     pub memory: String,
@@ -560,9 +596,10 @@ impl Plan {
             .and_then(|o| o.mesh)
             .or(raw.deploy.mesh)
             .unwrap_or_default();
-        let deploy_mcp_sidecar = deploy_overlay
+        // env overlay wins over base; both are Option<bool>.
+        let mcp_sidecar_override: Option<bool> = deploy_overlay
             .and_then(|o| o.mcp_sidecar)
-            .unwrap_or(raw.deploy.mcp_sidecar);
+            .or(raw.deploy.mcp_sidecar);
         let deploy_expose = deploy_overlay
             .and_then(|o| o.expose.clone())
             .or(raw.deploy.expose);
@@ -650,9 +687,26 @@ impl Plan {
             },
         });
 
-        // MCP sidecar proxies to a gRPC server on :50051, so it cannot front an
-        // HTTP-primary service — force it off for kind = http.
-        let mcp_sidecar = deploy_mcp_sidecar && !matches!(kind, ServiceKind::Http);
+        // Resolved language — used for both MCP and proxy derivation.
+        let language = raw.service.language.as_deref().unwrap_or("rust");
+        let is_rust = language == "rust";
+
+        // McpMode: derived from language + kind. Explicit [deploy] mcp_sidecar=false
+        // overrides to None (backward-compat escape hatch); true is a no-op.
+        let mcp_mode = match mcp_sidecar_override {
+            Some(false) => McpMode::None,
+            _ => match kind {
+                ServiceKind::Http | ServiceKind::Web => McpMode::None,
+                ServiceKind::Backend if is_rust => McpMode::InProcess,
+                ServiceKind::Backend => McpMode::Sidecar,
+            },
+        };
+
+        // needs_outbound_proxy: true when language is non-Rust and this service
+        // calls at least one downstream. [client] proxy=false is an escape hatch.
+        let proxy_override = raw.client.as_ref().and_then(|c| c.proxy);
+        let needs_outbound_proxy =
+            !is_rust && !depends_on.is_empty() && proxy_override != Some(false);
 
         let svc_name = raw.service.name.clone();
         let svc_ns = deploy_namespace.clone();
@@ -708,6 +762,7 @@ impl Plan {
                 ClientSpec {
                     coalesce: c.coalesce,
                     caches,
+                    proxy_override: c.proxy,
                 }
             })
             .unwrap_or_default();
@@ -734,7 +789,7 @@ impl Plan {
         Ok(Plan {
             name: raw.service.name,
             version: raw.service.version,
-            language: raw.service.language.unwrap_or_else(|| "rust".into()),
+            language: language.to_string(),
             kind,
             web_mode,
             port,
@@ -744,7 +799,8 @@ impl Plan {
             mesh: deploy_mesh,
             replicas: deploy_replicas,
             max_replicas,
-            mcp_sidecar,
+            mcp_mode,
+            needs_outbound_proxy,
             expose: deploy_expose,
             cpu: raw.resources.cpu,
             memory: raw.resources.memory,
@@ -835,7 +891,15 @@ mod tests {
         let h = p.health.expect("backend gets an auto gRPC health probe");
         assert!(h.grpc, "gRPC service uses a grpc: probe");
         assert_eq!(h.port, 50051);
-        assert!(p.mcp_sidecar, "backend keeps the default mcp sidecar");
+        assert_eq!(
+            p.mcp_mode,
+            McpMode::InProcess,
+            "rust backend defaults to in-process MCP"
+        );
+        assert!(
+            !p.needs_outbound_proxy,
+            "rust service with no depends_on needs no proxy"
+        );
     }
 
     #[test]
@@ -852,7 +916,7 @@ mod tests {
         let h = p.health.expect("http services get a default probe");
         assert_eq!(h.path, "/health");
         assert_eq!(h.port, 8080);
-        assert!(!p.mcp_sidecar, "http forces the mcp sidecar off");
+        assert_eq!(p.mcp_mode, McpMode::None, "http forces mcp_mode to None");
     }
 
     #[test]
@@ -877,7 +941,11 @@ mod tests {
         let h = p.health.unwrap();
         assert_eq!(h.path, "/healthz");
         assert_eq!(h.port, 8081, "probe targets the http port, not gRPC");
-        assert!(p.mcp_sidecar, "a gRPC backend still gets its mcp sidecar");
+        assert_eq!(
+            p.mcp_mode,
+            McpMode::InProcess,
+            "rust gRPC backend with http gets in-process MCP"
+        );
     }
 
     // ---- depends_on per-env resolution ------------------------------------
@@ -1114,5 +1182,79 @@ allowPrivilegeEscalation = false
     fn no_security_section_yields_none() {
         let p = load("[service]\nname = \"bare\"\nversion = \"0.1.0\"");
         assert!(p.security.is_none());
+    }
+
+    // ---- McpMode + needs_outbound_proxy derivation -----------------------
+
+    const SVC_RUST: &str = "[service]\nname = \"svc\"\nversion = \"0.1.0\"\n[resources]\ncpu = \"50m\"\nmemory = \"64Mi\"\n";
+    const SVC_PYTHON: &str = "[service]\nname = \"svc\"\nversion = \"0.1.0\"\nlanguage = \"python\"\n[resources]\ncpu = \"50m\"\nmemory = \"64Mi\"\n";
+    const DEPLOY_WITH_DEP: &str =
+        "[deploy]\nreplicas = 1\nnamespace = \"demo\"\n[depends_on]\npolicy = \"platform\"\n";
+    const DEPLOY_NO_DEP: &str = "[deploy]\nreplicas = 1\nnamespace = \"demo\"\n";
+
+    #[test]
+    fn rust_with_depends_on_no_proxy_mcp_in_process() {
+        let p = try_load_env(&format!("{SVC_RUST}{DEPLOY_WITH_DEP}"), "prod").unwrap();
+        assert_eq!(p.mcp_mode, McpMode::InProcess);
+        assert!(
+            !p.needs_outbound_proxy,
+            "rust always uses in-process coalescing"
+        );
+    }
+
+    #[test]
+    fn python_with_depends_on_gets_proxy_and_sidecar_mcp() {
+        let p = try_load_env(&format!("{SVC_PYTHON}{DEPLOY_WITH_DEP}"), "prod").unwrap();
+        assert_eq!(p.mcp_mode, McpMode::Sidecar);
+        assert!(p.needs_outbound_proxy);
+    }
+
+    #[test]
+    fn python_no_depends_on_no_proxy_but_sidecar_mcp() {
+        let p = try_load_env(&format!("{SVC_PYTHON}{DEPLOY_NO_DEP}"), "prod").unwrap();
+        assert_eq!(p.mcp_mode, McpMode::Sidecar);
+        assert!(!p.needs_outbound_proxy, "no downstream = no proxy needed");
+    }
+
+    #[test]
+    fn python_http_kind_no_mcp_but_proxy_when_has_depends_on() {
+        let toml = format!(
+            "[service]\nname = \"api\"\nversion = \"0.1.0\"\nlanguage = \"python\"\ntype = \"http\"\n\
+             [resources]\ncpu = \"50m\"\nmemory = \"64Mi\"\n{DEPLOY_WITH_DEP}"
+        );
+        let p = try_load_env(&toml, "prod").unwrap();
+        assert_eq!(p.mcp_mode, McpMode::None, "http kind forces MCP off");
+        assert!(
+            p.needs_outbound_proxy,
+            "http python caller still needs proxy"
+        );
+    }
+
+    #[test]
+    fn proxy_escape_hatch_suppresses_auto_inject() {
+        let toml = format!("{SVC_PYTHON}{DEPLOY_WITH_DEP}[client]\nproxy = false\n");
+        let p = try_load_env(&toml, "prod").unwrap();
+        assert!(
+            !p.needs_outbound_proxy,
+            "[client] proxy=false overrides auto-derive"
+        );
+        assert_eq!(
+            p.mcp_mode,
+            McpMode::Sidecar,
+            "escape hatch only affects proxy, not MCP"
+        );
+    }
+
+    #[test]
+    fn mcp_sidecar_false_legacy_override_forces_mcp_none() {
+        let toml = format!(
+            "{SVC_RUST}[deploy]\nreplicas = 1\nnamespace = \"demo\"\nmcp_sidecar = false\n"
+        );
+        let p = try_load_env(&toml, "prod").unwrap();
+        assert_eq!(
+            p.mcp_mode,
+            McpMode::None,
+            "explicit mcp_sidecar=false still works as override"
+        );
     }
 }

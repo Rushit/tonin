@@ -132,6 +132,20 @@ impl AuthCtx {
         matches!(self.kind, PrincipalKind::Anonymous)
     }
 
+    /// Returns `true` if the token has passed its recorded expiry.
+    ///
+    /// `false` for an anonymous context (`expires_at == 0.0`) — an
+    /// unset expiry is treated as "no expiry recorded", not as expired.
+    pub fn is_expired(&self) -> bool {
+        if self.expires_at <= 0.0 {
+            return false;
+        }
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64() > self.expires_at)
+            .unwrap_or(false)
+    }
+
     /// Convert `expires_at` (unix seconds) into a `SystemTime`. Returns
     /// `UNIX_EPOCH` for an anonymous / unset context (`expires_at == 0.0`).
     pub fn expires_at_systime(&self) -> SystemTime {
@@ -231,6 +245,30 @@ mod tests {
         let a = AuthCtx::anonymous();
         let err = a.require_scope("admin").unwrap_err();
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn is_expired_false_for_anonymous() {
+        assert!(!AuthCtx::anonymous().is_expired());
+    }
+
+    #[test]
+    fn is_expired_false_when_future() {
+        let mut ctx = AuthCtx::anonymous();
+        // expires_at far in the future
+        ctx.expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            + 3600.0;
+        assert!(!ctx.is_expired());
+    }
+
+    #[test]
+    fn is_expired_true_when_past() {
+        let mut ctx = AuthCtx::anonymous();
+        ctx.expires_at = 1.0; // 1970-01-01 — definitely in the past
+        assert!(ctx.is_expired());
     }
 
     #[test]

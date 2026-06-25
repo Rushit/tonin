@@ -27,14 +27,22 @@ service:
     path: "{{ health_path }}"
     port: {{ health_port }}
 
-# MCP tool surface.
-#   mode: in-process → the same server process serves MCP on service.mcpPort
-#         (tonin's default — one container, two ports, no separate binary).
-#   mode: sidecar    → a separate <name>-mcp container (only if the image ships
-#         that binary).
+# MCP tool surface. Derived automatically from [service].language:
+#   in-process → same binary, two ports (Rust — default).
+#   sidecar    → separate <name>-mcp container (Python, TypeScript, …).
+#   none       → disabled (HTTP/web services have no gRPC surface).
+# Override: [deploy] mcp_sidecar = false forces mode to none.
 mcp:
-  enabled: {{ mcp_sidecar }}
-  mode: in-process
+  enabled: {% if mcp_enabled %}true{% else %}false{% endif %}
+  mode: {{ mcp_mode }}
+
+# Outbound proxy sidecar. Auto-injected when language != rust and depends_on is
+# non-empty. Handles singleflight coalescing, TTL cache, retry, and circuit breaking
+# across all worker processes. Override: [client] proxy = false in tonin.toml.
+outboundProxy:
+  enabled: {% if needs_proxy %}true{% else %}false{% endif %}
+  port: {{ proxy_port }}
+  image: "ghcr.io/rushit/tonin-proxy:latest"
 
 resources:
   requests:
@@ -156,7 +164,7 @@ migrations:
 networkPolicy:
   enabled: {% if is_cilium %}true{% else %}false{% endif %}
   port: {{ port }}
-  mcp: {{ mcp_sidecar }}
+  mcp: {% if mcp_enabled %}true{% else %}false{% endif %}
   callers:{% if callers | length == 0 %} []{% endif %}
 {%- for c in callers %}
     - name: {{ c.name }}
