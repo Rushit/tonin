@@ -1,7 +1,7 @@
 {
-  ".": "0.8.0",
-  "crates/tonin-sdk": "0.8.0",
-  "crates/tonin-proxy": "0.8.0"
+  ".": "0.8.1",
+  "crates/tonin-sdk": "0.8.1",
+  "crates/tonin-proxy": "0.8.1"
 }
 
 
