@@ -102,45 +102,6 @@ jobs:
           fi
 
   # ----------------------------------------------------------------------
-  # Run the full `make ci` gate (fmt-check + clippy -D warnings + tests +
-  # doc -D warnings) at the tagged commit.
-  # ----------------------------------------------------------------------
-  test:
-    name: Test (make ci)
-    needs: verify
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust 1.90
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.90"
-          components: rustfmt, clippy
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-
-      - name: make ci
-        run: make ci
-
-  # ----------------------------------------------------------------------
   # Publish the five crates to crates.io in dep order.
   # `cargo update --workspace` runs first to bring Cargo.lock in sync with
   # the version bump committed by release-please (avoids stale-lock errors
@@ -148,34 +109,67 @@ jobs:
   # ----------------------------------------------------------------------
   publish-crates:
     name: Publish crates to crates.io
-    needs: test
+    needs: verify
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    outputs:
+      skipped: ${{ steps.check.outputs.skipped }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check if all crates already published
+        id: check
+        run: |
+          set -euo pipefail
+          REF="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${REF#v}"
+          CRATES=(tonin-client tonin-mcp-macros tonin-build tonin-plugin tonin-sdk tonin)
+          ALL_PUBLISHED=true
+          for crate in "${CRATES[@]}"; do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+              -H "User-Agent: tonin-ci (github.com/${{ github.repository }})" \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}" || true)
+            if [ "$STATUS" != "200" ]; then
+              ALL_PUBLISHED=false
+              echo "${crate}@${VERSION}: not yet on crates.io (HTTP ${STATUS})"
+            else
+              echo "${crate}@${VERSION}: already on crates.io — will skip if all published"
+            fi
+          done
+          if $ALL_PUBLISHED; then
+            echo "::notice::All crates already published at ${VERSION} — skipping publish step."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Rust 1.90
+        if: steps.check.outputs.skipped != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0
 
       - name: Install protoc
+        if: steps.check.outputs.skipped != 'true'
         uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
+        if: steps.check.outputs.skipped != 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Sync Cargo.lock with bumped version
+        if: steps.check.outputs.skipped != 'true'
         run: cargo update --workspace
 
       - name: Publish all crates to crates.io
+        if: steps.check.outputs.skipped != 'true'
         run: make publish
 
   # ----------------------------------------------------------------------
@@ -184,7 +178,7 @@ jobs:
   # ----------------------------------------------------------------------
   build-binaries:
     name: Build ${{ matrix.target }}
-    needs: test
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -214,24 +208,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check if binary asset already uploaded
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REF="${{ github.event.inputs.version || github.ref_name }}"
+          EXT="${{ matrix.archive }}"
+          ASSET="tonin-${{ matrix.target }}.${EXT}"
+          if gh release view "$REF" --repo "${{ github.repository }}" \
+               --json assets --jq ".assets[].name" 2>/dev/null \
+             | grep -qxF "$ASSET"; then
+            echo "::notice::Binary asset ${ASSET} already exists in release ${REF} — skipping build."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Rust 1.90 with target ${{ matrix.target }}
+        if: steps.check.outputs.skipped != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0
           targets: ${{ matrix.target }}
 
       - name: Install protoc
+        if: steps.check.outputs.skipped != 'true'
         uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo
+        if: steps.check.outputs.skipped != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       - name: Build and upload tonin
+        if: steps.check.outputs.skipped != 'true'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: tonin

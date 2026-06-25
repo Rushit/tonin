@@ -1,0 +1,181 @@
+# release-dispatch.yml
+#
+# Detects a manual version bump commit (produced by `make bump VERSION=X.Y.Z`)
+# and automatically creates tags, GitHub Releases, and dispatches the three
+# publish workflows so artifacts are built without any extra manual steps.
+#
+# Trigger pattern:
+#   Any push to main whose HEAD commit message contains "[manual bump]"
+#   (that marker is injected by `make bump` / `make release`).
+#
+# What it does for each package that changed version:
+#   1. Creates the semver tag (idempotent — skips if already exists).
+#   2. Creates the GitHub Release (idempotent — skips if already exists).
+#   3. Updates .release-please-manifest.json to stay in sync.
+#   4. Dispatches the corresponding publish workflow against that tag.
+#
+# Packages & their workflows:
+#   .                → v{ver}              → release.yml
+#   crates/tonin-sdk → tonin-sdk-v{ver}   → release-tonin-sdk.yml
+#   crates/tonin-proxy→ tonin-proxy-v{ver} → release-tonin-proxy.yml
+#
+# Developer workflow:
+#   make bump VERSION=1.2.0     # bumps all 3 packages, creates local commit
+#   make release VERSION=1.2.0  # same + push → this workflow fires automatically
+
+name: Release Dispatch
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Force-dispatch for this version (e.g. 0.8.3). Leave blank to read from VERSION files.'
+        required: false
+        type: string
+
+permissions:
+  contents: write   # push tags + manifest update
+  actions: write    # gh workflow run
+
+jobs:
+  dispatch:
+    name: Detect manual bump and dispatch release workflows
+    runs-on: ubuntu-latest
+
+    # Only run when:
+    #   a) workflow_dispatch (manual trigger, always run)
+    #   b) push to main whose HEAD commit contains [manual bump]
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[manual bump]')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use a PAT so the manifest-update commit can push back to main
+          # (GITHUB_TOKEN pushes are excluded from triggering further workflows,
+          #  which is exactly what we want — no loop).
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read VERSION files
+        id: versions
+        run: |
+          set -euo pipefail
+
+          # Allow workflow_dispatch to override
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            TONIN_VER="${{ github.event.inputs.version }}"
+            SDK_VER="$TONIN_VER"
+            PROXY_VER="$TONIN_VER"
+          else
+            TONIN_VER=$(tr -d '[:space:]' < VERSION)
+            SDK_VER=$(tr -d '[:space:]' < crates/tonin-sdk/VERSION)
+            PROXY_VER=$(tr -d '[:space:]' < crates/tonin-proxy/VERSION)
+          fi
+
+          MF_TONIN=$(jq -r '."."'               .release-please-manifest.json)
+          MF_SDK=$(jq -r '."crates/tonin-sdk"'  .release-please-manifest.json)
+          MF_PROXY=$(jq -r '."crates/tonin-proxy"' .release-please-manifest.json)
+
+          echo "tonin_ver=$TONIN_VER"    >> "$GITHUB_OUTPUT"
+          echo "sdk_ver=$SDK_VER"        >> "$GITHUB_OUTPUT"
+          echo "proxy_ver=$PROXY_VER"    >> "$GITHUB_OUTPUT"
+          echo "mf_tonin=$MF_TONIN"      >> "$GITHUB_OUTPUT"
+          echo "mf_sdk=$MF_SDK"          >> "$GITHUB_OUTPUT"
+          echo "mf_proxy=$MF_PROXY"      >> "$GITHUB_OUTPUT"
+
+          echo "┌─────────────────────────────────────┐"
+          echo "│  Package       VERSION    Manifest   │"
+          echo "├─────────────────────────────────────┤"
+          printf "│  %-14s %-10s %-10s │\n" "tonin"       "$TONIN_VER" "$MF_TONIN"
+          printf "│  %-14s %-10s %-10s │\n" "tonin-sdk"   "$SDK_VER"   "$MF_SDK"
+          printf "│  %-14s %-10s %-10s │\n" "tonin-proxy" "$PROXY_VER" "$MF_PROXY"
+          echo "└─────────────────────────────────────┘"
+
+      - name: Create tags, releases and dispatch workflows
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TONIN_VER="${{ steps.versions.outputs.tonin_ver }}"
+          SDK_VER="${{ steps.versions.outputs.sdk_ver }}"
+          PROXY_VER="${{ steps.versions.outputs.proxy_ver }}"
+          MF_TONIN="${{ steps.versions.outputs.mf_tonin }}"
+          MF_SDK="${{ steps.versions.outputs.mf_sdk }}"
+          MF_PROXY="${{ steps.versions.outputs.mf_proxy }}"
+
+          MANIFEST_CHANGED=false
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # ── handle_package <pkg> <ver> <mf_ver> <tag> <workflow> ────────────
+          handle_package() {
+            local pkg="$1" ver="$2" mf_ver="$3" tag="$4" workflow="$5"
+
+            if [ "$ver" = "$mf_ver" ]; then
+              echo "::notice::${pkg} ${ver} already matches manifest — skipping."
+              return
+            fi
+
+            echo "──────────────────────────────────────────────"
+            echo "  ${pkg}: ${mf_ver} → ${ver} (tag: ${tag})"
+            echo "──────────────────────────────────────────────"
+
+            # 1. Tag
+            if git ls-remote --tags origin "refs/tags/${tag}" | grep -q "${tag}"; then
+              echo "  tag ${tag} already exists — skipping tag creation."
+            else
+              git tag -a "${tag}" -m "Release ${tag}"
+              git push origin "${tag}"
+              echo "  ✔ pushed tag ${tag}"
+            fi
+
+            # 2. GitHub Release
+            if gh release view "${tag}" --repo "${{ github.repository }}" &>/dev/null; then
+              echo "  GitHub Release ${tag} already exists — skipping."
+            else
+              gh release create "${tag}" \
+                --repo "${{ github.repository }}" \
+                --title "${tag}" \
+                --generate-notes \
+                --target "${{ github.sha }}"
+              echo "  ✔ created GitHub Release ${tag}"
+            fi
+
+            # 3. Dispatch publish workflow
+            gh workflow run "${workflow}" \
+              --ref "${tag}" \
+              --repo "${{ github.repository }}"
+            echo "  ✔ dispatched ${workflow} @ ${tag}"
+
+            MANIFEST_CHANGED=true
+          }
+
+          handle_package "tonin"       "$TONIN_VER" "$MF_TONIN"  "v${TONIN_VER}"             "release.yml"
+          handle_package "tonin-sdk"   "$SDK_VER"   "$MF_SDK"    "tonin-sdk-v${SDK_VER}"     "release-tonin-sdk.yml"
+          handle_package "tonin-proxy" "$PROXY_VER" "$MF_PROXY"  "tonin-proxy-v${PROXY_VER}" "release-tonin-proxy.yml"
+
+          # ── Sync manifest ────────────────────────────────────────────────────
+          if [ "$MANIFEST_CHANGED" = "true" ]; then
+            jq \
+              --arg t "$TONIN_VER" \
+              --arg s "$SDK_VER"   \
+              --arg p "$PROXY_VER" \
+              '."." = $t | ."crates/tonin-sdk" = $s | ."crates/tonin-proxy" = $p' \
+              .release-please-manifest.json > manifest.tmp
+            mv manifest.tmp .release-please-manifest.json
+
+            git add .release-please-manifest.json
+            git commit -m "chore: sync release-please manifest to ${TONIN_VER} [skip ci]"
+            git push origin HEAD:main
+            echo "::notice::Manifest updated to tonin=${TONIN_VER} sdk=${SDK_VER} proxy=${PROXY_VER}"
+          else
+            echo "::notice::All versions already in manifest — nothing dispatched."
+          fi

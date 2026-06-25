@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.2" # x-release-please-version
+version = "0.8.3" # x-release-please-version
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -27,12 +27,12 @@ keywords = ["microservice", "grpc", "kubernetes", "tonic", "framework"]
 categories = ["network-programming", "web-programming", "development-tools"]
 
 [workspace.dependencies]
-tonin            = { path = "crates/tonin",           version = "0.8.0" }
-tonin-plugin     = { path = "crates/tonin-plugin",    version = "0.8.0" }
+tonin            = { path = "crates/tonin",           version = "0.8.3" }
+tonin-plugin     = { path = "crates/tonin-plugin",    version = "0.8.3" }
 tonin-sdk        = { path = "crates/tonin-sdk",       version = "0.8.0" }
-tonin-client     = { path = "crates/tonin-client",    version = "0.8.0" }
-tonin-mcp-macros = { path = "crates/tonin-mcp-macros", version = "0.8.0" }
-tonin-build      = { path = "crates/tonin-build",     version = "0.8.0" }
+tonin-client     = { path = "crates/tonin-client",    version = "0.8.3" }
+tonin-mcp-macros = { path = "crates/tonin-mcp-macros", version = "0.8.3" }
+tonin-build      = { path = "crates/tonin-build",     version = "0.8.3" }
 
 tokio        = { version = "1", features = ["full"] }
 tonic        = "0.12"

@@ -107,8 +107,8 @@ echo "Current version: $CURRENT"
 echo "New version:     $NEW"
 
 if [[ "$NEW" == "$CURRENT" ]]; then
-    echo "error: new version equals current version ($CURRENT); nothing to do" >&2
-    exit 1
+    echo "Notice: New version equals current version ($CURRENT). Skipping version bump."
+    exit 0
 fi
 
 # 1. Write the new version to VERSION (source of truth).
@@ -128,7 +128,11 @@ awk -v new="$NEW" '
         in_block = 0
     }
     in_block && !replaced && /^version[[:space:]]*=/ {
-        print "version = \"" new "\""
+        comment = ""
+        if (match($0, /#[^"]*$/)) {
+            comment = " " substr($0, RSTART, RLENGTH)
+        }
+        print "version = \"" new "\"" comment
         replaced = 1
         next
     }
