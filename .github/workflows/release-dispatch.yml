@@ -112,9 +112,6 @@ jobs:
 
           MANIFEST_CHANGED=false
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
           # ── handle_package <pkg> <ver> <mf_ver> <tag> <workflow> ────────────
           handle_package() {
             local pkg="$1" ver="$2" mf_ver="$3" tag="$4" workflow="$5"
@@ -162,20 +159,6 @@ jobs:
           handle_package "tonin-sdk"   "$SDK_VER"   "$MF_SDK"    "tonin-sdk-v${SDK_VER}"     "release-tonin-sdk.yml"
           handle_package "tonin-proxy" "$PROXY_VER" "$MF_PROXY"  "tonin-proxy-v${PROXY_VER}" "release-tonin-proxy.yml"
 
-          # ── Sync manifest ────────────────────────────────────────────────────
-          if [ "$MANIFEST_CHANGED" = "true" ]; then
-            jq \
-              --arg t "$TONIN_VER" \
-              --arg s "$SDK_VER"   \
-              --arg p "$PROXY_VER" \
-              '."." = $t | ."crates/tonin-sdk" = $s | ."crates/tonin-proxy" = $p' \
-              .release-please-manifest.json > manifest.tmp
-            mv manifest.tmp .release-please-manifest.json
-
-            git add .release-please-manifest.json
-            git commit -m "chore: sync release-please manifest to ${TONIN_VER} [skip ci]"
-            git push origin HEAD:main
-            echo "::notice::Manifest updated to tonin=${TONIN_VER} sdk=${SDK_VER} proxy=${PROXY_VER}"
-          else
+          if [ "$MANIFEST_CHANGED" = "false" ]; then
             echo "::notice::All versions already in manifest — nothing dispatched."
           fi
