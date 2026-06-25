@@ -1,4 +1,4 @@
 {
   ".": "0.7.10",
-  "crates/tonin-sdk": "0.7.0"
+  "crates/tonin-sdk": "0.7.1"
 }
