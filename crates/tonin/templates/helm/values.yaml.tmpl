@@ -62,6 +62,13 @@ mesh: "{{ mesh }}"
 observability:
   otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
 
+# Override the container entrypoint. Empty list = use the Docker image CMD.
+# Rust services default to /usr/local/bin/<name>; leave empty for all others.
+command: {% if is_web or is_http %}[]{% else %}["/usr/local/bin/{{ name }}"]{% endif %}
+
+# Gate RUST_LOG injection: only meaningful for Rust binaries.
+rustService: {% if is_web or is_http %}false{% else %}true{% endif %}
+
 # Extra env vars injected verbatim into the container.
 env: {}
 

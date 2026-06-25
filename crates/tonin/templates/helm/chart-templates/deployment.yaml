@@ -71,7 +71,10 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          command: ["/usr/local/bin/{{ include "service.name" . }}"]
+          {{- if .Values.command }}
+          command:
+            {{- toYaml .Values.command | nindent 12 }}
+          {{- end }}
           env:
             - name: OTEL_SERVICE_NAME
               value: {{ include "service.name" . | quote }}
@@ -79,8 +82,10 @@ spec:
               value: {{ .Values.observability.otlpEndpoint | quote }}
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "service.namespace={{ .Release.Namespace }},service.version={{ .Values.image.tag }}"
+            {{- if .Values.rustService }}
             - name: RUST_LOG
               value: "info"
+            {{- end }}
             # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
             # inside the DATABASE_URL literal that follows.
             {{- range .Values.secrets.keys }}
