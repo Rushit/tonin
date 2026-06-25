@@ -65,7 +65,7 @@ where
             global::get_text_map_propagator(|prop| prop.extract(&HeaderExtractor(req.headers())));
         // Bind the extracted context to the *current* tracing span. Anything
         // the handler does inside it becomes a child of the caller's span.
-        Span::current().set_parent(parent_cx);
+        let _ = Span::current().set_parent(parent_cx);
 
         let mut inner = self.inner.clone();
         Box::pin(async move { inner.call(req).await })

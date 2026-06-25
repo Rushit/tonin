@@ -393,7 +393,7 @@ impl Stream for InstrumentedSubscription {
                     subscription.subject_pattern = %this.subject,
                 );
                 let parent_cx = extract_context_from_map(&msg.headers);
-                span.set_parent(parent_cx);
+                let _ = span.set_parent(parent_cx);
                 drop(span);
                 Poll::Ready(Some(msg))
             }
