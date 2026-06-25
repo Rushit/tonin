@@ -51,6 +51,21 @@ def test_require_scope_err_when_missing() -> None:
     assert exc.value.required_scope == "admin"
 
 
+def test_is_expired_false_for_anonymous() -> None:
+    assert not AuthCtx.anonymous().is_expired()
+
+
+def test_is_expired_false_when_future() -> None:
+    import time
+    ctx = AuthCtx(expires_at=time.time() + 3600.0)
+    assert not ctx.is_expired()
+
+
+def test_is_expired_true_when_past() -> None:
+    ctx = AuthCtx(expires_at=1.0)  # 1970-01-01 — definitely past
+    assert ctx.is_expired()
+
+
 def test_auth_error_maps_to_correct_status() -> None:
     assert AuthError.signature().to_grpc_status_code() == grpc.StatusCode.UNAUTHENTICATED
     assert (

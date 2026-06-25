@@ -155,6 +155,55 @@ Drive the gate through `make` (run `make help` for the full target table):
   the greeter Helm chart and confirms it builds).
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, …); see `CONTRIBUTING.md`.
 
+## tonin-proxy Docker build
+
+`tonin-proxy` is the outbound gRPC sidecar for non-Rust services (Python, TypeScript). Its Docker
+image must be as small as possible — it ships alongside every polyglot pod.
+
+**Why musl?** The default `distroless/cc` base pulls glibc (~24 MB), libssl (~6 MB), and
+libstdc++ (~2.4 MB). Compiling with musl produces a fully static binary with zero C library
+runtime; the `distroless/static` base is ~2 MB (certs, passwd, /tmp only). Result: ~3-5 MB
+uncompressed vs ~50 MB.
+
+**Builder image:** `rust:1.90-alpine` — ships musl libc natively, no cross-compilation toolchain
+needed. Requires `apk add musl-dev protobuf-compiler` (protoc is needed by `etcd-client`'s
+`build.rs`, a transitive dep).
+
+**Runtime image:** `gcr.io/distroless/static-debian12:nonroot` — no shell, no package manager,
+non-root by default.
+
+**Cargo profile:** `[profile.proxy-release]` in the workspace root `Cargo.toml`:
+
+```toml
+[profile.proxy-release]
+inherits      = "release"
+opt-level     = "z"     # optimise for size, not speed
+lto           = true
+codegen-units = 1
+strip         = true
+```
+
+Only applies when building with `--profile proxy-release`. Normal workspace builds (`cargo build`,
+`cargo test`) use the default `debug` profile unchanged.
+
+**Build command (CI / Dockerfile):**
+
+```bash
+cargo build --profile proxy-release -p tonin-proxy
+```
+
+**CI build** (`proxy-compat` job): Uses the standard glibc toolchain on the ubuntu runner (no musl
+cross-compilation) for reliability. Binary lands at `target/proxy-release/tonin-proxy`. The Docker
+image uses musl via `rust:1.90-alpine`; CI uses glibc to keep the smoke-test simple.
+
+**Published image:** `ghcr.io/rushit/tonin-proxy:latest` (floating default) and
+`ghcr.io/rushit/tonin-proxy:<version>` (pinned). Pushed by the `publish-docker` job in
+`release.yml` on every release tag. Multi-arch: `linux/amd64` + `linux/arm64`.
+
+**Binary size budget:** Keep `tracing-subscriber` at `features = ["fmt"]` only — the `env-filter`
+feature pulls in `regex_syntax` + `regex_automata` (~295 KB combined). Log level is controlled via
+the `TONIN_PROXY_LOG` env var parsed with `tracing::Level::parse()`.
+
 ## Doc map
 
 The 17-file `docs/` tree (`00`–`16`) is the authoritative reader documentation — check the relevant

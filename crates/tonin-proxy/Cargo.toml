@@ -1,0 +1,32 @@
+[package]
+name = "tonin-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Outbound gRPC proxy sidecar for non-Rust tonin services. Provides per-process singleflight coalescing, TTL response caching, retry with backoff, and circuit breaking — concerns that multi-worker runtimes (Gunicorn, uWSGI) cannot share in-process."
+
+[[bin]]
+name = "tonin-proxy"
+path = "src/main.rs"
+
+[dependencies]
+tokio          = { workspace = true }
+http           = { workspace = true }
+hyper          = { workspace = true, features = ["full"] }
+hyper-util     = { version = "0.1", features = ["tokio", "server-auto", "client-legacy"] }
+http-body-util = { workspace = true }
+bytes          = "1"
+dashmap        = { workspace = true }
+futures-util   = { workspace = true }
+anyhow         = { workspace = true }
+tracing        = { workspace = true }
+# fmt only — no EnvFilter regex engine (saves ~300 KB from regex_syntax/regex_automata)
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

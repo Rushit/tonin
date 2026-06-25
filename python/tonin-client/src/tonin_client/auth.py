@@ -15,6 +15,7 @@ the same ``AuthCtx`` defined here.
 from __future__ import annotations
 
 import enum
+import time
 from dataclasses import dataclass, field
 from typing import Any, MutableMapping
 
@@ -83,6 +84,16 @@ class AuthCtx:
 
     def is_anonymous(self) -> bool:
         return self.kind == PrincipalKind.ANONYMOUS
+
+    def is_expired(self) -> bool:
+        """Return ``True`` if the token has passed its recorded expiry.
+
+        ``False`` for an anonymous context (``expires_at == 0.0``) — an
+        unset expiry is treated as "no expiry recorded", not as expired.
+        """
+        if self.expires_at <= 0.0:
+            return False
+        return time.time() > self.expires_at
 
     def propagate(self, metadata: MutableMapping[str, str] | list[tuple[str, str]]) -> None:
         """Inject the bearer token into outbound gRPC metadata.

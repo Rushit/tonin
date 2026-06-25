@@ -27,7 +27,7 @@ pub(crate) mod stateful;
 
 // Plan loading + schema types
 pub use plan::{
-    CURRENT_SCHEMA, ClientSpec, Error, HealthSpec, Mesh, MethodCacheSpec, Plan,
+    CURRENT_SCHEMA, ClientSpec, Error, HealthSpec, McpMode, Mesh, MethodCacheSpec, Plan,
     RECOMMENDED_CLI_MIN, SUPPORTED_SCHEMAS, SecuritySection, ServiceKind, ServiceRef, WebMode,
 };
 

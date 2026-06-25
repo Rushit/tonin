@@ -9,6 +9,7 @@ members = [
     "crates/tonin-build",
     "crates/tonin-config-etcd",
     "crates/tonin-config-github",
+    "crates/tonin-proxy",
     "examples/greeter",
     "examples/orders",
     "examples/inventory",
@@ -42,8 +43,9 @@ tonic-build = "0.12"
 prost       = "0.13"
 prost-types = "0.13"
 tower       = "0.5"
-hyper       = "1"
-http        = "1"
+hyper            = "1"
+http             = "1"
+http-body-util   = "0.1"
 async-trait = "0.1"
 thiserror   = "1"
 anyhow      = "1"
@@ -57,3 +59,14 @@ clap        = { version = "4", features = ["derive"] }
 reqwest     = { version = "0.12", features = ["stream"] }
 flate2      = "1"
 tar         = "0.4"
+
+# tonin-proxy release profile — size-optimised sidecar binary.
+# opt-level=z + LTO + single CGU typically saves 25-35% vs the default release.
+# Applied only when building with --profile proxy-release; normal workspace
+# releases (CLI, SDK) use the default release profile unchanged.
+[profile.proxy-release]
+inherits      = "release"
+opt-level     = "z"
+lto           = true
+codegen-units = 1
+strip         = true

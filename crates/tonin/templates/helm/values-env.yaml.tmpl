@@ -58,7 +58,7 @@ migrations:
 networkPolicy:
   enabled: {% if is_cilium %}true{% else %}false{% endif %}
   port: {{ port }}
-  mcp: {{ mcp_sidecar }}
+  mcp: {% if mcp_enabled %}true{% else %}false{% endif %}
   callers:{% if callers | length == 0 %} []{% endif %}
 {%- for c in callers %}
     - name: {{ c.name }}

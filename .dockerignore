@@ -1,0 +1,19 @@
+# Keep the build context minimal for the tonin-proxy Docker build.
+# Only Cargo manifests, Cargo.lock, and crates/tonin-proxy/src/ are needed.
+target/
+.git/
+.github/
+docs/
+python/
+scripts/
+examples/*/src/
+crates/tonin/src/
+crates/tonin-plugin/src/
+crates/tonin-sdk/src/
+crates/tonin-client/src/
+crates/tonin-mcp-macros/src/
+crates/tonin-build/src/
+crates/tonin-config-etcd/src/
+crates/tonin-config-github/src/
+**/*.md
+**/*.sh
