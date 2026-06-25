@@ -15,7 +15,10 @@ RUSTDOCFLAGS ?= -D warnings
         install-cli install-hooks publish-dry publish show-version check-version version \
         bump-patch bump-minor bump-major \
         show-version-sdk check-version-sdk version-sdk \
-        bump-patch-sdk bump-minor-sdk bump-major-sdk
+        bump-patch-sdk bump-minor-sdk bump-major-sdk \
+        show-version-proxy check-version-proxy version-proxy \
+        bump-patch-proxy bump-minor-proxy bump-major-proxy \
+        bump release
 
 help: ## Show this help table
 	@awk 'BEGIN {FS = ":.*##"; printf "Available targets:\n\n"} \
@@ -257,3 +260,43 @@ bump-minor-proxy: ## Bump tonin-proxy MINOR version locally (does not tag/push)
 
 bump-major-proxy: ## Bump tonin-proxy MAJOR version locally (does not tag/push)
 	./crates/tonin-proxy/scripts/bump-version.sh major
+
+# ---------------------------------------------------------------------------
+# Unified version bump + release (all packages atomically)
+# ---------------------------------------------------------------------------
+#
+# These targets are the primary entry-point for a manual release.  All three
+# packages (workspace, tonin-sdk, tonin-proxy) are bumped to the same version
+# in a single atomic commit whose message contains "[manual bump]" — the
+# release-dispatch.yml workflow detects that marker and automatically creates
+# the tags, GitHub Releases, and dispatches the publish workflows.
+#
+# Typical usage:
+#
+#   make bump VERSION=1.2.0        # bump + commit locally
+#   make release VERSION=1.2.0     # bump + commit + push → triggers CI builds
+
+bump: ## Bump ALL packages to VERSION=X.Y.Z and commit with [manual bump] marker
+	@test -n "$(VERSION)" || \
+	  (echo "usage: make bump VERSION=X.Y.Z" >&2; exit 1)
+	@echo "==> Bumping workspace to $(VERSION)"
+	./scripts/bump-version.sh "$(VERSION)"
+	@echo "==> Bumping tonin-sdk to $(VERSION)"
+	./crates/tonin-sdk/scripts/bump-version.sh "$(VERSION)"
+	@echo "==> Bumping tonin-proxy to $(VERSION)"
+	./crates/tonin-proxy/scripts/bump-version.sh "$(VERSION)"
+	@# Amend the three individual commits into one clean bump commit.
+	@COMMITS=$$(git log --oneline -3 --format='%H' | tr '\n' ' '); \
+	 FIRST=$$(git log --oneline -3 --format='%H' | tail -1); \
+	 git reset --soft "$$FIRST^" && \
+	 git commit -m "chore: bump all packages to v$(VERSION) [manual bump]"
+	@echo "==> Bumped all packages to $(VERSION) — commit ready to push."
+	@echo "    Push with:  git push origin HEAD"
+	@echo "    Or run:     make release VERSION=$(VERSION)"
+
+release: ## Bump ALL packages to VERSION=X.Y.Z, commit, and push → triggers CI builds
+	@test -n "$(VERSION)" || \
+	  (echo "usage: make release VERSION=X.Y.Z" >&2; exit 1)
+	$(MAKE) bump VERSION=$(VERSION)
+	@echo "==> Pushing to origin/main — release-dispatch.yml will build artifacts."
+	git push origin HEAD
