@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/Rushit/tonin/compare/v0.7.0...v0.7.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* **deps:** bump opentelemetry_sdk from 0.27.1 to 0.32.1 ([#68](https://github.com/Rushit/tonin/issues/68)) ([45bd795](https://github.com/Rushit/tonin/commit/45bd795394930eec1f8651ac2e40d6621bee1b2b))
+
 ## [0.7.0](https://github.com/Rushit/tonin/compare/v0.6.9...v0.7.0) (2026-06-24)
 
 
