@@ -52,6 +52,7 @@ jobs:
     outputs:
       pr: ${{ steps.rp.outputs.pr }}
       releases_created: ${{ steps.rp.outputs.releases_created }}
+      paths_released: ${{ steps.rp.outputs.paths_released }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: rp
@@ -113,23 +114,39 @@ jobs:
       - name: Dispatch release workflows for newly created tags
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PATHS_RELEASED: ${{ needs.release-please.outputs.paths_released }}
         run: |
           set -euo pipefail
           TONIN_VER=$(jq -r '."."' .release-please-manifest.json)
           SDK_VER=$(jq -r '."crates/tonin-sdk"' .release-please-manifest.json)
+          PROXY_VER=$(jq -r '."crates/tonin-proxy"' .release-please-manifest.json)
           TONIN_TAG="v${TONIN_VER}"
           SDK_TAG="tonin-sdk-v${SDK_VER}"
+          PROXY_TAG="tonin-proxy-v${PROXY_VER}"
 
-          if gh release view "$TONIN_TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
-            echo "Dispatching release.yml for ${TONIN_TAG}..."
-            gh workflow run release.yml \
-              --ref "$TONIN_TAG" \
-              --repo "$GITHUB_REPOSITORY"
+          if echo "$PATHS_RELEASED" | jq -e '. | index(".")' &>/dev/null; then
+            if gh release view "$TONIN_TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+              echo "Dispatching release.yml for ${TONIN_TAG}..."
+              gh workflow run release.yml \
+                --ref "$TONIN_TAG" \
+                --repo "$GITHUB_REPOSITORY"
+            fi
           fi
 
-          if gh release view "$SDK_TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
-            echo "Dispatching release-tonin-sdk.yml for ${SDK_TAG}..."
-            gh workflow run release-tonin-sdk.yml \
-              --ref "$SDK_TAG" \
-              --repo "$GITHUB_REPOSITORY"
+          if echo "$PATHS_RELEASED" | jq -e '. | index("crates/tonin-sdk")' &>/dev/null; then
+            if gh release view "$SDK_TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+              echo "Dispatching release-tonin-sdk.yml for ${SDK_TAG}..."
+              gh workflow run release-tonin-sdk.yml \
+                --ref "$SDK_TAG" \
+                --repo "$GITHUB_REPOSITORY"
+            fi
+          fi
+
+          if echo "$PATHS_RELEASED" | jq -e '. | index("crates/tonin-proxy")' &>/dev/null; then
+            if gh release view "$PROXY_TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+              echo "Dispatching release-tonin-proxy.yml for ${PROXY_TAG}..."
+              gh workflow run release-tonin-proxy.yml \
+                --ref "$PROXY_TAG" \
+                --repo "$GITHUB_REPOSITORY"
+            fi
           fi

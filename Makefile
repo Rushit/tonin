@@ -53,7 +53,7 @@ lint: ## Run clippy across the workspace, warnings denied
 doc: ## Build rustdoc for the workspace, warnings denied
 	RUSTDOCFLAGS="$(RUSTDOCFLAGS)" $(CARGO) doc --workspace --no-deps
 
-ci: fmt-check lint test doc check-version check-version-sdk ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
+ci: fmt-check lint test doc check-version check-version-sdk check-version-proxy ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
 	@echo "ci: all checks passed"
 
 install-hooks: ## Wire up git hooks (run once after cloning)
@@ -222,3 +222,38 @@ bump-minor-sdk: ## Bump tonin-sdk MINOR version locally (does not tag/push)
 
 bump-major-sdk: ## Bump tonin-sdk MAJOR version locally (does not tag/push)
 	./crates/tonin-sdk/scripts/bump-version.sh major
+
+# ---------------------------------------------------------------------------
+# tonin-proxy versioning (independent from the core workspace version)
+# ---------------------------------------------------------------------------
+
+show-version-proxy: ## Print tonin-proxy's current version (from crates/tonin-proxy/VERSION)
+	@awk '{print $$1}' crates/tonin-proxy/VERSION
+
+check-version-proxy: ## Verify crates/tonin-proxy/VERSION and Cargo.toml [package].version are in sync
+	@FILE="$$(awk '{print $$1}' crates/tonin-proxy/VERSION)"; \
+	 CARGO="$$(awk ' \
+	   /^\[package\]/ { s=1; next } \
+	   /^\[/ && s { s=0 } \
+	   s && /^version[[:space:]]*=/ { match($$0, /"[^"]+"/) ; print substr($$0, RSTART+1, RLENGTH-2) ; exit } \
+	 ' crates/tonin-proxy/Cargo.toml)"; \
+	 if [ "$$FILE" != "$$CARGO" ]; then \
+	   echo "error: crates/tonin-proxy/VERSION ($$FILE) and crates/tonin-proxy/Cargo.toml ($$CARGO) are out of sync" >&2; \
+	   echo "fix:   crates/tonin-proxy/scripts/bump-version.sh $$CARGO" >&2; \
+	   exit 1; \
+	 fi; \
+	 echo "check-version-proxy: ok ($$FILE)"
+
+version-proxy: ## Bump crates/tonin-proxy VERSION + Cargo.toml and commit locally (VERSION=X.Y.Z)
+	@test -n "$(VERSION)" || \
+	  (echo "usage: make version-proxy VERSION=X.Y.Z" >&2; exit 1)
+	./crates/tonin-proxy/scripts/bump-version.sh "$(VERSION)"
+
+bump-patch-proxy: ## Bump tonin-proxy PATCH version locally (does not tag/push)
+	./crates/tonin-proxy/scripts/bump-version.sh patch
+
+bump-minor-proxy: ## Bump tonin-proxy MINOR version locally (does not tag/push)
+	./crates/tonin-proxy/scripts/bump-version.sh minor
+
+bump-major-proxy: ## Bump tonin-proxy MAJOR version locally (does not tag/push)
+	./crates/tonin-proxy/scripts/bump-version.sh major

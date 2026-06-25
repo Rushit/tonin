@@ -154,17 +154,18 @@ VERIFY=$(awk '
 # otherwise downstream crates fail to resolve because the path crate now
 # has the new version but the dep declaration still asks for the old one.
 #
-# tonin-sdk is EXCLUDED: it carries an independent version (crates/tonin-sdk/
-# VERSION is managed separately) and must NOT be bumped here.
+# tonin-sdk and tonin-proxy are EXCLUDED: they carry independent versions
+# and must NOT be bumped here.
 #
 # State machine: enter the block at [workspace.dependencies], leave at the
 # next [section] header, rewrite every `version = "..."` field on lines
-# whose key starts with `tonin` but is not `tonin-sdk`.
+# whose key starts with `tonin` but is not `tonin-sdk` or `tonin-proxy`.
 awk -v new="$NEW" '
     /^\[workspace\.dependencies\]/ { in_block = 1; print; next }
     /^\[/ && in_block              { in_block = 0 }
     in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=.*version[[:space:]]*=/ \
-             && !/^tonin-sdk[[:space:]]*=/ {
+             && !/^tonin-sdk[[:space:]]*=/ \
+             && !/^tonin-proxy[[:space:]]*=/ {
         sub(/version[[:space:]]*=[[:space:]]*"[^"]+"/, "version = \"" new "\"")
     }
     { print }
@@ -172,12 +173,13 @@ awk -v new="$NEW" '
 mv Cargo.toml.bak Cargo.toml
 
 # Sanity check: every workspace-versioned tonin* dep pin should now read
-# the new version. tonin-sdk is excluded (independent version).
+# the new version. tonin-sdk and tonin-proxy are excluded.
 STALE=$(awk -v want="$NEW" '
     /^\[workspace\.dependencies\]/ { in_block = 1; next }
     /^\[/ && in_block              { in_block = 0 }
     in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=/ \
-             && !/^tonin-sdk[[:space:]]*=/ {
+             && !/^tonin-sdk[[:space:]]*=/ \
+             && !/^tonin-proxy[[:space:]]*=/ {
         if (match($0, /version[[:space:]]*=[[:space:]]*"[^"]+"/)) {
             v = substr($0, RSTART, RLENGTH)
             sub(/^version[[:space:]]*=[[:space:]]*"/, "", v)

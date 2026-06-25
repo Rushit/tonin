@@ -25,6 +25,9 @@ impl Config {
         let port = env_u16("TONIN_PROXY_PORT", 6565)?;
         let upstream = std::env::var("TONIN_PROXY_UPSTREAM")
             .context("TONIN_PROXY_UPSTREAM must be set (e.g. http://localhost:50051)")?;
+        if upstream.trim().is_empty() {
+            anyhow::bail!("TONIN_PROXY_UPSTREAM must not be empty");
+        }
         let cache_ttl_ms = env_u64("TONIN_PROXY_CACHE_TTL_MS", 0)?;
         let cache_capacity = env_usize("TONIN_PROXY_CACHE_CAPACITY", 1_000)?;
         let retry_max = env_u32("TONIN_PROXY_RETRY_MAX", 3)?;
@@ -141,5 +144,14 @@ mod tests {
         // SAFETY: ENV_LOCK ensures no concurrent env mutation in this process.
         unsafe { std::env::remove_var("TONIN_PROXY_UPSTREAM") };
         assert!(Config::from_env().is_err());
+    }
+
+    #[test]
+    fn empty_upstream_is_error() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK ensures no concurrent env mutation in this process.
+        unsafe { std::env::set_var("TONIN_PROXY_UPSTREAM", "   ") };
+        assert!(Config::from_env().is_err());
+        unsafe { std::env::remove_var("TONIN_PROXY_UPSTREAM") };
     }
 }
