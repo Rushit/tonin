@@ -38,7 +38,7 @@ tonin-mcp-macros = { workspace = true }
 tracing-subscriber                = { workspace = true }
 tracing-opentelemetry             = "0.28"
 opentelemetry                     = "0.27"
-opentelemetry_sdk                 = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry_sdk                 = { version = "0.32", features = ["rt-tokio"] }
 opentelemetry-otlp                = { version = "0.27", features = ["grpc-tonic", "trace"] }
 opentelemetry-semantic-conventions = "0.27"
 opentelemetry-http                = "0.27"
@@ -68,4 +68,4 @@ async-stream         = "0.3"
 futures-util         = "0.3"
 async-trait          = { workspace = true }
 opentelemetry        = "0.27"
-opentelemetry_sdk    = { version = "0.27", features = ["testing"] }
+opentelemetry_sdk    = { version = "0.32", features = ["testing"] }
