@@ -8,11 +8,20 @@
 #   Any push to main whose HEAD commit message contains "[manual bump]"
 #   (that marker is injected by `make bump` / `make release`).
 #
-# What it does for each package that changed version:
-#   1. Creates the semver tag (idempotent — skips if already exists).
-#   2. Creates the GitHub Release (idempotent — skips if already exists).
-#   3. Updates .release-please-manifest.json to stay in sync.
-#   4. Dispatches the corresponding publish workflow against that tag.
+# What it does for each package whose tag does NOT yet exist on origin:
+#   1. Creates the semver tag.
+#   2. Creates the GitHub Release.
+#   3. Dispatches the corresponding publish workflow against that tag.
+#
+# Idempotency AND "which packages changed" are both decided by TAG EXISTENCE,
+# not by the release-please manifest. The bump scripts (scripts/bump-version.sh
+# et al.) already pre-sync .release-please-manifest.json *inside the bump
+# commit* — so release-please stays coherent and won't double-release a manual
+# bump, and we never have to push the manifest to protected main from here.
+# A side effect of that pre-sync is that manifest == VERSION by the time this
+# workflow runs, so the manifest can no longer tell us what changed. The tag is
+# the source of truth instead: a package is released here iff its tag is missing
+# on origin; already-tagged versions are skipped (safe to re-run / partial bump).
 #
 # Packages & their workflows:
 #   .                → v{ver}              → release.yml
@@ -56,9 +65,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Use a PAT so the manifest-update commit can push back to main
-          # (GITHUB_TOKEN pushes are excluded from triggering further workflows,
-          #  which is exactly what we want — no loop).
+          # GITHUB_TOKEN is sufficient: we only push tags here. Tag pushes made
+          # with GITHUB_TOKEN intentionally do NOT re-trigger tag-triggered
+          # workflows (GitHub anti-loop protection), so the publish workflows are
+          # dispatched explicitly via `gh workflow run` below instead.
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Read VERSION files
@@ -106,33 +116,33 @@ jobs:
           TONIN_VER="${{ steps.versions.outputs.tonin_ver }}"
           SDK_VER="${{ steps.versions.outputs.sdk_ver }}"
           PROXY_VER="${{ steps.versions.outputs.proxy_ver }}"
-          MF_TONIN="${{ steps.versions.outputs.mf_tonin }}"
-          MF_SDK="${{ steps.versions.outputs.mf_sdk }}"
-          MF_PROXY="${{ steps.versions.outputs.mf_proxy }}"
 
-          MANIFEST_CHANGED=false
+          DISPATCHED=false
 
-          # ── handle_package <pkg> <ver> <mf_ver> <tag> <workflow> ────────────
+          # ── handle_package <pkg> <ver> <tag> <workflow> ─────────────────────
+          # A package is released iff its tag does not yet exist on origin.
+          # That single check is BOTH the "did this version change" signal and
+          # the idempotency guard, so re-runs and partial bumps are safe:
+          #   - new version  → tag missing → tag + release + dispatch
+          #   - unchanged    → tag exists  → skip (nothing to do)
           handle_package() {
-            local pkg="$1" ver="$2" mf_ver="$3" tag="$4" workflow="$5"
+            local pkg="$1" ver="$2" tag="$3" workflow="$4"
 
-            if [ "$ver" = "$mf_ver" ]; then
-              echo "::notice::${pkg} ${ver} already matches manifest — skipping."
+            # ls-remote with the full ref path returns output only if the exact
+            # tag exists — no substring match against unrelated tags.
+            if [ -n "$(git ls-remote --tags origin "refs/tags/${tag}")" ]; then
+              echo "::notice::${pkg} ${ver}: tag ${tag} already exists — already released, skipping."
               return
             fi
 
             echo "──────────────────────────────────────────────"
-            echo "  ${pkg}: ${mf_ver} → ${ver} (tag: ${tag})"
+            echo "  ${pkg}: releasing ${ver} (tag: ${tag})"
             echo "──────────────────────────────────────────────"
 
-            # 1. Tag
-            if git ls-remote --tags origin "refs/tags/${tag}" | grep -q "${tag}"; then
-              echo "  tag ${tag} already exists — skipping tag creation."
-            else
-              git tag -a "${tag}" -m "Release ${tag}"
-              git push origin "${tag}"
-              echo "  ✔ pushed tag ${tag}"
-            fi
+            # 1. Tag (annotated, pushed with GITHUB_TOKEN — does not self-trigger)
+            git tag -a "${tag}" -m "Release ${tag}"
+            git push origin "${tag}"
+            echo "  ✔ pushed tag ${tag}"
 
             # 2. GitHub Release
             if gh release view "${tag}" --repo "${{ github.repository }}" &>/dev/null; then
@@ -146,19 +156,19 @@ jobs:
               echo "  ✔ created GitHub Release ${tag}"
             fi
 
-            # 3. Dispatch publish workflow
+            # 3. Dispatch publish workflow against the freshly-created tag
             gh workflow run "${workflow}" \
               --ref "${tag}" \
               --repo "${{ github.repository }}"
             echo "  ✔ dispatched ${workflow} @ ${tag}"
 
-            MANIFEST_CHANGED=true
+            DISPATCHED=true
           }
 
-          handle_package "tonin"       "$TONIN_VER" "$MF_TONIN"  "v${TONIN_VER}"             "release.yml"
-          handle_package "tonin-sdk"   "$SDK_VER"   "$MF_SDK"    "tonin-sdk-v${SDK_VER}"     "release-tonin-sdk.yml"
-          handle_package "tonin-proxy" "$PROXY_VER" "$MF_PROXY"  "tonin-proxy-v${PROXY_VER}" "release-tonin-proxy.yml"
+          handle_package "tonin"       "$TONIN_VER" "v${TONIN_VER}"             "release.yml"
+          handle_package "tonin-sdk"   "$SDK_VER"   "tonin-sdk-v${SDK_VER}"     "release-tonin-sdk.yml"
+          handle_package "tonin-proxy" "$PROXY_VER" "tonin-proxy-v${PROXY_VER}" "release-tonin-proxy.yml"
 
-          if [ "$MANIFEST_CHANGED" = "false" ]; then
-            echo "::notice::All versions already in manifest — nothing dispatched."
+          if [ "$DISPATCHED" = "false" ]; then
+            echo "::notice::No new tags — every package version is already released. Nothing dispatched."
           fi
