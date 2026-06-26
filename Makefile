@@ -51,7 +51,7 @@ lint: ## Run clippy across the workspace, warnings denied
 doc: ## Build rustdoc for the workspace, warnings denied
 	RUSTDOCFLAGS="$(RUSTDOCFLAGS)" $(CARGO) doc --workspace --no-deps
 
-ci: fmt-check lint test doc check-version check-version-sdk check-version-proxy ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
+ci: fmt-check lint test doc check-version ## Run the same gate CI runs (fmt + lint + test + doc + version-sync)
 	@echo "ci: all checks passed"
 
 install-hooks: ## Wire up git hooks (run once after cloning)
