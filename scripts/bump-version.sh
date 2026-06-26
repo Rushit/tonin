@@ -158,18 +158,16 @@ VERIFY=$(awk '
 # otherwise downstream crates fail to resolve because the path crate now
 # has the new version but the dep declaration still asks for the old one.
 #
-# tonin-sdk and tonin-proxy are EXCLUDED: they carry independent versions
-# and must NOT be bumped here.
+# All tonin* crates share the unified workspace version, so every pin bumps
+# together (tonin-sdk and tonin-proxy now inherit via `version.workspace = true`).
 #
 # State machine: enter the block at [workspace.dependencies], leave at the
 # next [section] header, rewrite every `version = "..."` field on lines
-# whose key starts with `tonin` but is not `tonin-sdk` or `tonin-proxy`.
+# whose key starts with `tonin`.
 awk -v new="$NEW" '
     /^\[workspace\.dependencies\]/ { in_block = 1; print; next }
     /^\[/ && in_block              { in_block = 0 }
-    in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=.*version[[:space:]]*=/ \
-             && !/^tonin-sdk[[:space:]]*=/ \
-             && !/^tonin-proxy[[:space:]]*=/ {
+    in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=.*version[[:space:]]*=/ {
         sub(/version[[:space:]]*=[[:space:]]*"[^"]+"/, "version = \"" new "\"")
     }
     { print }
@@ -177,13 +175,11 @@ awk -v new="$NEW" '
 mv Cargo.toml.bak Cargo.toml
 
 # Sanity check: every workspace-versioned tonin* dep pin should now read
-# the new version. tonin-sdk and tonin-proxy are excluded.
+# the new version.
 STALE=$(awk -v want="$NEW" '
     /^\[workspace\.dependencies\]/ { in_block = 1; next }
     /^\[/ && in_block              { in_block = 0 }
-    in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=/ \
-             && !/^tonin-sdk[[:space:]]*=/ \
-             && !/^tonin-proxy[[:space:]]*=/ {
+    in_block && /^tonin[A-Za-z0-9_-]*[[:space:]]*=/ {
         if (match($0, /version[[:space:]]*=[[:space:]]*"[^"]+"/)) {
             v = substr($0, RSTART, RLENGTH)
             sub(/^version[[:space:]]*=[[:space:]]*"/, "", v)
@@ -207,18 +203,9 @@ fi
 echo "Refreshing Cargo.lock via cargo check..."
 cargo check --workspace
 
-# Update release-please manifest so it stays in sync with manual bumps.
-# This avoids the need for release-dispatch to push directly to main (blocked
-# by branch protection) — the manifest update travels in the bump commit itself.
-if [[ -f ".release-please-manifest.json" ]]; then
-    jq --arg v "$NEW" '."." = $v' .release-please-manifest.json \
-      > .release-please-manifest.json.tmp \
-      && mv .release-please-manifest.json.tmp .release-please-manifest.json
-fi
-
-git add VERSION Cargo.toml Cargo.lock .release-please-manifest.json
+git add VERSION Cargo.toml Cargo.lock
 git commit -m "chore: release v$NEW"
 
 echo
 echo "Bumped $CURRENT → $NEW (VERSION + Cargo.toml in sync), committed."
-echo "Next: \`make release VERSION=$NEW\` to tag, or push main directly."
+echo "Next: push to main — the auto-release workflow tags and publishes."

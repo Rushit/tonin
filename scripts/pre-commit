@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-echo "pre-commit: version-sync (workspace)..."
+echo "pre-commit: version-sync..."
 FILE="$(tr -d '[:space:]' < VERSION)"
 CARGO="$(awk '
   /^\[workspace\.package\]/ { s=1; next }
@@ -15,32 +15,6 @@ CARGO="$(awk '
 if [ "$FILE" != "$CARGO" ]; then
   echo "error: VERSION ($FILE) and Cargo.toml ($CARGO) are out of sync" >&2
   echo "fix:   scripts/bump-version.sh $CARGO" >&2
-  exit 1
-fi
-
-echo "pre-commit: version-sync (tonin-sdk)..."
-SDK_FILE="$(awk '{print $1}' crates/tonin-sdk/VERSION)"
-SDK_CARGO="$(awk '
-  /^\[package\]/ { s=1; next }
-  /^\[/ && s { s=0 }
-  s && /^version[[:space:]]*=/ { match($0, /"[^"]+"/) ; print substr($0, RSTART+1, RLENGTH-2) ; exit }
-' crates/tonin-sdk/Cargo.toml)"
-if [ "$SDK_FILE" != "$SDK_CARGO" ]; then
-  echo "error: crates/tonin-sdk/VERSION ($SDK_FILE) and crates/tonin-sdk/Cargo.toml ($SDK_CARGO) are out of sync" >&2
-  echo "fix:   crates/tonin-sdk/scripts/bump-version.sh $SDK_CARGO" >&2
-  exit 1
-fi
-
-echo "pre-commit: version-sync (tonin-proxy)..."
-PROXY_FILE="$(awk '{print $1}' crates/tonin-proxy/VERSION)"
-PROXY_CARGO="$(awk '
-  /^\[package\]/ { s=1; next }
-  /^\[/ && s { s=0 }
-  s && /^version[[:space:]]*=/ { match($0, /"[^"]+"/) ; print substr($0, RSTART+1, RLENGTH-2) ; exit }
-' crates/tonin-proxy/Cargo.toml)"
-if [ "$PROXY_FILE" != "$PROXY_CARGO" ]; then
-  echo "error: crates/tonin-proxy/VERSION ($PROXY_FILE) and crates/tonin-proxy/Cargo.toml ($PROXY_CARGO) are out of sync" >&2
-  echo "fix:   crates/tonin-proxy/scripts/bump-version.sh $PROXY_CARGO" >&2
   exit 1
 fi
 

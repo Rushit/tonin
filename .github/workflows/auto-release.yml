@@ -1,0 +1,201 @@
+# auto-release.yml — commit-driven, single-PR, post-merge release automation.
+#
+# THE model: you merge a normal PR to main. This workflow then, with NO second
+# "Release PR":
+#   1. Reads Conventional Commits since the last v* tag and picks a bump:
+#        fix:/perf:        → PATCH
+#        feat:             → MINOR
+#        feat!: / BREAKING → MAJOR  (capped to MINOR while < 1.0.0)
+#        nothing relevant  → no release
+#   2. Bumps the single unified version (/VERSION + Cargo.toml + Cargo.lock) and
+#      commits it straight to main via RELEASE_PAT (which bypasses branch
+#      protection) with a [skip ci] marker so it doesn't re-trigger anything.
+#   3. Tags v<version>, creates the GitHub Release, and dispatches release.yml
+#      to publish every artifact (CLI + SDK crates, CLI + proxy binaries, proxy
+#      Docker image) onto that one release.
+#
+# All three published packages share ONE version (tonin-sdk / tonin-proxy
+# inherit it via `version.workspace = true`), so there is a single v* tag.
+#
+# Required secret:
+#   RELEASE_PAT — fine-grained PAT (Contents: RW, Actions: RW) whose owner is on
+#                 the branch-protection bypass list for main. Without the bypass
+#                 the push fails with GH013.
+#
+# Manual override: run via the Actions tab (workflow_dispatch) with `bump` set
+# to patch|minor|major or an exact X.Y.Z to force a specific release.
+
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Force bump: patch|minor|major or exact X.Y.Z. Blank = infer from commits.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+# Serialize releases so two pushes can't race to bump/tag the same line.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Compute version, bump, tag, dispatch
+    runs-on: ubuntu-latest
+    # Never react to our own bump commit (it carries [skip ci]); GitHub already
+    # skips it, this is belt-and-suspenders for the workflow_dispatch path too.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      ! contains(github.event.head_commit.message, '[skip ci]')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # RELEASE_PAT (not GITHUB_TOKEN) so the bump commit can push to
+          # protected main, and so the push is attributed to a bypass actor.
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Determine next version
+        id: ver
+        run: |
+          set -euo pipefail
+          CURRENT="$(tr -d '[:space:]' < VERSION)"
+          OVERRIDE="${{ github.event.inputs.bump }}"
+
+          LAST_TAG="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1 || true)"
+          RANGE="HEAD"
+          [ -n "$LAST_TAG" ] && RANGE="${LAST_TAG}..HEAD"
+          echo "Current version : ${CURRENT}"
+          echo "Last release tag: ${LAST_TAG:-<none>}"
+          echo "Commit range    : ${RANGE}"
+
+          NEW=""
+          BUMP=""
+          case "$OVERRIDE" in
+            patch|minor|major) BUMP="$OVERRIDE" ;;
+            "") : ;;  # infer below
+            *)
+              if [[ "$OVERRIDE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                NEW="$OVERRIDE"
+              else
+                echo "::error::invalid bump '${OVERRIDE}' (want patch|minor|major|X.Y.Z)"; exit 1
+              fi
+              ;;
+          esac
+
+          # Infer the bump from Conventional Commits in range. Subjects (%s) are
+          # one-per-line so `^` anchors each commit title; bodies (%b) are only
+          # scanned for a BREAKING-CHANGE footer.
+          if [ -z "$NEW" ] && [ -z "$BUMP" ]; then
+            SUBJECTS="$(git log "$RANGE" --format='%s' 2>/dev/null || git log --format='%s')"
+            BODIES="$(git log "$RANGE" --format='%b' 2>/dev/null || git log --format='%b')"
+            if printf '%s\n' "$SUBJECTS" | grep -qE '^[a-z]+(\([^)]*\))?!:' \
+               || printf '%s\n' "$BODIES" | grep -qE 'BREAKING[ -]CHANGE'; then
+              BUMP="major"
+            elif printf '%s\n' "$SUBJECTS" | grep -qE '^feat(\([^)]*\))?:'; then
+              BUMP="minor"
+            elif printf '%s\n' "$SUBJECTS" | grep -qE '^(fix|perf)(\([^)]*\))?:'; then
+              BUMP="patch"
+            else
+              BUMP="none"
+            fi
+            echo "Inferred bump   : ${BUMP}"
+          fi
+
+          # Pre-1.0: never auto-cross to 1.0.0 on a breaking change.
+          if [ "$BUMP" = "major" ] && [ "${CURRENT%%.*}" = "0" ]; then
+            echo "::notice::pre-1.0 — capping breaking-change MAJOR to MINOR."
+            BUMP="minor"
+          fi
+
+          if [ -z "$NEW" ]; then
+            if [ "$BUMP" = "none" ]; then
+              echo "::notice::No feat/fix/perf/breaking commits since ${LAST_TAG:-start} — nothing to release."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            IFS=. read -r MA MI PA <<< "$CURRENT"
+            case "$BUMP" in
+              major) NEW="$((MA+1)).0.0" ;;
+              minor) NEW="${MA}.$((MI+1)).0" ;;
+              patch) NEW="${MA}.${MI}.$((PA+1))" ;;
+            esac
+          fi
+
+          if git rev-parse -q --verify "refs/tags/v${NEW}" >/dev/null; then
+            echo "::warning::tag v${NEW} already exists — skipping release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::notice::Releasing v${NEW} (was ${CURRENT})."
+          echo "release=true"   >> "$GITHUB_OUTPUT"
+          echo "version=${NEW}"  >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust 1.90
+        if: steps.ver.outputs.release == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+
+      - name: Install protoc
+        if: steps.ver.outputs.release == 'true'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        if: steps.ver.outputs.release == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Bump, commit, push, tag
+        if: steps.ver.outputs.release == 'true'
+        env:
+          NEW: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Reuse the proven bump script (edits VERSION + Cargo.toml + dep pins,
+          # refreshes Cargo.lock via cargo check, and commits).
+          ./scripts/bump-version.sh "$NEW"
+
+          # Mark the commit [skip ci] so pushing it back to main does not loop.
+          git commit --amend -m "chore: release v${NEW} [skip ci]"
+
+          git push origin HEAD:main
+          git tag -a "v${NEW}" -m "Release v${NEW}"
+          git push origin "v${NEW}"
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release and dispatch publisher
+        if: steps.ver.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "v${NEW}" --repo "${{ github.repository }}" &>/dev/null; then
+            gh release create "v${NEW}" \
+              --repo "${{ github.repository }}" \
+              --title "v${NEW}" \
+              --generate-notes \
+              --target "${RELEASE_SHA}"
+            echo "✔ created GitHub Release v${NEW}"
+          fi
+
+          gh workflow run release.yml \
+            --ref "v${NEW}" \
+            --repo "${{ github.repository }}"
+          echo "✔ dispatched release.yml @ v${NEW} — publishing CLI + SDK + proxy."

@@ -29,7 +29,7 @@ categories = ["network-programming", "web-programming", "development-tools"]
 [workspace.dependencies]
 tonin            = { path = "crates/tonin",           version = "0.8.6" }
 tonin-plugin     = { path = "crates/tonin-plugin",    version = "0.8.6" }
-tonin-sdk        = { path = "crates/tonin-sdk",       version = "0.8.0" }
+tonin-sdk        = { path = "crates/tonin-sdk",       version = "0.8.6" }
 tonin-client     = { path = "crates/tonin-client",    version = "0.8.6" }
 tonin-mcp-macros = { path = "crates/tonin-mcp-macros", version = "0.8.6" }
 tonin-build      = { path = "crates/tonin-build",     version = "0.8.6" }

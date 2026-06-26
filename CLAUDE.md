@@ -18,9 +18,10 @@ commit to `main` directly.
   `test:`, `docs:`, `chore:`) with a one-line subject; add a body only when it
   explains *why*. Do **not** add a `Co-authored-by` trailer.
 - **Green before pushing.** Run `make ci` (the pre-commit hook also runs it).
-- **Independent Versioning & Unified Releases.** The workspace contains three independently versioned components: the root CLI/workspace (`.`), `tonin-sdk` (`crates/tonin-sdk`), and `tonin-proxy` (`crates/tonin-proxy`).
-  - We use a unified Release PR configuration (`separate-pull-requests: false` in `.github/release-please-config.json`) to release modified components concurrently while preventing manifest conflicts.
-  - The `release-please.yml` workflow uses the `paths_released` output to dynamically trigger CD pipelines (`release.yml`, `release-tonin-sdk.yml`, `release-tonin-proxy.yml`) only for the packages that were actually updated and bumped.
+- **Unified single version & commit-driven releases.** All three published artifacts — the `tonin` CLI, the Rust `tonin-sdk`, and `tonin-proxy` — share ONE version: the workspace version in `/VERSION` (mirrored into `[workspace.package].version`). `tonin-sdk` and `tonin-proxy` inherit it via `version.workspace = true`; there is one tag scheme, `v*`.
+  - Releases are automated by `.github/workflows/auto-release.yml`: merge a Conventional-Commit PR to `main` and it computes the next version (feat → minor, fix/perf → patch, breaking → minor pre-1.0), bumps + commits straight to `main` via `RELEASE_PAT` (a bypass token; `[skip ci]` prevents loops), tags `v*`, creates the Release, and dispatches `release.yml`. **No second "Release PR."**
+  - `release.yml` is the single publisher off that one tag: all six crates → crates.io, `tonin` + `tonin-proxy` binaries → the GitHub Release, and the `tonin-proxy` Docker image → ghcr.io. (Future `tonin-sdk-py` → PyPI would add a `publish-pypi` job here.)
+  - To force a specific version, run `auto-release` from the Actions tab with `bump` = `patch|minor|major|X.Y.Z`, or land a PR that already bumped `/VERSION` via `make version VERSION=X.Y.Z`.
 
 ## Common commands
 
