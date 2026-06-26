@@ -207,7 +207,16 @@ fi
 echo "Refreshing Cargo.lock via cargo check..."
 cargo check --workspace
 
-git add VERSION Cargo.toml Cargo.lock
+# Update release-please manifest so it stays in sync with manual bumps.
+# This avoids the need for release-dispatch to push directly to main (blocked
+# by branch protection) — the manifest update travels in the bump commit itself.
+if [[ -f ".release-please-manifest.json" ]]; then
+    jq --arg v "$NEW" '."." = $v' .release-please-manifest.json \
+      > .release-please-manifest.json.tmp \
+      && mv .release-please-manifest.json.tmp .release-please-manifest.json
+fi
+
+git add VERSION Cargo.toml Cargo.lock .release-please-manifest.json
 git commit -m "chore: release v$NEW"
 
 echo

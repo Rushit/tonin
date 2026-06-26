@@ -46,7 +46,14 @@ cd "${REPO_ROOT}"
 cargo check -p tonin-proxy --quiet
 
 # Commit
-git add "${CRATE_DIR}/VERSION" "${CRATE_DIR}/Cargo.toml" Cargo.lock
+# Update release-please manifest (proxy entry) to stay in sync with manual bumps.
+if [[ -f "${REPO_ROOT}/.release-please-manifest.json" ]]; then
+    jq --arg v "$NEW" '."crates/tonin-proxy" = $v' "${REPO_ROOT}/.release-please-manifest.json" \
+      > "${REPO_ROOT}/.release-please-manifest.json.tmp" \
+      && mv "${REPO_ROOT}/.release-please-manifest.json.tmp" "${REPO_ROOT}/.release-please-manifest.json"
+fi
+
+git add "${CRATE_DIR}/VERSION" "${CRATE_DIR}/Cargo.toml" Cargo.lock "${REPO_ROOT}/.release-please-manifest.json"
 git commit -m "chore: release tonin-proxy v${NEW} [skip ci]"
 
 echo "Bumped ${CURRENT} → ${NEW} (VERSION + Cargo.toml in sync), committed."
