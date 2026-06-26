@@ -1622,6 +1622,9 @@ fn print_next_steps(
                 }
                 ClientLang::Ts => {
                     eprintln!("  (cd client-ts && npm install && npm run gen)");
+                    eprintln!(
+                        "  # depends on `tonin-client`; until it's on npm: npm link tonin-client"
+                    );
                 }
                 ClientLang::Rust => {
                     eprintln!("  (cd client-rust && cargo build)");

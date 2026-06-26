@@ -197,3 +197,134 @@ jobs:
             && echo "published image starts correctly (missing upstream detected)" \
             || echo "::warning::published image did not emit expected startup error"
 
+  # ---------------------------------------------------------------------------
+  # tonin-client (TypeScript) — the shared client-side primitives package.
+  # Mirrors crates/tonin-client and python/tonin-client. Zero runtime deps;
+  # typecheck (incl. type-level drift checks), unit tests, and a build.
+  # ---------------------------------------------------------------------------
+  ts-client:
+    name: tonin-client (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts/tonin-client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ts/tonin-client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (tsc, incl. type-level drift checks)
+        run: npm run typecheck
+
+      - name: Test (vitest)
+        run: npm test
+
+      - name: Build (emit dist/)
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Shared-types drift gate.
+  #
+  # The Rust types in crates/tonin-client are the source of truth.
+  # `gen-shared-types` mirrors them into the Python and TypeScript packages.
+  # This job regenerates and fails if either mirror is stale — i.e. someone
+  # changed the Rust types (or a generated file) without regenerating.
+  # ---------------------------------------------------------------------------
+  shared-types-drift:
+    name: shared types in sync (gen-shared-types)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.90 (MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: shared-types-drift
+
+      - name: Regenerate shared types
+        run: cargo run --bin gen-shared-types --features cli
+
+      - name: Assert no drift
+        run: |
+          git diff --exit-code -- \
+            python/tonin-client/src/tonin_client/_generated.py \
+            ts/tonin-client/src/_generated.ts \
+          || {
+            echo "::error::Shared types are stale. Run 'cargo run --bin gen-shared-types --features cli' and commit the result.";
+            exit 1;
+          }
+
+  # ---------------------------------------------------------------------------
+  # tonin-client ↔ tonin-proxy sidecar e2e.
+  #
+  # The production topology for non-Rust callers: TS client → tonin-proxy
+  # sidecar → upstream gRPC server. Builds the real proxy binary and runs the
+  # TS sidecar suite against it, asserting the client's propagated auth/trace
+  # headers survive the hop. The node-only `ts-client` job skips this suite
+  # (no binary); this job is where it actually executes.
+  # ---------------------------------------------------------------------------
+  ts-client-sidecar:
+    name: tonin-client ↔ tonin-proxy (sidecar e2e)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.90 (MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ts-client-sidecar
+
+      - name: Build tonin-proxy (proxy-release)
+        run: cargo build --profile proxy-release -p tonin-proxy
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ts/tonin-client/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ts/tonin-client
+        run: npm ci
+
+      - name: Sidecar e2e (client → tonin-proxy → upstream)
+        working-directory: ts/tonin-client
+        env:
+          TONIN_PROXY_BIN: ${{ github.workspace }}/target/proxy-release/tonin-proxy
+        run: npx vitest run test/sidecar.test.ts
+

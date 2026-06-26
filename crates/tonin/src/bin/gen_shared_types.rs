@@ -24,7 +24,7 @@
 //! ## What gets generated
 //!
 //! - `python/tonin-client/src/tonin_client/_generated.py`
-//! - `templates/service/ts/client-ts/src/_generated.ts.tmpl`
+//! - `ts/tonin-client/src/_generated.ts`
 //!
 //! The Rust types remain hand-written — they're the spec.
 
@@ -284,7 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_path_buf();
 
     let py_path = workspace_root.join("python/tonin-client/src/tonin_client/_generated.py");
-    let ts_path = workspace_root.join("templates/service/ts/client-ts/src/_generated.ts.tmpl");
+    let ts_path = workspace_root.join("ts/tonin-client/src/_generated.ts");
 
     let py = render_python();
     let ts = render_typescript();

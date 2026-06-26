@@ -35,6 +35,7 @@ name: Release
 #   1. tonin CLI         — crates.io (`tonin`) + cross-platform binaries
 #   2. tonin SDK (Rust)  — crates.io (`tonin-sdk` + leaf crates)
 #   3. tonin-proxy       — cross-platform binaries + ghcr.io Docker image
+#   4. tonin-client (TS) — npm (independent version); skipped if NPM_TOKEN unset
 #   (future: tonin-sdk-py — PyPI/pip; add a publish-pypi job here when it lands)
 #
 # Dispatched by auto-release.yml via workflow_dispatch with --ref v<version>.
@@ -416,6 +417,68 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             VERSION=${{ steps.ver.outputs.version }}
+
+  # ----------------------------------------------------------------------
+  # Publish the tonin-client TypeScript package to npm.
+  #
+  # Independent version (ts/tonin-client/package.json), like the Python
+  # client — not tied to the workspace v* tag. Skips cleanly when NPM_TOKEN
+  # is not configured, and is idempotent (skips a version already on npm).
+  # To enable: claim the `tonin-client` name on npm and add an NPM_TOKEN
+  # repo secret (Settings → Secrets → Actions).
+  # ----------------------------------------------------------------------
+  publish-ts-client:
+    name: Publish tonin-client (npm)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gate on NPM_TOKEN presence
+        id: gate
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::notice::NPM_TOKEN not set — skipping npm publish of tonin-client."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: ts/tonin-client/package-lock.json
+
+      - name: Install, typecheck, test, build
+        if: steps.gate.outputs.publish == 'true'
+        working-directory: ts/tonin-client
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Publish to npm (idempotent)
+        if: steps.gate.outputs.publish == 'true'
+        working-directory: ts/tonin-client
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          PKG="$(node -p "require('./package.json').name")"
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "${PKG}@${VER}" version > /dev/null 2>&1; then
+            echo "::notice::${PKG}@${VER} already on npm — skipping publish."
+          else
+            npm publish --access public
+          fi
 
   # ----------------------------------------------------------------------
   # Smoke-test the installer end to end once all binary assets are uploaded.
