@@ -196,8 +196,10 @@ fn build_context(plan: &Plan) -> tera::Context {
     // A gRPC backend can ALSO expose an HTTP port via `plan.http_port`.
     let is_web = matches!(plan.kind, ServiceKind::Web);
     let is_http = matches!(plan.kind, ServiceKind::Http);
+    let is_rust = plan.language == "rust";
     ctx.insert("is_web", &is_web);
     ctx.insert("is_http", &is_http);
+    ctx.insert("is_rust", &is_rust);
     ctx.insert("port", &plan.port);
     ctx.insert("port_name", if is_web || is_http { "http" } else { "grpc" });
     // Secondary HTTP port (0 when absent), so the chart can render it alongside gRPC.
