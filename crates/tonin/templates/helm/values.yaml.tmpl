@@ -77,10 +77,10 @@ observability:
 
 # Override the container entrypoint. Empty list = use the Docker image CMD.
 # Rust services default to /usr/local/bin/<name>; leave empty for all others.
-command: {% if is_web or is_http %}[]{% else %}["/usr/local/bin/{{ name }}"]{% endif %}
+command: {% if is_rust %}["/usr/local/bin/{{ name }}"]{% else %}[]{% endif %}
 
 # Gate RUST_LOG injection: only meaningful for Rust binaries.
-rustService: {% if is_web or is_http %}false{% else %}true{% endif %}
+rustService: {% if is_rust %}true{% else %}false{% endif %}
 
 # Extra env vars injected verbatim into the container.
 env: {}
