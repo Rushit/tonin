@@ -1,16 +1,7 @@
-# Release to crates.io + cross-platform binaries + Docker image
-#
-# Triggered by release-please pushing a v*.*.* tag to main (via the Release PR
-# automerge flow in release-please.yml).  The GitHub Release itself is created
-# by release-please before the tag push; this workflow publishes crates and
-# uploads binary assets to that release.
-#
-# Can also be triggered manually via workflow_dispatch for re-runs or hotfixes.
-#
 # Setup:
 #   CARGO_REGISTRY_TOKEN — crates.io API token (Settings → Secrets → Actions)
 #   Docker images are pushed to ghcr.io using the built-in GITHUB_TOKEN; no
-#   extra secret is required. The package is published under the repo owner:
+#   extra secret is required:
 #     ghcr.io/rushit/tonin-proxy:<version>   (versioned tag)
 #     ghcr.io/rushit/tonin-proxy:latest      (floating tag, updated each release)
 #
@@ -26,7 +17,7 @@
 # propagate; without it, the next `cargo publish` can fail to resolve the
 # crate it just uploaded.
 #
-# Binary targets (built and uploaded in parallel with the crates.io publish):
+# Binary targets (CLI `tonin` and `tonin-proxy`, built per release):
 #   - x86_64-unknown-linux-gnu   (Linux x86_64)
 #   - aarch64-unknown-linux-gnu  (Linux ARM64, e.g. Graviton)
 #   - x86_64-apple-darwin        (macOS Intel)
@@ -34,20 +25,28 @@
 #   - x86_64-pc-windows-msvc     (Windows x86_64)
 #
 # Archives follow taiki-e/upload-rust-binary-action's default naming:
-#   tonin-<target>.tar.gz     (or .zip on Windows)
+#   tonin-<target>.tar.gz / tonin-proxy-<target>.tar.gz  (.zip on Windows)
 # That naming is also what `cargo binstall tonin` expects, so end users
 # get pre-built binaries for free without us shipping a separate installer.
 
 name: Release
 
+# Single unified publisher for ALL release artifacts off one v*.*.* tag:
+#   1. tonin CLI         — crates.io (`tonin`) + cross-platform binaries
+#   2. tonin SDK (Rust)  — crates.io (`tonin-sdk` + leaf crates)
+#   3. tonin-proxy       — cross-platform binaries + ghcr.io Docker image
+#   (future: tonin-sdk-py — PyPI/pip; add a publish-pypi job here when it lands)
+#
+# Dispatched by auto-release.yml via workflow_dispatch with --ref v<version>.
+# auto-release creates the tag + GitHub Release first; this workflow attaches
+# all crates/binaries/images to that single release. Also runnable by hand for
+# re-runs or hotfixes (every job is idempotent — already-published artifacts are
+# skipped).
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Override version tag (e.g. v0.1.0). Leave blank to use the ref this run targets.'
+        description: 'Version tag to publish (e.g. v0.1.0). Leave blank to use the ref this run targets.'
         required: false
         type: string
 
@@ -102,9 +101,9 @@ jobs:
           fi
 
   # ----------------------------------------------------------------------
-  # Publish the five crates to crates.io in dep order.
+  # Publish all six crates to crates.io in dep order.
   # `cargo update --workspace` runs first to bring Cargo.lock in sync with
-  # the version bump committed by release-please (avoids stale-lock errors
+  # the version bump committed by auto-release (avoids stale-lock errors
   # during `cargo publish`'s internal verification step).
   # ----------------------------------------------------------------------
   publish-crates:
@@ -173,8 +172,8 @@ jobs:
         run: make publish
 
   # ----------------------------------------------------------------------
-  # Cross-platform binary builds. Each matrix entry produces one archive
-  # and uploads it to the GitHub Release created by release-please.
+  # Cross-platform CLI binary builds. Each matrix entry produces one archive
+  # and uploads it to the GitHub Release created by auto-release.
   # ----------------------------------------------------------------------
   build-binaries:
     name: Build ${{ matrix.target }}
@@ -262,6 +261,161 @@ jobs:
           include: LICENSE,README.md
           ref: ${{ github.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ----------------------------------------------------------------------
+  # tonin-proxy cross-platform binaries — uploaded to the SAME v* release
+  # as the CLI (asset names are prefixed tonin-proxy- so they don't collide).
+  # ----------------------------------------------------------------------
+  build-proxy-binaries:
+    name: Build proxy ${{ matrix.target }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if proxy binary asset already uploaded
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REF="${{ github.event.inputs.version || github.ref_name }}"
+          EXT="${{ matrix.archive }}"
+          ASSET="tonin-proxy-${{ matrix.target }}.${EXT}"
+          if gh release view "$REF" --repo "${{ github.repository }}" \
+               --json assets --jq ".assets[].name" 2>/dev/null \
+             | grep -qxF "$ASSET"; then
+            echo "::notice::Binary asset ${ASSET} already exists in release ${REF} — skipping build."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust 1.90 with target ${{ matrix.target }}
+        if: steps.check.outputs.skipped != 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          targets: ${{ matrix.target }}
+
+      - name: Install protoc
+        if: steps.check.outputs.skipped != 'true'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        if: steps.check.outputs.skipped != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: proxy-${{ matrix.target }}
+
+      - name: Build and upload tonin-proxy
+        if: steps.check.outputs.skipped != 'true'
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: tonin-proxy
+          target: ${{ matrix.target }}
+          archive: tonin-proxy-$target
+          tar: unix
+          zip: windows
+          checksum: sha256
+          include: LICENSE,README.md
+          ref: ${{ github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ----------------------------------------------------------------------
+  # tonin-proxy multi-arch Docker image → ghcr.io.
+  # ----------------------------------------------------------------------
+  publish-proxy-docker:
+    name: Publish tonin-proxy Docker image
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      skipped: ${{ steps.check.outputs.skipped }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          REF="${{ github.event.inputs.version || github.ref_name }}"
+          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if Docker image already published
+        id: check
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/rushit/tonin-proxy:${{ steps.ver.outputs.version }}"
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "::notice::Docker image ${IMAGE} already exists on ghcr.io — skipping build and push."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install protoc
+        if: steps.check.outputs.skipped != 'true'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.skipped != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        if: steps.check.outputs.skipped != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        if: steps.check.outputs.skipped != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/tonin-proxy/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/rushit/tonin-proxy:${{ steps.ver.outputs.version }}
+            ghcr.io/rushit/tonin-proxy:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
 
   # ----------------------------------------------------------------------
   # Smoke-test the installer end to end once all binary assets are uploaded.
