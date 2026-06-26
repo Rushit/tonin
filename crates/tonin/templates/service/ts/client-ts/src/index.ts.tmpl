@@ -17,22 +17,29 @@
 //     dependency in your app (it's an optional peer dep here so the
 //     Node bundle doesn't carry it).
 //
-// Auth + retry + circuit-breaker configs are shared with Rust/Python
-// peers via the generated AuthCtx / RetryPolicy / CircuitBreaker types
-// — see `./shared.ts`.
+// Auth + retry + circuit-breaker config and the trace/deadline helpers are
+// the shared `tonin-client` primitives — identical to the Rust and Python
+// peers — re-exported below so callers import everything from
+// `{{ service_name }}-client`.
 
 // Generated stubs (regenerate via `npm run gen`).
 export * from "./gen/{{ service_name_snake }}";
 
-// Shared client-side primitives. AuthCtx + retry/breaker configs that
-// match the Rust + Python sides byte-for-byte (the codegen for this
-// file is planned — for now it's hand-written but the shape is stable).
+// Shared client-side primitives from the `tonin-client` package: the
+// byte-for-byte parallel of Rust's `tonin-client` crate and Python's
+// `tonin_client`. Re-exported so peers write a single import.
 export {
   AuthCtx,
   type AuthCtxInit,
+  type AuthCtxWire,
   AuthError,
+  Backoff,
+  CircuitBreaker,
+  GrpcStatus,
+  injectDeadline,
+  injectTraceparent,
+  injectTracestate,
   PrincipalKind,
   type RawToken,
   RetryPolicy,
-  CircuitBreaker,
-} from "./shared.js";
+} from "tonin-client";

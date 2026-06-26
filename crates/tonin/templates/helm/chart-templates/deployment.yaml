@@ -177,7 +177,11 @@ spec:
         # handles coalescing, caching, retry, and circuit breaking.
         - name: tonin-proxy
           image: {{ .Values.outboundProxy.image | quote }}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: TONIN_PROXY_UPSTREAM
               value: "http://localhost:{{ .Values.service.port }}"

@@ -116,6 +116,38 @@ The Rust runtime implements this end-to-end (see [05-telemetry.md](05-telemetry.
 
 The Rust runtime is the reference. Python and TS scaffolds are real and run, but they lean on upstream gRPC / Connect-ES tooling — the framework-level Service builder, capability traits, and auto-instrumentation do not yet exist in those languages. `tonin-py` / `tonin-ts` runtime crates are on the roadmap.
 
+## Shared client primitives (`tonin-client`)
+
+Calling a peer service needs more than generated stubs — it needs a small,
+stable set of client-side types: the auth context to propagate, retry and
+circuit-breaker config, and trace/deadline header helpers. These live in a tiny
+**`tonin-client`** package, one per language, that a caller depends on *without*
+pulling in the server framework:
+
+| Language | Package | Registry |
+|---|---|---|
+| Rust | [`crates/tonin-client`](../crates/tonin-client) | crates.io |
+| Python | [`python/tonin-client`](../python/tonin-client) | PyPI |
+| TypeScript | [`ts/tonin-client`](../ts/tonin-client) | npm |
+
+All three expose the same surface — `AuthCtx` (with `propagate`), `RetryPolicy`,
+`CircuitBreaker`, and `inject_traceparent` / `inject_tracestate` /
+`inject_deadline` — and the **same wire shape** (snake_case JSON), so an
+`AuthCtx` produced by a Rust interceptor is understood verbatim by a Python or
+TypeScript caller.
+
+The Rust types in `crates/tonin-client/src/` are the source of truth.
+`cargo run --bin gen-shared-types --features cli` regenerates the Python
+(`_generated.py`) and TypeScript (`_generated.ts`) mirrors; a CI drift gate
+(`shared-types-drift`) fails if either is stale, and each package's own
+`generated-match` test fails if a hand-written type diverges from its mirror.
+
+Retry, caching, and circuit-breaking are *config here, execution in the
+sidecar*: non-Rust callers route outbound RPCs through the per-pod
+[`tonin-proxy`](../crates/tonin-proxy) sidecar (localhost, plain gRPC), which
+performs the coalescing / caching / retry / breaker work across all worker
+processes.
+
 ## Under the hood
 
 ```mermaid

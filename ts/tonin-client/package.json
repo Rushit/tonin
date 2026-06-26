@@ -1,0 +1,35 @@
+{
+  "name": "tonin-client",
+  "version": "0.1.0",
+  "description": "Client-side primitives shared between generated tonin service clients in TypeScript: AuthCtx, retry/circuit-breaker config, trace/deadline propagation. Tiny, zero-runtime-dependency — peer services depend on this without pulling in the server framework.",
+  "license": "Apache-2.0",
+  "author": "tonin",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src", "README.md"],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@grpc/grpc-js": "^1.11",
+    "@types/node": "^22",
+    "typescript": "^5.6",
+    "vitest": "^2.1"
+  }
+}

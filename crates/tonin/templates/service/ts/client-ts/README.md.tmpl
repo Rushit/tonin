@@ -10,6 +10,11 @@ npm run gen      # codegen from ../proto/
 npm run build    # tsc → dist/
 ```
 
+> **Local development:** this client depends on the shared `tonin-client`
+> package. Until it's published to npm, link it from the framework checkout —
+> run `npm link` in `tonin/ts/tonin-client`, then `npm link tonin-client` here
+> before `npm install`.
+
 ## Node usage (`@grpc/grpc-js`)
 
 ```ts
@@ -60,7 +65,9 @@ handles browser-to-mesh translation.
 
 ## Shared client-side primitives
 
-`AuthCtx`, `RetryPolicy`, `CircuitBreaker` are intentionally shaped to
-match the Rust (`tonin-client`) and Python (`tonin_client`)
-equivalents — same field names, same defaults. A request authorized
-in a Python service stays authorized when relayed by a TS BFF.
+`AuthCtx`, `RetryPolicy`, `CircuitBreaker`, and the trace/deadline helpers come
+from the [`tonin-client`](https://www.npmjs.com/package/tonin-client) package —
+the byte-for-byte parallel of Rust's `tonin-client` crate and Python's
+`tonin_client`. Same field names, same defaults, same wire shape: a request
+authorized in a Python service stays authorized when relayed by a TS BFF. This
+client re-exports them, so peers import everything from `{{ service_name }}-client`.
