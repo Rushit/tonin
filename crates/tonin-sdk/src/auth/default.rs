@@ -287,7 +287,7 @@ struct Claims {
     scope: Option<String>,
     #[serde(default)]
     scopes: Option<Vec<String>>,
-    /// `kind` is non-standard; agnitiv-style claim distinguishing user vs service.
+    /// `kind` is non-standard; a custom claim distinguishing user tokens from service tokens.
     #[serde(default)]
     kind: Option<String>,
     #[serde(flatten)]

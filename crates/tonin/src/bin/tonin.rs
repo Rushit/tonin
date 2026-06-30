@@ -134,6 +134,9 @@ enum TopCmd {
         cmd: commands::helm::HelmCmd,
     },
 
+    /// Compute which services are affected by changed files, with wave ordering.
+    Affected(commands::affected::AffectedArgs),
+
     /// [removed] Kubernetes manifest generation has moved to `tonin helm`.
     ///
     /// Install tonin-helm and use:
@@ -180,6 +183,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         TopCmd::Upgrade(args) => commands::upgrade::run(args),
         TopCmd::Doctor(args) => commands::doctor::run(args),
         TopCmd::Helm { cmd } => commands::helm::run(cmd),
+        TopCmd::Affected(args) => commands::affected::run(args),
         TopCmd::K8s { .. } => {
             eprintln!("error: `tonin k8s` has been removed.");
             eprintln!();

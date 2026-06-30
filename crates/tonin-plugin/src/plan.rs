@@ -247,6 +247,19 @@ struct RawSecurity {
     container: Option<toml::Value>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct RawPathRule {
+    pattern: String,
+    #[serde(default)]
+    propagate_to_callers: bool,
+    #[serde(default)]
+    layer: Option<String>,
+    #[serde(default)]
+    packages: Vec<String>,
+    #[serde(default)]
+    build_order: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     #[serde(default)]
@@ -283,6 +296,8 @@ struct RawConfig {
     image: Option<RawImage>,
     #[serde(default)]
     security: Option<RawSecurity>,
+    #[serde(default)]
+    path_rules: Vec<RawPathRule>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -512,6 +527,15 @@ pub struct SecuritySection {
     pub container: Option<toml::Value>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathRule {
+    pub pattern: String,
+    pub propagate_to_callers: bool,
+    pub layer: Option<String>,
+    pub packages: Vec<String>,
+    pub build_order: Option<usize>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub name: String,
@@ -552,6 +576,7 @@ pub struct Plan {
     pub emitted_env: EmittedEnv,
     pub selected_env: String,
     pub client: ClientSpec,
+    pub path_rules: Vec<PathRule>,
 }
 
 impl Plan {
@@ -820,6 +845,17 @@ impl Plan {
             client,
             emitted_env,
             selected_env: env.to_string(),
+            path_rules: raw
+                .path_rules
+                .into_iter()
+                .map(|r| PathRule {
+                    pattern: r.pattern,
+                    propagate_to_callers: r.propagate_to_callers,
+                    layer: r.layer,
+                    packages: r.packages,
+                    build_order: r.build_order,
+                })
+                .collect(),
         })
     }
 
@@ -975,41 +1011,41 @@ mod tests {
 
     #[test]
     fn depends_on_literal_is_backward_compatible() {
-        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = \"agnitiv-dev\"\n"].concat();
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nusers-service = \"myapp-dev\"\n"].concat();
         let p = try_load_env(&body, "prod").unwrap();
         // No {env} → literal namespace, identical in every env (today's behaviour).
-        assert_eq!(dep(&p, "identity").as_deref(), Some("agnitiv-dev"));
+        assert_eq!(dep(&p, "users-service").as_deref(), Some("myapp-dev"));
     }
 
     #[test]
     fn depends_on_env_placeholder_resolves_per_env() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"agnitiv-{env}\"\n[depends_on]\nidentity = \"agnitiv-{env}\"\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"myapp-{env}\"\n[depends_on]\nusers-service = \"myapp-{env}\"\n",
         ]
         .concat();
         let dev = try_load_env(&body, "dev").unwrap();
-        assert_eq!(dev.namespace, "agnitiv-dev");
-        assert_eq!(dep(&dev, "identity").as_deref(), Some("agnitiv-dev"));
+        assert_eq!(dev.namespace, "myapp-dev");
+        assert_eq!(dep(&dev, "users-service").as_deref(), Some("myapp-dev"));
         let prod = try_load_env(&body, "prod").unwrap();
-        assert_eq!(prod.namespace, "agnitiv-prod");
-        assert_eq!(dep(&prod, "identity").as_deref(), Some("agnitiv-prod"));
+        assert_eq!(prod.namespace, "myapp-prod");
+        assert_eq!(dep(&prod, "users-service").as_deref(), Some("myapp-prod"));
     }
 
     #[test]
     fn depends_on_table_per_env_override_wins() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nzradar = { namespace = \"zradar-{env}\", prod = \"zradar-shared\" }\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\ninventory-service = { namespace = \"inventory-{env}\", prod = \"inventory-shared\" }\n",
         ]
         .concat();
         assert_eq!(
-            dep(&try_load_env(&body, "dev").unwrap(), "zradar").as_deref(),
-            Some("zradar-dev")
+            dep(&try_load_env(&body, "dev").unwrap(), "inventory-service").as_deref(),
+            Some("inventory-dev")
         );
         assert_eq!(
-            dep(&try_load_env(&body, "prod").unwrap(), "zradar").as_deref(),
-            Some("zradar-shared")
+            dep(&try_load_env(&body, "prod").unwrap(), "inventory-service").as_deref(),
+            Some("inventory-shared")
         );
     }
 
@@ -1038,7 +1074,7 @@ mod tests {
 
     #[test]
     fn depends_on_unresolved_placeholder_is_error() {
-        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = \"agnitiv-{environment}\"\n"].concat();
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nusers-service = \"myapp-{environment}\"\n"].concat();
         let err = try_load_env(&body, "prod").unwrap_err();
         assert!(
             matches!(err, Error::UnresolvedNamespace { .. }),
@@ -1050,7 +1086,7 @@ mod tests {
     fn depends_on_missing_namespace_for_env_is_error() {
         // Only a dev override; prod has nothing to resolve to → hard error,
         // never a silent fallback.
-        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = { dev = \"agnitiv-dev\" }\n"].concat();
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nusers-service = { dev = \"myapp-dev\" }\n"].concat();
         let err = try_load_env(&body, "prod").unwrap_err();
         assert!(
             matches!(err, Error::InvalidDependency { .. }),
@@ -1076,7 +1112,7 @@ mod tests {
     fn deploy_namespace_unresolved_placeholder_is_error() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"agnitiv-{cluster}\"\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"myapp-{cluster}\"\n",
         ]
         .concat();
         let err = try_load_env(&body, "prod").unwrap_err();

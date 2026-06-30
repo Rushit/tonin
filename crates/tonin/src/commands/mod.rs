@@ -1,3 +1,4 @@
+pub mod affected;
 pub mod describe;
 pub mod doctor;
 pub mod helm;

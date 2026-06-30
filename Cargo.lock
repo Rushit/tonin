@@ -3711,6 +3711,7 @@ dependencies = [
  "heck",
  "include_dir",
  "prost-types 0.13.5",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
