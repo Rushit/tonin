@@ -68,8 +68,9 @@ impl ConnectionPool {
     }
 
     /// Parse the upstream URI into (host, port).
+    /// Upstream is expected to be in format: http://host:port or http://host
     fn parse_upstream(&self) -> anyhow::Result<(String, u16)> {
-        let uri: hyper::Uri = format!("http://{}", self.upstream).parse()?;
+        let uri: hyper::Uri = self.upstream.parse()?;
         let host = uri
             .host()
             .ok_or_else(|| anyhow!("no host in upstream {}", self.upstream))?
