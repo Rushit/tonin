@@ -1,16 +1,19 @@
-name: Build and Push
+name: Validate Dockerfiles
 
 # Trigger on push to main and release branches (after PR testing passes).
 # Does not run on PRs since CI workflow already validates.
+# Actual artifact publishing is handled by release.yml:
+#   - tonin-proxy Docker image → ghcr.io (release.yml)
+#   - tonin CLI binaries → GitHub releases (release.yml)
+#   - tonin-sdk crate → crates.io (release.yml)
 on:
   push:
     branches: [main, release/*]
   workflow_dispatch:
 
 permissions:
-  packages: write  # needed to push to ghcr.io
+  packages: write  # needed for Docker Buildx cache
   contents: read
-  security-events: write  # needed by github/codeql-action/upload-sarif
 
 # Cancel in-flight runs for the same branch + workflow when a new push lands.
 concurrency:
@@ -18,101 +21,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Build, push, and scan container images for all services.
-  #
-  # The tonin build command orchestrates the multi-service build and push flow:
-  #   1. Resolve version from VERSION file or git describe
-  #   2. Load all service plans from tonin.toml files in the workspace
-  #   3. For each service, build a Docker image (or use --dry-run)
-  #   4. Capture BuildResult digest (sha256:...) from docker inspect
-  #   5. Push image to ghcr.io (registry auto-detected from GITHUB_REPOSITORY)
-  #   6. Scan image with trivy for vulnerabilities
-  #
-  # Environment auto-detection:
-  #   - GITHUB_REPOSITORY (e.g. rushit/tonin) → ghcr.io/rushit/tonin
-  #   - GITHUB_TOKEN (auto-injected by Actions) → ghcr.io auth
-  # ---------------------------------------------------------------------------
-  build-push:
-    name: Build and push (${{ matrix.service }})
+  # Validate that all Dockerfiles build without errors.
+  # This catches build regressions on every merge to main.
+  # Actual publishing to ghcr.io/crates.io happens in release.yml.
+  validate-dockerfiles:
+    name: Validate Dockerfiles build
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Only the ecommerce demo services that ship a Dockerfile.
-        # `greeter`/`inventory`/`orders` (framework usage examples) and the
-        # crates/ libraries are not meant to be containerized/pushed.
-        service: [users-service, orders-service, products-service]
-    env:
-      CARGO_TERM_COLOR: always
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # for git describe
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.93"
-          components: rustfmt, clippy
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: build-and-push-${{ matrix.service }}
-
-      - name: Build tonin CLI
-        run: |
-          # `cargo build` (not `cargo install`) so artifacts land in the
-          # cached `target/` dir. `cargo install` always builds in an
-          # isolated temp directory, bypassing Swatinem/rust-cache entirely.
-          cargo build --release --bin tonin
-          echo "$PWD/target/release" >> "$GITHUB_PATH"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+      - name: Validate tonin-proxy Dockerfile
+        uses: docker/build-push-action@v6
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          context: .
+          file: crates/tonin-proxy/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build and push (tonin build --push)
-        run: |
-          tonin build --push --service "${{ matrix.service }}"
-        env:
-          # GitHub Actions auto-detection: GITHUB_REPOSITORY → ghcr.io/owner/repo
-          # The tonin build command will use this to construct image tags like:
-          #   ghcr.io/owner/repo/users-service:1.0.0
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Docker layer caching via buildx (from Set up Docker Buildx step)
-          BUILDKIT_PROGRESS: plain
-
-      - name: Scan image with trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: image
-          image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
-          format: sarif
-          output: trivy-results.sarif
-        continue-on-error: true
-
-      - name: Upload trivy scan results
-        uses: github/codeql-action/upload-sarif@v3
-        if: hashFiles('trivy-results.sarif') != ''
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy-${{ matrix.service }}
-
-      - name: Log build success
-        run: echo "✓ ${{ matrix.service }} built and pushed to ghcr.io/${{ github.repository }}/${{ matrix.service }}"
+      - name: Log validation success
+        run: echo "✓ All Dockerfiles validated successfully"
