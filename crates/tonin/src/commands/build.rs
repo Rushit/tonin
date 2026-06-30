@@ -81,7 +81,7 @@ pub fn run(args: BuildArgs) -> Result<()> {
         });
 
         let dockerfile = infer_dockerfile(&root, &plan.name)?;
-        let context = infer_context(&root, &plan.name);
+        let context = infer_context(&root, &plan.name, &dockerfile);
 
         let values = BuildValues {
             service: plan.name.clone(),
@@ -141,6 +141,7 @@ fn infer_dockerfile(workspace: &Path, service: &str) -> Result<String> {
     let candidates = vec![
         format!("services/{}/Dockerfile", service),
         format!("{}/Dockerfile", service),
+        format!("examples/{}/Dockerfile", service),
     ];
 
     for candidate in &candidates {
@@ -158,8 +159,15 @@ fn infer_dockerfile(workspace: &Path, service: &str) -> Result<String> {
 }
 
 /// Infer build context for a service.
-/// Usually the service directory itself.
-fn infer_context(workspace: &Path, service: &str) -> String {
+/// Usually the service directory itself, EXCEPT for services under `examples/`,
+/// which are Cargo workspace members: their Dockerfile needs the whole
+/// workspace (root Cargo.toml/Cargo.lock + sibling crates) to build, so the
+/// context must be the workspace root rather than the service's own directory.
+fn infer_context(workspace: &Path, service: &str, dockerfile: &str) -> String {
+    if dockerfile.starts_with("examples/") {
+        return ".".to_string();
+    }
+
     let candidates = vec![format!("services/{}", service), service.to_string()];
 
     for candidate in candidates {
@@ -195,11 +203,25 @@ mod tests {
 
     #[test]
     fn test_context_inference() {
-        let context = infer_context(Path::new("/tmp"), "test-svc");
+        let context = infer_context(Path::new("/tmp"), "test-svc", "test-svc/Dockerfile");
         assert!(
             context.contains("test-svc"),
             "Context should contain service name"
         );
+    }
+
+    #[test]
+    fn test_context_inference_examples_uses_workspace_root() {
+        // Services under examples/ are Cargo workspace members; their
+        // Dockerfile needs the whole workspace (root Cargo.toml/Cargo.lock +
+        // sibling crates), so the build context must be "." not the
+        // service's own subdirectory.
+        let context = infer_context(
+            Path::new("/tmp"),
+            "users-service",
+            "examples/users-service/Dockerfile",
+        );
+        assert_eq!(context, ".");
     }
 
     #[test]

@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1.90 is the declared MSRV (workspace.package.rust-version).
+        # 1.93 is the declared MSRV (workspace.package.rust-version).
         # `stable` catches regressions on the latest toolchain.
         rust: ["1.93", "stable"]
     env:
@@ -112,10 +112,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.90 (MSRV)
+      - name: Install Rust 1.93 (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.90"
+          toolchain: "1.93"
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -246,10 +246,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust 1.90 (MSRV)
+      - name: Install Rust 1.93 (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.90"
+          toolchain: "1.93"
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -292,10 +292,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust 1.90 (MSRV)
+      - name: Install Rust 1.93 (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.90"
+          toolchain: "1.93"
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
