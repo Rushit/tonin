@@ -79,30 +79,19 @@ impl ConnectionPool {
         Ok((host, port))
     }
 
-    /// Keep-alive task that sends PING frames every 30 seconds.
-    async fn keep_alive_task(mut sender: SendRequest<Full<Bytes>>) {
+    /// Keep-alive task that monitors connection health.
+    /// HTTP/2 connections are kept alive by the underlying connection task.
+    /// This task is a placeholder for potential future health monitoring.
+    async fn keep_alive_task(_sender: SendRequest<Full<Bytes>>) {
+        // HTTP/2 connections are maintained by the connection task spawned in create_channel().
+        // Idle connections may be pruned by load balancers (e.g., Cilium), but the connection
+        // task automatically recovers by reconnecting on next request. Keep-alive PING frames
+        // are managed at the HTTP/2 protocol level by hyper, not application-level.
         let mut ticker = interval(std::time::Duration::from_secs(30));
         loop {
             ticker.tick().await;
-
-            // Create a dummy PING request to keep the connection alive.
-            // In HTTP/2, we send a HEAD request to a dummy path.
-            let req = Request::builder()
-                .method(http::Method::HEAD)
-                .uri("http://localhost/ping")
-                .version(http::Version::HTTP_2)
-                .body(Full::new(Bytes::new()))
-                .unwrap();
-
-            match sender.send_request(req).await {
-                Ok(_resp) => {
-                    debug!("sent keep-alive PING");
-                }
-                Err(e) => {
-                    debug!("keep-alive PING failed (connection may be dead): {e}");
-                    break;
-                }
-            }
+            // Future: add explicit connection health monitoring here if needed
+            debug!("connection pool health check (noop)");
         }
     }
 
