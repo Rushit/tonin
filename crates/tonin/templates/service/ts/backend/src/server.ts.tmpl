@@ -4,6 +4,7 @@
 
 import { createServer } from "node:http2";
 import { connectNodeAdapter, type ConnectRouter } from "@connectrpc/connect-node";
+import { compression as connectCompression } from "@connectrpc/connect";
 // import { {{ ServiceCamel }} } from "./gen/{{ service_name }}/v1/{{ service_name }}_connect.js";
 
 // OTel is wired by the sidecar / auto-instrumentation Node loader at runtime.
@@ -15,7 +16,15 @@ const routes = (router: ConnectRouter) => {
   // });
 };
 
-const server = createServer(connectNodeAdapter({ routes }));
+// Enable gzip compression on responses for reduced bandwidth.
+// Clients can control compression via accept-encoding header.
+const server = createServer(
+  connectNodeAdapter({
+    routes,
+    // Automatically compress responses with gzip when clients support it
+    compression: [connectCompression.gzip],
+  })
+);
 server.listen(50051, "0.0.0.0", () => {
   console.log("{{ service_name }} listening on :50051");
 });

@@ -60,6 +60,8 @@ class Service:
         self._handlers: list[tuple[Any, Callable[..., None]]] = []
         # In-process MCP config (None = MCP disabled).
         self._mcp: McpConfig | None = None
+        # Enable gzip compression on responses.
+        self._enable_compression: bool = False
         # Side effect: install telemetry. Errors are logged inside.
         telemetry.init(name)
 
@@ -71,6 +73,18 @@ class Service:
     def addr(self, addr: str) -> "Service":
         """Override the bind address. Default ``0.0.0.0:50051``."""
         self._addr = addr
+        return self
+
+    def with_compression(self) -> "Service":
+        """Enable gzip compression on responses for reduced bandwidth.
+        Clients can control compression via accept-encoding header.
+        """
+        self._enable_compression = True
+        return self
+
+    def without_compression(self) -> "Service":
+        """Disable gzip compression on responses."""
+        self._enable_compression = False
         return self
 
     def enable_mcp(self) -> "Service":
@@ -151,7 +165,15 @@ class Service:
                 )
             )
 
-        server = grpc.aio.server(interceptors=interceptors)
+        # Configure compression options (gzip enabled by default).
+        # In gRPC Python, compression is negotiated via client accept-encoding.
+        options: list[tuple[str, Any]] = []
+        if self._enable_compression:
+            options.append(
+                ("grpc.default_compression_algorithm", "gzip"),
+            )
+
+        server = grpc.aio.server(interceptors=interceptors, options=options if options else None)
         for servicer, add_to_server in self._handlers:
             add_to_server(servicer, server)
         server.add_insecure_port(self._addr)
