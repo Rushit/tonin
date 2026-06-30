@@ -27,6 +27,11 @@ pub struct ReleaseArgs {
     #[arg(long, required_unless_present = "image")]
     pub digest: Option<String>,
 
+    /// Registry override (e.g. "ghcr.io/myorg").
+    /// Used only when constructing image ref from digest (when --image not provided).
+    #[arg(long)]
+    pub registry: Option<String>,
+
     /// Environment lock to update (default: staging).
     #[arg(long, default_value = "staging")]
     pub env: String,
@@ -60,7 +65,8 @@ pub fn run(args: ReleaseArgs) -> Result<()> {
                 !full_digest.is_empty(),
                 "either --image or --digest must be provided"
             );
-            format!("ghcr.io/agnitiv/{}@{}", args.service, full_digest)
+            let registry = args.registry.as_deref().unwrap_or("ghcr.io/myorg");
+            format!("{}/{}@{}", registry, args.service, full_digest)
         }
     };
 
@@ -111,23 +117,24 @@ mod tests {
         let store = GitLockStore::new(tmp.path());
 
         run(ReleaseArgs {
-            service: "agnitiv-api".into(),
-            version: "0.4.0".into(),
+            service: "users-service".into(),
+            version: "1.4.0".into(),
             image: None,
             git_sha: None,
             digest: Some("abc123456789".into()),
+            registry: None,
             env: "staging".into(),
             workspace: Some(tmp.path().to_path_buf()),
         })
         .unwrap();
 
         let lock = store.read("staging").unwrap();
-        assert_eq!(lock.services["agnitiv-api"].version, "0.4.0");
+        assert_eq!(lock.services["users-service"].version, "1.4.0");
         assert_eq!(
-            lock.services["agnitiv-api"].image,
-            "ghcr.io/agnitiv/agnitiv-api@sha256:abc123456789"
+            lock.services["users-service"].image,
+            "ghcr.io/myorg/users-service@sha256:abc123456789"
         );
-        assert_eq!(lock.services["agnitiv-api"].git_sha, "HEAD");
+        assert_eq!(lock.services["users-service"].git_sha, "HEAD");
     }
 
     #[test]
@@ -135,11 +142,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let result = run(ReleaseArgs {
-            service: "agnitiv-api".into(),
-            version: "0.4.0".into(),
-            image: Some("ghcr.io/agnitiv/agnitiv-api:0.4.0".into()),
+            service: "orders-service".into(),
+            version: "1.2.0".into(),
+            image: Some("ghcr.io/myorg/orders-service:1.2.0".into()),
             git_sha: Some("deadbeef".into()),
             digest: None,
+            registry: None,
             env: "staging".into(),
             workspace: Some(tmp.path().to_path_buf()),
         });

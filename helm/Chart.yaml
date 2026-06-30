@@ -1,0 +1,18 @@
+apiVersion: v2
+name: tonin
+description: Helm chart for deploying tonin microservices
+type: application
+version: 0.1.0
+appVersion: "0.11.0"
+keywords:
+  - microservice
+  - grpc
+  - kubernetes
+  - tonin
+  - framework
+home: https://github.com/Rushit/tonin
+sources:
+  - https://github.com/Rushit/tonin
+maintainers:
+  - name: Tonin Contributors
+    url: https://github.com/Rushit/tonin

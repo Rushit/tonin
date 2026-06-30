@@ -21,7 +21,7 @@ jobs:
       matrix:
         # 1.90 is the declared MSRV (workspace.package.rust-version).
         # `stable` catches regressions on the latest toolchain.
-        rust: ["1.90", "stable"]
+        rust: ["1.93", "stable"]
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
@@ -214,7 +214,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: ts/tonin-client/package-lock.json
 
@@ -314,7 +314,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: ts/tonin-client/package-lock.json
 

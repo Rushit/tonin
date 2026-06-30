@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tonin-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "tonin.labels" . | nindent 4 }}
+data:
+  {{- with .Values.configMap.env }}
+  {{- range $key, $value := . }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{- end }}
+
+  # Kubernetes environment
+  KUBERNETES_NAMESPACE: {{ .Values.global.namespace }}
+  KUBERNETES_DOMAIN: {{ .Values.global.domain }}
+
+  # Telemetry defaults
+  {{- if .Values.telemetry.enabled }}
+  RUST_LOG: {{ .Values.telemetry.logLevel }}
+  {{- end }}
+
+  # Service discovery: connect to sibling services via DNS
+  {{- range $serviceName, $serviceConfig := .Values.services }}
+  {{- if $serviceConfig.enabled }}
+  {{ upper $serviceName | replace "-" "_" }}_ADDR: "tonin-{{ $serviceName }}.{{ $.Values.global.namespace }}.{{ $.Values.global.domain }}:{{ $.Values.service.port }}"
+  {{- end }}
+  {{- end }}

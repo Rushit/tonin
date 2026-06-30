@@ -1,0 +1,21 @@
+schema = "v1"
+
+[service]
+name    = "users-service"
+version = "0.1.0"
+codec   = "prost"
+port    = 50051
+
+[deploy]
+replicas    = 2
+mesh        = "cilium"
+mcp_sidecar = true
+namespace   = "shop"
+
+# Small pod: authentication and profiles, read-mostly.
+[resources]
+cpu    = "100m"
+memory = "128Mi"
+
+[autoscale]
+max_replicas = 4
