@@ -58,9 +58,14 @@ pub fn init(service_name: &str) -> Result<(), Error> {
         return Ok(());
     }
 
-    // W3C TraceContext propagator — what produces/consumes `traceparent`
+    // W3C TraceContext and Baggage propagators — produces/consumes
     // headers on cross-service calls.
-    global::set_text_map_propagator(TraceContextPropagator::new());
+    use opentelemetry::propagation::TextMapCompositePropagator;
+    use opentelemetry_sdk::propagation::BaggagePropagator;
+    global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
+        Box::new(TraceContextPropagator::new()),
+        Box::new(BaggagePropagator::new()),
+    ]));
 
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string());
@@ -101,5 +106,79 @@ pub fn init(service_name: &str) -> Result<(), Error> {
 pub fn shutdown() {
     if let Some(provider) = PROVIDER.get() {
         let _ = provider.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::Context;
+    use opentelemetry::propagation::TextMapCompositePropagator;
+    use opentelemetry::propagation::TextMapPropagator;
+    use opentelemetry_sdk::propagation::BaggagePropagator;
+    use opentelemetry_sdk::propagation::TraceContextPropagator;
+    use std::collections::HashMap;
+
+    fn build_composite_propagator() -> TextMapCompositePropagator {
+        TextMapCompositePropagator::new(vec![
+            Box::new(TraceContextPropagator::new()),
+            Box::new(BaggagePropagator::new()),
+        ])
+    }
+
+    #[test]
+    fn composite_propagator_injects_baggage() {
+        use opentelemetry::baggage::BaggageExt;
+        use opentelemetry::trace::SpanContext;
+        use opentelemetry::trace::SpanId;
+        use opentelemetry::trace::TraceContextExt;
+        use opentelemetry::trace::TraceFlags;
+        use opentelemetry::trace::TraceId;
+
+        let span_context = SpanContext::new(
+            TraceId::from_hex("0102030405060708090a0b0c0d0e0f10").unwrap(),
+            SpanId::from_hex("0102030405060708").unwrap(),
+            TraceFlags::default(),
+            true, // is_remote
+            Default::default(),
+        );
+
+        let cx = Context::current()
+            .with_remote_span_context(span_context)
+            .with_baggage(vec![opentelemetry::KeyValue::new("test-id", "uuid-1234")]);
+        let mut carrier = HashMap::new();
+
+        let propagator = build_composite_propagator();
+        propagator.inject_context(&cx, &mut carrier);
+
+        assert!(
+            carrier.contains_key("traceparent"),
+            "traceparent must be injected"
+        );
+        assert!(carrier.contains_key("baggage"), "baggage must be injected");
+        assert!(carrier["baggage"].contains("test-id=uuid-1234"));
+    }
+
+    #[test]
+    fn composite_propagator_extracts_baggage() {
+        let carrier = [
+            (
+                "traceparent",
+                "00-abc12345678901234567890123456789-def4567890123456-01",
+            ),
+            ("baggage", "test-id=uuid-5678,origin=test"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect::<HashMap<_, _>>();
+
+        let propagator = build_composite_propagator();
+        let cx = propagator.extract(&carrier);
+
+        use opentelemetry::baggage::BaggageExt;
+        let baggage = cx.baggage();
+        assert_eq!(
+            baggage.get("test-id").map(|v| v.as_str()),
+            Some("uuid-5678")
+        );
     }
 }

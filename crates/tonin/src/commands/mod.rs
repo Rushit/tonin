@@ -1,9 +1,13 @@
 pub mod affected;
+pub mod deploy;
 pub mod describe;
 pub mod doctor;
 pub mod helm;
 pub mod new;
 pub mod plugin;
 pub mod proto;
+pub mod release;
+pub mod run_tests;
 pub mod service;
+pub mod status;
 pub mod upgrade;

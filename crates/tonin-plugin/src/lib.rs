@@ -22,6 +22,8 @@
 //! # Ok::<(), tonin_plugin::Error>(())
 //! ```
 
+pub mod deploy_backend;
+pub mod lock;
 pub mod plan;
 pub(crate) mod stateful;
 
@@ -29,6 +31,7 @@ pub(crate) mod stateful;
 pub use plan::{
     CURRENT_SCHEMA, ClientSpec, Error, HealthSpec, McpMode, Mesh, MethodCacheSpec, Plan,
     RECOMMENDED_CLI_MIN, SUPPORTED_SCHEMAS, SecuritySection, ServiceKind, ServiceRef, WebMode,
+    wave_groups,
 };
 
 // Env resolution + resolved stateful types
@@ -36,4 +39,13 @@ pub use stateful::{
     CacheEngine, CacheSpec, ConfigEngine, ConfigSpec, DatabaseEngine, DatabaseSpec, EmittedEnv,
     ExternalStore, MigrationRunOn, MigrationTool, MigrationsSpec, SecretProvider, SecretsSpec,
     select_env,
+};
+
+// Lock store types
+pub use lock::{EnvLock, EnvironmentLock, GitLockStore, LockStore, ServiceLock};
+
+// Deploy backend types
+pub use deploy_backend::{
+    DeployBackend, DeployEvent, DeployStatus, DeployValues, DryRunBackend, HelmBackend,
+    NoopReporter, TelemetryReporter,
 };

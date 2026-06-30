@@ -166,6 +166,31 @@ impl AuthCtx {
     }
 }
 
+pub fn authctx_to_baggage(ctx: &AuthCtx) -> opentelemetry::Context {
+    use opentelemetry::baggage::BaggageExt;
+    use opentelemetry::{Context, KeyValue};
+
+    let current = Context::current();
+
+    let pairs: Vec<KeyValue> = ctx
+        .extra
+        .iter()
+        .filter_map(|(k, v)| {
+            if k.starts_with("test-") || k == "route" {
+                v.as_str().map(|s| KeyValue::new(k.clone(), s.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if pairs.is_empty() {
+        return current;
+    }
+
+    current.with_baggage(pairs)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     #[error("no token in request")]
@@ -284,6 +309,75 @@ mod tests {
 
         let s: Status = AuthError::Config("missing env".into()).into();
         assert_eq!(s.code(), tonic::Code::Internal);
+    }
+
+    #[test]
+    fn authctx_to_baggage_injects_string_extras() {
+        let mut ctx = AuthCtx::anonymous();
+        ctx.extra.insert(
+            "test-id".into(),
+            serde_json::Value::String("abc-123".into()),
+        );
+        ctx.extra
+            .insert("route".into(), serde_json::Value::String("preview".into()));
+
+        let otel_cx = authctx_to_baggage(&ctx);
+        use opentelemetry::baggage::BaggageExt;
+        let baggage = otel_cx.baggage();
+        assert_eq!(baggage.get("test-id").map(|v| v.as_str()), Some("abc-123"));
+        assert_eq!(baggage.get("route").map(|v| v.as_str()), Some("preview"));
+    }
+
+    #[test]
+    fn authctx_to_baggage_skips_non_string_values() {
+        let mut ctx = AuthCtx::anonymous();
+        ctx.extra
+            .insert("test-count".into(), serde_json::Value::Number(42.into()));
+        ctx.extra.insert(
+            "test-name".into(),
+            serde_json::Value::String("alice".into()),
+        );
+
+        let otel_cx = authctx_to_baggage(&ctx);
+        use opentelemetry::baggage::BaggageExt;
+        let baggage = otel_cx.baggage();
+        assert!(baggage.get("test-count").is_none());
+        assert_eq!(baggage.get("test-name").map(|v| v.as_str()), Some("alice"));
+    }
+
+    #[test]
+    fn authctx_to_baggage_enforces_allowlist() {
+        let mut ctx = AuthCtx::anonymous();
+        ctx.extra.insert(
+            "test-id".into(),
+            serde_json::Value::String("uuid-123".into()),
+        );
+        ctx.extra.insert(
+            "route".into(),
+            serde_json::Value::String("production".into()),
+        );
+        ctx.extra.insert(
+            "user-id".into(),
+            serde_json::Value::String("secret-123".into()),
+        );
+
+        let otel_cx = authctx_to_baggage(&ctx);
+        use opentelemetry::baggage::BaggageExt;
+        let baggage = otel_cx.baggage();
+        assert!(baggage.get("test-id").is_some());
+        assert!(baggage.get("route").is_some());
+        assert!(
+            baggage.get("user-id").is_none(),
+            "user-id must NOT propagate (security allowlist)"
+        );
+    }
+
+    #[test]
+    fn authctx_to_baggage_empty_extra_returns_current_context() {
+        let ctx = AuthCtx::anonymous();
+        // No extra entries — should return current context unchanged (no panic)
+        let otel_cx = authctx_to_baggage(&ctx);
+        let _ = otel_cx;
     }
 
     /// Lock in the JSON wire shape across language boundaries.

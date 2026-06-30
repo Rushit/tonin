@@ -119,6 +119,9 @@ where
                 Err(e) => return Ok(error_response(e)),
             };
 
+            let otel_cx = opentelemetry::Context::current();
+            let ctx = super::bridge_baggage_to_authctx(&ctx, &otel_cx);
+
             // Stuff into extensions for `AuthCtx::from(&req)` access.
             req.extensions_mut().insert(ctx.clone());
 

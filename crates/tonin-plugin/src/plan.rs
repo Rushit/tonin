@@ -896,6 +896,85 @@ impl Plan {
     }
 }
 
+/// Compute deployment wave groups from a slice of plans using topological sort.
+///
+/// Returns `Vec<Vec<&Plan>>` where each inner Vec is one wave. Plans in the
+/// same wave have no dependency on each other and can be deployed in parallel.
+/// Plans in wave N+1 all depend (directly or transitively) on plans in wave N.
+///
+/// Cycles are handled gracefully: if a cycle is detected, all cycle participants
+/// land in wave 0 together (fail-safe, not fail-hard).
+pub fn wave_groups(plans: &[Plan]) -> Vec<Vec<&Plan>> {
+    use std::collections::HashMap;
+
+    let name_to_idx: HashMap<&str, usize> = plans
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.name.as_str(), i))
+        .collect();
+
+    // in-degree counts how many *known* deps each plan has
+    let mut in_degree = vec![0usize; plans.len()];
+    for plan in plans {
+        for dep in &plan.depends_on {
+            if name_to_idx.contains_key(dep.name.as_str()) {
+                in_degree[name_to_idx[plan.name.as_str()]] += 1;
+            }
+        }
+    }
+
+    // Kahn's BFS
+    let mut queue: std::collections::VecDeque<usize> = in_degree
+        .iter()
+        .enumerate()
+        .filter(|&(_, &d)| d == 0)
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut wave_assignment = vec![0usize; plans.len()];
+    let mut visited = 0usize;
+
+    while !queue.is_empty() {
+        // Drain current wave
+        let current_wave: Vec<usize> = queue.drain(..).collect();
+        visited += current_wave.len();
+
+        for &idx in &current_wave {
+            let plan = &plans[idx];
+            let my_wave = wave_assignment[idx];
+
+            for other in plans {
+                if other.depends_on.iter().any(|d| d.name == plan.name)
+                    && let Some(&oidx) = name_to_idx.get(other.name.as_str())
+                {
+                    in_degree[oidx] -= 1;
+                    wave_assignment[oidx] = wave_assignment[oidx].max(my_wave + 1);
+                    if in_degree[oidx] == 0 {
+                        queue.push_back(oidx);
+                    }
+                }
+            }
+        }
+    }
+
+    // If cycle: any unvisited node goes to wave 0 (fail-safe)
+    if visited < plans.len() {
+        for i in 0..plans.len() {
+            if in_degree[i] > 0 {
+                wave_assignment[i] = 0;
+            }
+        }
+    }
+
+    // Group by wave
+    let max_wave = wave_assignment.iter().copied().max().unwrap_or(0);
+    let mut groups: Vec<Vec<&Plan>> = vec![vec![]; max_wave + 1];
+    for (i, &wave) in wave_assignment.iter().enumerate() {
+        groups[wave].push(&plans[i]);
+    }
+    groups.into_iter().filter(|g| !g.is_empty()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1292,5 +1371,103 @@ allowPrivilegeEscalation = false
             McpMode::None,
             "explicit mcp_sidecar=false still works as override"
         );
+    }
+
+    // ---- wave_groups --------------------------------------------------------
+
+    fn make_test_plan(name: &str, depends_on: &[&str]) -> Plan {
+        Plan {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            language: "rust".to_string(),
+            kind: ServiceKind::Backend,
+            web_mode: None,
+            port: 50051,
+            http_port: None,
+            health: None,
+            namespace: "demo".to_string(),
+            mesh: Mesh::Cilium,
+            replicas: 1,
+            max_replicas: 1,
+            mcp_mode: McpMode::InProcess,
+            needs_outbound_proxy: false,
+            expose: None,
+            cpu: "100m".to_string(),
+            memory: "128Mi".to_string(),
+            image: "mock".to_string(),
+            image_registry: None,
+            security: None,
+            depends_on: depends_on
+                .iter()
+                .map(|d| ServiceRef {
+                    name: d.to_string(),
+                    namespace: "demo".to_string(),
+                })
+                .collect(),
+            callers: Vec::new(),
+            dir: std::path::PathBuf::from("."),
+            database: None,
+            named_databases: Vec::new(),
+            cache: None,
+            named_caches: Vec::new(),
+            secrets: None,
+            migrations: None,
+            config: None,
+            emitted_env: Default::default(),
+            selected_env: "prod".to_string(),
+            client: ClientSpec::default(),
+            path_rules: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn wave_groups_linear_3_node() {
+        // users-service → inventory-service → orders-service
+        // Expected: wave 0=[users], wave 1=[inventory], wave 2=[orders]
+        let plans = vec![
+            make_test_plan("users-service", &[]),
+            make_test_plan("inventory-service", &["users-service"]),
+            make_test_plan("orders-service", &["inventory-service"]),
+        ];
+        let groups = super::wave_groups(&plans);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0][0].name, "users-service");
+        assert_eq!(groups[1][0].name, "inventory-service");
+        assert_eq!(groups[2][0].name, "orders-service");
+    }
+
+    #[test]
+    fn wave_groups_parallel_deps() {
+        // users-service (wave 0)
+        // inventory-service + payments-service both depend only on users-service → wave 1 parallel
+        // orders-service depends on inventory-service → wave 2
+        let plans = vec![
+            make_test_plan("users-service", &[]),
+            make_test_plan("inventory-service", &["users-service"]),
+            make_test_plan("payments-service", &["users-service"]),
+            make_test_plan("orders-service", &["inventory-service"]),
+        ];
+        let groups = super::wave_groups(&plans);
+        let wave1_names: Vec<&str> = groups[1].iter().map(|p| p.name.as_str()).collect();
+        assert!(
+            wave1_names.contains(&"inventory-service"),
+            "inventory must be wave 1"
+        );
+        assert!(
+            wave1_names.contains(&"payments-service"),
+            "payments must be wave 1 alongside inventory"
+        );
+        assert_eq!(groups[2][0].name, "orders-service");
+    }
+
+    #[test]
+    fn wave_groups_no_deps_all_wave_0() {
+        let plans = vec![
+            make_test_plan("users-service", &[]),
+            make_test_plan("inventory-service", &[]),
+        ];
+        let groups = super::wave_groups(&plans);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
     }
 }

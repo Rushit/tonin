@@ -3742,6 +3742,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "http",
+ "opentelemetry",
  "prost 0.13.5",
  "serde",
  "serde_json",
@@ -3792,7 +3793,10 @@ dependencies = [
 name = "tonin-plugin"
 version = "0.11.0"
 dependencies = [
+ "anyhow",
  "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "toml",
  "walkdir",
