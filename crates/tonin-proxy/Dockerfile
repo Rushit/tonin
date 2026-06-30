@@ -5,7 +5,7 @@
 # Final image uses distroless/cc (dynamic glibc support, no shell, non-root).
 # Typical result: ~35 MB uncompressed.
 # --------------------------------------------------------------------------
-FROM rust:1.90-slim-bookworm AS builder
+FROM rust:1.93-slim-bookworm AS builder
 
 # protobuf-compiler: required by etcd-client's build.rs (transitive dep).
 # binutils: provides 'strip' to shrink the dynamic binary.
@@ -31,6 +31,9 @@ COPY crates/tonin-proxy/Cargo.toml       crates/tonin-proxy/Cargo.toml
 COPY examples/greeter/Cargo.toml         examples/greeter/Cargo.toml
 COPY examples/orders/Cargo.toml          examples/orders/Cargo.toml
 COPY examples/inventory/Cargo.toml       examples/inventory/Cargo.toml
+COPY examples/users-service/Cargo.toml   examples/users-service/Cargo.toml
+COPY examples/orders-service/Cargo.toml  examples/orders-service/Cargo.toml
+COPY examples/products-service/Cargo.toml examples/products-service/Cargo.toml
 
 # Stub every workspace member's src/ so Cargo resolves the dep graph without
 # needing their full source trees.
@@ -39,7 +42,9 @@ RUN set -eu; \
         crates/tonin-plugin crates/tonin-sdk crates/tonin-client \
         crates/tonin-build crates/tonin-config-etcd crates/tonin-config-github; \
     do mkdir -p "${lib}/src" && echo "// stub" > "${lib}/src/lib.rs"; done; \
-    for bin in crates/tonin examples/greeter examples/orders examples/inventory; \
+    for bin in \
+        crates/tonin examples/greeter examples/orders examples/inventory \
+        examples/users-service examples/orders-service examples/products-service; \
     do mkdir -p "${bin}/src" && echo "fn main(){}" > "${bin}/src/main.rs"; done; \
     mkdir -p crates/tonin-mcp-macros/src && echo "// stub" > crates/tonin-mcp-macros/src/lib.rs; \
     for b in examples/greeter examples/orders examples/inventory crates/tonin-sdk; \

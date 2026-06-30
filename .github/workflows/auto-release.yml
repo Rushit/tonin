@@ -141,11 +141,11 @@ jobs:
           echo "release=true"   >> "$GITHUB_OUTPUT"
           echo "version=${NEW}"  >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust 1.90
+      - name: Install Rust 1.93
         if: steps.ver.outputs.release == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.90.0
+          toolchain: 1.93.0
 
       - name: Install protoc
         if: steps.ver.outputs.release == 'true'

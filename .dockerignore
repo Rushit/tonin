@@ -1,12 +1,13 @@
-# Keep the build context minimal for the tonin-proxy Docker build.
-# Only Cargo manifests, Cargo.lock, and crates/tonin-proxy/src/ are needed.
+# Shared build context for tonin-proxy and the examples/*-service Docker
+# builds. examples/*/src/ is NOT excluded: the ecommerce demo services
+# (examples/users-service, orders-service, products-service) are Cargo
+# workspace members built from the workspace root and need their own src/.
 target/
 .git/
 .github/
 docs/
 python/
 scripts/
-examples/*/src/
 crates/tonin/src/
 crates/tonin-plugin/src/
 crates/tonin-sdk/src/

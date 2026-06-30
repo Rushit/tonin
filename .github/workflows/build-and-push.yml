@@ -10,6 +10,7 @@ on:
 permissions:
   packages: write  # needed to push to ghcr.io
   contents: read
+  security-events: write  # needed by github/codeql-action/upload-sarif
 
 # Cancel in-flight runs for the same branch + workflow when a new push lands.
 concurrency:
@@ -33,8 +34,15 @@ jobs:
   #   - GITHUB_TOKEN (auto-injected by Actions) → ghcr.io auth
   # ---------------------------------------------------------------------------
   build-push:
-    name: Build and push services
+    name: Build and push (${{ matrix.service }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Only the ecommerce demo services that ship a Dockerfile.
+        # `greeter`/`inventory`/`orders` (framework usage examples) and the
+        # crates/ libraries are not meant to be containerized/pushed.
+        service: [users-service, orders-service, products-service]
     env:
       CARGO_TERM_COLOR: always
 
@@ -59,7 +67,7 @@ jobs:
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
         with:
-          key: build-and-push
+          key: build-and-push-${{ matrix.service }}
 
       - name: Build tonin CLI
         run: |
@@ -81,38 +89,30 @@ jobs:
 
       - name: Build and push (tonin build --push)
         run: |
-          tonin build --push
+          tonin build --push --service "${{ matrix.service }}"
         env:
           # GitHub Actions auto-detection: GITHUB_REPOSITORY → ghcr.io/owner/repo
           # The tonin build command will use this to construct image tags like:
           #   ghcr.io/owner/repo/users-service:1.0.0
-          #   ghcr.io/owner/repo/orders-service:1.0.0
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Docker layer caching via buildx (from Set up Docker Buildx step)
           BUILDKIT_PROGRESS: plain
 
-      - name: Scan images with trivy
+      - name: Scan image with trivy
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: image
-          image-ref: |
-            ghcr.io/${{ github.repository }}/users-service:latest
-            ghcr.io/${{ github.repository }}/orders-service:latest
-            ghcr.io/${{ github.repository }}/products-service:latest
+          image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
           format: sarif
           output: trivy-results.sarif
         continue-on-error: true
 
       - name: Upload trivy scan results
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: trivy-results.sarif
-          category: trivy
+          category: trivy-${{ matrix.service }}
 
       - name: Log build success
-        run: |
-          echo "✓ Services built and pushed to ghcr.io/${{ github.repository }}"
-          echo "  - users-service"
-          echo "  - orders-service"
-          echo "  - products-service"
+        run: echo "✓ ${{ matrix.service }} built and pushed to ghcr.io/${{ github.repository }}/${{ matrix.service }}"

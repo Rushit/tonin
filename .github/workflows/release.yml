@@ -147,11 +147,11 @@ jobs:
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install Rust 1.90
+      - name: Install Rust 1.93
         if: steps.check.outputs.skipped != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.90.0
+          toolchain: 1.93.0
 
       - name: Install protoc
         if: steps.check.outputs.skipped != 'true'
@@ -229,11 +229,11 @@ jobs:
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install Rust 1.90 with target ${{ matrix.target }}
+      - name: Install Rust 1.93 with target ${{ matrix.target }}
         if: steps.check.outputs.skipped != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.90.0
+          toolchain: 1.93.0
           targets: ${{ matrix.target }}
 
       - name: Install protoc
@@ -317,11 +317,11 @@ jobs:
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install Rust 1.90 with target ${{ matrix.target }}
+      - name: Install Rust 1.93 with target ${{ matrix.target }}
         if: steps.check.outputs.skipped != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.90.0
+          toolchain: 1.93.0
           targets: ${{ matrix.target }}
 
       - name: Install protoc
