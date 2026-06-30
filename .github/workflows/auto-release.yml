@@ -95,6 +95,7 @@ jobs:
           # Infer the bump from Conventional Commits in range. Subjects (%s) are
           # one-per-line so `^` anchors each commit title; bodies (%b) are only
           # scanned for a BREAKING-CHANGE footer.
+          # Bump priority: breaking > feat:minor > any other > none
           if [ -z "$NEW" ] && [ -z "$BUMP" ]; then
             SUBJECTS="$(git log "$RANGE" --format='%s' 2>/dev/null || git log --format='%s')"
             BODIES="$(git log "$RANGE" --format='%b' 2>/dev/null || git log --format='%b')"
@@ -103,7 +104,8 @@ jobs:
               BUMP="major"
             elif printf '%s\n' "$SUBJECTS" | grep -qE '^feat(\([^)]*\))?:'; then
               BUMP="minor"
-            elif printf '%s\n' "$SUBJECTS" | grep -qE '^(fix|perf)(\([^)]*\))?:'; then
+            elif printf '%s\n' "$SUBJECTS" | grep -qE '^[a-z]+(\([^)]*\))?:'; then
+              # Any conventional commit (refactor, fix, chore, docs, perf, etc.) → patch
               BUMP="patch"
             else
               BUMP="none"
