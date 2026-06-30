@@ -123,7 +123,8 @@ impl ConnectionPool {
         let idx = self.round_robin.fetch_add(1, Ordering::Relaxed) % channels.len();
         let channel = &mut channels[idx];
 
-        let full_uri: hyper::Uri = format!("http://{}{}", self.upstream, path).parse()?;
+        // Build URI from upstream + path. Upstream already includes scheme (e.g., http://host:port).
+        let full_uri: hyper::Uri = format!("{}{}", self.upstream, path).parse()?;
 
         let mut builder = Request::builder()
             .method(method)
