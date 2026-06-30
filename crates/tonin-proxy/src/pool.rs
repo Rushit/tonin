@@ -48,23 +48,47 @@ impl ConnectionPool {
     }
 
     /// Ensure the pool has at least one ready connection.
+    /// Lazily creates channels on first request. If all channel creations fail,
+    /// returns an error so the request can propagate the failure.
     async fn ensure_initialized(&self) -> anyhow::Result<()> {
         let mut channels = self.channels.lock().await;
         if channels.is_empty() {
             debug!("initializing connection pool for {}", self.upstream);
+            let mut created = 0;
+            let mut last_err = None;
+
             for i in 0..POOL_SIZE {
                 match self.create_channel().await {
-                    Ok(channel) => channels.push(channel),
+                    Ok(channel) => {
+                        channels.push(channel);
+                        created += 1;
+                    }
                     Err(e) => {
-                        warn!("failed to create channel {} in pool: {}", i, e);
-                        if i == 0 {
-                            return Err(anyhow!("failed to create initial pool connection: {e}"));
-                        }
-                        break;
+                        last_err = Some(e);
+                        debug!(
+                            "failed to create channel {} in pool: {}",
+                            i,
+                            last_err.as_ref().unwrap()
+                        );
                     }
                 }
             }
-            info!("initialized pool with {} channels", channels.len());
+
+            if created == 0 {
+                return Err(anyhow!(
+                    "failed to create any pool connections: {}",
+                    last_err.map(|e| e.to_string()).unwrap_or_default()
+                ));
+            }
+
+            if created < POOL_SIZE {
+                info!(
+                    "initialized pool with {}/{} channels (some connections failed)",
+                    created, POOL_SIZE
+                );
+            } else {
+                info!("initialized pool with {} channels", created);
+            }
         }
         Ok(())
     }
