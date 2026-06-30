@@ -39,6 +39,7 @@ async def serve() -> None:
 
     svc = (
         tonin.Service.new("{{ service_name }}")
+        .with_compression()  # Enable gzip compression (disabled by default)
         .with_auth(verifier())
         # In-process MCP listener on :50052. Same asyncio loop as the
         # gRPC server, shares state + AuthCtx. Currently a /health

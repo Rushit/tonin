@@ -4,7 +4,7 @@
 //!   cache hit? → return cached bytes
 //!   circuit breaker open? → return 503
 //!   singleflight.run {
-//!       retry { upstream HTTP/2 forward }
+//!       retry { upstream HTTP/2 via pooled connection }
 //!   }
 //!   record outcome → populate cache on success
 //!
@@ -13,6 +13,10 @@
 //! coalescing and caching can key on (path, body). All other headers —
 //! including `traceparent`, `tracestate`, `baggage`, `grpc-timeout` —
 //! are forwarded verbatim to the upstream.
+//!
+//! Upstream connections are pooled (8 by default) with HTTP/2 keep-alives
+//! (PING every 30s) to prevent idle-connection pruning by Cilium/K8s.
+//! Connections are reused across requests using round-robin load balancing.
 //!
 //! ## gRPC framing and trailers
 //!
@@ -38,12 +42,13 @@ use hyper::body::{Frame, Incoming};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
 use tokio::net::TcpListener;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::breaker::CircuitBreakerMap;
 use crate::cache::ResponseCache;
 use crate::coalesce::{Singleflight, make_key};
 use crate::config::Config;
+use crate::pool::ConnectionPool;
 use crate::retry::with_retry;
 
 type GrpcBody = BoxBody<Bytes, Infallible>;
@@ -51,7 +56,7 @@ type GrpcBody = BoxBody<Bytes, Infallible>;
 /// Shared proxy state cloned per connection.
 #[derive(Clone)]
 struct ProxyState {
-    upstream: Arc<str>,
+    pool: Arc<ConnectionPool>,
     coalesce: Singleflight,
     cache: Option<ResponseCache>,
     breaker: Arc<CircuitBreakerMap>,
@@ -65,7 +70,7 @@ pub async fn run(cfg: &Config) -> anyhow::Result<()> {
     info!(port = cfg.port, upstream = %cfg.upstream, "tonin-proxy listening");
 
     let state = ProxyState {
-        upstream: Arc::from(cfg.upstream.as_str()),
+        pool: Arc::new(ConnectionPool::new(Arc::from(cfg.upstream.as_str()))),
         coalesce: Singleflight::new(),
         cache: if cfg.cache_enabled() {
             Some(ResponseCache::new(cfg.cache_ttl, cfg.cache_capacity))
@@ -131,7 +136,7 @@ async fn handle(
     }
 
     // --- Singleflight + retry + upstream ---
-    let upstream = Arc::clone(&state.upstream);
+    let pool = Arc::clone(&state.pool);
     let retry_max = state.retry_max;
     let breaker = Arc::clone(&state.breaker);
     let path_clone = path.clone();
@@ -142,13 +147,13 @@ async fn handle(
         .coalesce
         .run(cache_key.clone(), &path, async move {
             with_retry(retry_max, &path_clone, || {
-                let upstream = Arc::clone(&upstream);
+                let pool = Arc::clone(&pool);
                 let path = path_clone.clone();
                 let headers = headers_clone.clone();
                 let body = body_clone.clone();
                 let method = method.clone();
                 async move {
-                    forward(&upstream, method, path, headers, body)
+                    pool.send_request(method, path, headers, body)
                         .await
                         .map_err(|e| e.to_string())
                 }
@@ -173,63 +178,6 @@ async fn handle(
             Ok(grpc_error("14", &e)) // UNAVAILABLE
         }
     }
-}
-
-/// Forward a single HTTP/2 request to the upstream and return the raw
-/// response body bytes (the full gRPC response frame, including the
-/// 5-byte length-prefix).
-///
-/// Uses `hyper::client::conn::http2::handshake` for explicit HTTP/2
-/// prior-knowledge (RFC 7540 §3.4) rather than the legacy client.  The
-/// legacy client with `http2_only(true)` can silently fall back to
-/// HTTP/1.1 on plain `http://` URIs; the direct handshake is unambiguous.
-#[instrument(skip_all, fields(grpc.path = %path))]
-async fn forward(
-    upstream: &str,
-    method: http::Method,
-    path: String,
-    headers: http::HeaderMap,
-    body: Bytes,
-) -> anyhow::Result<Bytes> {
-    use http_body_util::Full;
-    use hyper::client::conn::http2;
-    use tokio::net::TcpStream;
-
-    let full_uri: hyper::Uri = format!("{upstream}{path}").parse()?;
-
-    let host = full_uri
-        .host()
-        .ok_or_else(|| anyhow::anyhow!("no host in upstream URI {upstream}"))?
-        .to_owned();
-    let port = full_uri.port_u16().unwrap_or(80);
-
-    // Open a plain TCP connection, then do HTTP/2 prior-knowledge handshake.
-    let stream = TcpStream::connect((host.as_str(), port)).await?;
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = http2::handshake(TokioExecutor::new(), io).await?;
-    tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            warn!("upstream H2 connection error: {e}");
-        }
-    });
-
-    let mut builder = Request::builder()
-        .method(method)
-        .uri(full_uri)
-        .version(http::Version::HTTP_2);
-
-    // Forward all headers except host (hyper sets it from the URI).
-    for (name, value) in &headers {
-        if name == http::header::HOST {
-            continue;
-        }
-        builder = builder.header(name, value);
-    }
-
-    let req = builder.body(Full::new(body))?;
-    let resp = sender.send_request(req).await?;
-    let resp_bytes = resp.into_body().collect().await?.to_bytes();
-    Ok(resp_bytes)
 }
 
 /// Wrap raw gRPC body bytes in an HTTP/2 response with a trailing
