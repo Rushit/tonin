@@ -294,6 +294,8 @@ impl Service {
         let router: LayeredRouter = match self.router.take() {
             Some(r) => r.add_service(svc),
             None => tonic::transport::Server::builder()
+                .http2_keepalive_interval(Some(std::time::Duration::from_secs(60)))
+                .http2_keepalive_timeout(Some(std::time::Duration::from_secs(20)))
                 .layer(crate::telemetry::propagate::extract_layer())
                 .layer(auth_layer)
                 .add_service(svc),
