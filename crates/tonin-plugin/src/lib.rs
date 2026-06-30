@@ -22,10 +22,19 @@
 //! # Ok::<(), tonin_plugin::Error>(())
 //! ```
 
+pub mod build_backend;
+pub mod config;
 pub mod deploy_backend;
+pub mod grpc_ui;
 pub mod lock;
+pub mod observe_backend;
 pub mod plan;
+pub mod platform;
+pub mod run_backend;
 pub(crate) mod stateful;
+
+// Config types and loaders
+pub use config::ConfigLoader;
 
 // Plan loading + schema types
 pub use plan::{
@@ -44,8 +53,31 @@ pub use stateful::{
 // Lock store types
 pub use lock::{EnvLock, EnvironmentLock, GitLockStore, LockStore, ServiceLock};
 
+// Build backend types
+pub use build_backend::{
+    BuildBackend, BuildDryRunBackend, BuildResult, BuildValues, DockerBackend,
+};
+
 // Deploy backend types
 pub use deploy_backend::{
     DeployBackend, DeployEvent, DeployStatus, DeployValues, DryRunBackend, HelmBackend,
     NoopReporter, TelemetryReporter,
+};
+
+// Run backend types
+pub use run_backend::DryRunBackend as RunDryRunBackend;
+pub use run_backend::{CargoRunBackend, RunBackend, RunValues};
+
+// Observe backend types
+pub use observe_backend::{
+    DockerComposeBackend, DryRunBackend as ObserveDryRunBackend, KubectlBackend, LogsValues,
+    ObserveBackend, PortForwardValues,
+};
+
+// GrpcUI backend types
+pub use grpc_ui::GrpcUiBackend;
+
+// Platform orchestration types
+pub use platform::{
+    CliOrchestrator, DeployResult, DeploymentStatus, PlatformOrchestrator, ServiceStatus,
 };

@@ -1,0 +1,135 @@
+name: E2E Tests
+
+# Trigger on pull request and push to main (and manual dispatch).
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel in-flight runs for the same branch + workflow when a new push lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # End-to-end tests: spin up dev environment with tonin run and execute tests.
+  #
+  # The tonin run command orchestrates:
+  #   1. Load all service plans from tonin.toml files
+  #   2. Resolve dependency graph (e.g. orders depends on users, inventory)
+  #   3. Spin up services with `--with-deps` and wait for health checks
+  #   4. Run E2E test suite against running services
+  #   5. Verify services remain healthy throughout test execution
+  #   6. Cleanup on workflow exit
+  #
+  # Test services (ecommerce domain):
+  #   - users-service     — handles user authentication and profiles
+  #   - orders-service    — handles order management (depends on users, inventory)
+  #   - products-service  — handles product catalog
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: Run E2E tests
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # for git describe
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93"
+          components: rustfmt, clippy
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-tests
+
+      - name: Cache npm dependencies
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ts/tonin-client/package-lock.json
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Build tonin CLI
+        run: |
+          # `cargo build` (not `cargo install`) so artifacts land in the
+          # cached `target/` dir. `cargo install` always builds in an
+          # isolated temp directory, bypassing Swatinem/rust-cache entirely.
+          cargo build --release --bin tonin
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+
+      - name: Build test binaries
+        run: cargo build --tests --workspace
+        env:
+          CARGO_TERM_COLOR: always
+
+      - name: Spin up dev environment
+        run: |
+          # Start all services with dependency resolution and health checks.
+          # The --with-deps flag ensures dependency graph is respected (e.g. users
+          # must be healthy before orders attempts to connect).
+          # The --background flag starts all services without watching, so the command
+          # exits after all services are healthy (required for CI/E2E workflows).
+          # orders-service depends on users-service and products-service, so this
+          # starts all three services in topological order.
+          tonin run --service orders-service --with-deps --wait-healthy --background
+        env:
+          # Allow services to bind on localhost (dev mode).
+          # In CI, services run on localhost:PORT with environment-provided port mapping.
+          CI: "true"
+        timeout-minutes: 5
+
+      - name: Run E2E test suite
+        run: |
+          # Run the unified E2E test suite for all services.
+          # Tests assume:
+          #   - users-service listening on localhost:50051
+          #   - orders-service listening on localhost:50052
+          #   - products-service listening on localhost:50053
+          # Services were started by `tonin run` and remain in background.
+          # The e2e:: tests are #[ignore]'d by default (they require live
+          # services, like etcd_round_trip/integration_real_github), so
+          # --run-ignored all opts them back in only for this workflow.
+          # (Note: `make e2e`'s --include-ignored is not a valid nextest flag
+          # on this nextest version; --run-ignored all is the correct form.)
+          cargo nextest run --test-threads=1 --profile ci --run-ignored all e2e::
+        env:
+          RUST_LOG: tonin=debug
+          TONIN_TEST_TIMEOUT: "30s"
+
+      - name: Verify services running
+        if: always()
+        run: |
+          # Check that services are still running after tests.
+          # This helps diagnose if services crashed during test execution.
+          echo "Checking running processes..."
+          ps aux | grep -E "(users-service|orders-service|products-service)" | grep -v grep || echo "Service processes may have stopped"
+
+      - name: Test result summary
+        if: always()
+        run: |
+          echo "E2E test run completed."
+          echo "If tests passed, all ecommerce services are fully integrated."
+          echo "If tests failed, check service logs and network connectivity."

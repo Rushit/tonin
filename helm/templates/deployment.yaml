@@ -1,0 +1,214 @@
+{{- $root := . }}
+{{- range $service, $config := .Values.services }}
+{{- if $config.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tonin-{{ $service }}
+  namespace: {{ $root.Values.global.namespace }}
+  labels:
+    {{- include "tonin.labels" $root | nindent 4 }}
+    service: {{ $service }}
+  annotations:
+    {{- with $root.Values.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  replicas: {{ $config.replicas | default $root.Values.replicas.min }}
+  selector:
+    matchLabels:
+      {{- include "tonin.selectorLabels" $root | nindent 6 }}
+      service: {{ $service }}
+  template:
+    metadata:
+      labels:
+        {{- include "tonin.labels" $root | nindent 8 }}
+        service: {{ $service }}
+      annotations:
+        {{- with $root.Values.annotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: tonin-{{ $service }}
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+
+      containers:
+      - name: {{ $service }}
+        image: "{{ $root.Values.image.registry }}/tonin-{{ $service }}:{{ $config.version }}"
+        imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+
+        ports:
+        - name: grpc
+          containerPort: {{ $root.Values.service.targetPort }}
+          protocol: TCP
+
+        # gRPC health check
+        {{- if $root.Values.service.healthCheck.enabled }}
+        livenessProbe:
+          grpc:
+            port: {{ $root.Values.service.targetPort }}
+          initialDelaySeconds: {{ $root.Values.service.healthCheck.initialDelaySeconds }}
+          periodSeconds: {{ $root.Values.service.healthCheck.periodSeconds }}
+          timeoutSeconds: {{ $root.Values.service.healthCheck.timeoutSeconds }}
+          failureThreshold: {{ $root.Values.service.healthCheck.failureThreshold }}
+
+        readinessProbe:
+          grpc:
+            port: {{ $root.Values.service.targetPort }}
+          initialDelaySeconds: {{ $root.Values.service.healthCheck.initialDelaySeconds }}
+          periodSeconds: {{ $root.Values.service.healthCheck.periodSeconds }}
+          timeoutSeconds: {{ $root.Values.service.healthCheck.timeoutSeconds }}
+          failureThreshold: {{ $root.Values.service.healthCheck.failureThreshold }}
+        {{- end }}
+
+        # Resource requests and limits
+        resources:
+          {{- toYaml $config.resources | nindent 10 }}
+
+        # Environment variables from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: tonin-config
+
+        # Additional environment variables specific to this service
+        env:
+        - name: SERVICE_NAME
+          value: {{ $service }}
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+
+        # Telemetry configuration
+        {{- if $root.Values.telemetry.enabled }}
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: {{ $root.Values.telemetry.otlpEndpoint }}
+        - name: OTEL_SERVICE_NAME
+          value: tonin-{{ $service }}
+        - name: TONIN_TELEMETRY
+          value: "on"
+        {{- if $root.Values.telemetry.zradarBaggage }}
+        - name: ZRADAR_BAGGAGE_ENABLED
+          value: "true"
+        {{- end }}
+        {{- end }}
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+
+        # Volume mounts
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+
+      # MCP sidecar (optional)
+      {{- if $root.Values.mcp.enabled }}
+      - name: mcp-sidecar
+        image: {{ $root.Values.mcp.image }}
+        imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+        resources:
+          {{- toYaml $root.Values.mcp.resources | nindent 10 }}
+        env:
+        - name: SERVICE_ADDR
+          value: "localhost:{{ $root.Values.service.targetPort }}"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+      {{- end }}
+
+      # Volumes
+      volumes:
+      - name: tmp
+        emptyDir: {}
+
+      # Affinity rules
+      {{- if $root.Values.affinity }}
+      affinity:
+        {{- toYaml $root.Values.affinity | nindent 8 }}
+      {{- end }}
+
+      # Restart policy
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+# Service for this deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: tonin-{{ $service }}
+  namespace: {{ $root.Values.global.namespace }}
+  labels:
+    {{- include "tonin.labels" $root | nindent 4 }}
+    service: {{ $service }}
+spec:
+  type: {{ $root.Values.service.type }}
+  ports:
+  - port: {{ $root.Values.service.port }}
+    targetPort: grpc
+    protocol: {{ $root.Values.service.protocol }}
+    name: grpc
+  selector:
+    {{- include "tonin.selectorLabels" $root | nindent 4 }}
+    service: {{ $service }}
+
+---
+# ServiceAccount for this deployment
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tonin-{{ $service }}
+  namespace: {{ $root.Values.global.namespace }}
+  labels:
+    {{- include "tonin.labels" $root | nindent 4 }}
+    service: {{ $service }}
+
+{{- if $config.autoscale.enabled }}
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tonin-{{ $service }}
+  namespace: {{ $root.Values.global.namespace }}
+  labels:
+    {{- include "tonin.labels" $root | nindent 4 }}
+    service: {{ $service }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tonin-{{ $service }}
+  minReplicas: {{ $config.autoscale.minReplicas | default $root.Values.replicas.min }}
+  maxReplicas: {{ $config.autoscale.maxReplicas | default $root.Values.replicas.max }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ $config.autoscale.targetCPUUtilizationPercentage | default 70 }}
+{{- end }}
+
+{{- end }}
+{{- end }}

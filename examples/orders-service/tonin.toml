@@ -1,0 +1,25 @@
+schema = "v1"
+
+[service]
+name    = "orders-service"
+version = "0.1.0"
+codec   = "prost"
+port    = 50052
+
+[deploy]
+replicas    = 2
+mesh        = "cilium"
+mcp_sidecar = true
+namespace   = "shop"
+
+# Medium pod: order management and fulfillment with fan-out.
+[resources]
+cpu    = "200m"
+memory = "256Mi"
+
+[autoscale]
+max_replicas = 6
+
+[depends_on]
+users-service = "shop"
+products-service = "shop"

@@ -64,8 +64,10 @@ pub mod breaker;
 pub mod cache;
 pub mod client;
 pub mod coalesce;
+pub mod platform_client;
 pub mod propagate;
 pub mod retry;
 
 pub use auth::{AuthCtx, AuthError, PrincipalKind, RawToken};
 pub use client::CoalescingClient;
+pub use platform_client::{PlatformClient, PlatformClientConfig};

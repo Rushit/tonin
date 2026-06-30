@@ -147,6 +147,18 @@ enum TopCmd {
     ///   tonin deploy --env prod --converge   # force all services
     Deploy(commands::deploy::DeployArgs),
 
+    /// Build and optionally push Docker images for services.
+    ///
+    /// Reads tonin.toml, resolves version from VERSION file or git,
+    /// and builds Docker images with optional push to registry.
+    ///
+    ///   tonin build                          # build all services
+    ///   tonin build --service users-service  # build one service
+    ///   tonin build --push                   # build and push to registry
+    ///   tonin build --tag v1.2.3             # use explicit version tag
+    ///   tonin build --dry-run                # preview what would build
+    Build(commands::build::BuildArgs),
+
     /// Show current fleet state vs the environment lock.
     ///
     /// Compares environments/<env>/lock.toml (desired) against running helm
@@ -165,10 +177,56 @@ enum TopCmd {
     ///                 --git-sha deadbeef --env staging
     Release(commands::release::ReleaseArgs),
 
+    /// Run a service locally with hot reload and dependency management.
+    ///
+    /// Reads tonin.toml to discover services and their dependencies. Starts a
+    /// target service (or all services in the workspace) with automatic hot
+    /// reload via cargo watch when files change.
+    ///
+    /// For local development, use `tonin run --service <name>` to start just
+    /// one service, or `tonin run --service <name> --with-deps` to start all
+    /// of its upstream dependencies first.
+    ///
+    ///   tonin run --service users-service              # start one service
+    ///   tonin run --service products-service --with-deps   # + dependencies
+    ///   tonin run --env-file .env.local --with-deps    # load env from file
+    ///   tonin run --dry-run --service users-service    # preview what would run
+    Run(commands::run::RunArgs),
+
     /// Run integration and end-to-end tests against a live environment.
     ///
     ///   tonin test e2e --env dev     # baggage propagation E2E test
     Test(commands::run_tests::TestArgs),
+
+    /// Observe running services: stream logs and port-forward.
+    ///
+    /// Post-deployment observation tools for debugging and testing.
+    /// Stream service logs or establish port-forwards to reach local services.
+    ///
+    ///   tonin observe logs users-service            # show last 10 lines
+    ///   tonin observe logs users-service --follow   # stream continuously
+    ///   tonin observe port-forward orders-service --local 8001 --remote 50051
+    ///   tonin observe logs products-service --tail 50 --timestamp
+    Observe(commands::observe::ObserveArgs),
+
+    /// Launch grpcui for interactive gRPC service inspection.
+    ///
+    /// Opens a web-based UI for exploring and testing gRPC services.
+    /// Assumes `grpcui` is installed and available in $PATH.
+    ///
+    ///   tonin grpc-ui --service users-service                # auto-detect port
+    ///   tonin grpc-ui --service users-service --port 50051   # explicit port
+    GrpcUi(commands::grpc_ui::GrpcUiArgs),
+
+    /// Platform orchestration — deploy and manage services via PlatformOrchestrator.
+    ///
+    /// Integrates tonin with agnitiv-platform's deployment orchestration.
+    /// Provides structured APIs for deploying, monitoring, and rolling back services.
+    ///
+    ///   tonin platform deploy --env staging --service users-service
+    ///   tonin platform status --env prod
+    ///   tonin platform rollback --service users-service --env staging
+    Platform(commands::platform::PlatformArgs),
 
     /// [removed] Kubernetes manifest generation has moved to `tonin helm`.
     ///
@@ -218,9 +276,14 @@ fn dispatch(cli: Cli) -> Result<()> {
         TopCmd::Helm { cmd } => commands::helm::run(cmd),
         TopCmd::Affected(args) => commands::affected::run(args),
         TopCmd::Deploy(args) => commands::deploy::run(args),
+        TopCmd::Build(args) => commands::build::run(args),
         TopCmd::Status(args) => commands::status::run(args),
         TopCmd::Release(args) => commands::release::run(args),
+        TopCmd::Run(args) => commands::run::run(args),
         TopCmd::Test(args) => commands::run_tests::run(args),
+        TopCmd::Observe(args) => commands::observe::run(args),
+        TopCmd::GrpcUi(args) => commands::grpc_ui::run(args),
+        TopCmd::Platform(args) => commands::platform::run(args),
         TopCmd::K8s { .. } => {
             eprintln!("error: `tonin k8s` has been removed.");
             eprintln!();

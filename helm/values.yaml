@@ -1,0 +1,195 @@
+# Default values for tonin services
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global configuration
+global:
+  namespace: default
+  domain: svc.cluster.local
+
+# Service-level defaults (applied to all services unless overridden)
+service:
+  type: ClusterIP
+  port: 50051
+  targetPort: 50051
+  protocol: TCP
+  # Enable gRPC health checks
+  healthCheck:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# Replica configuration
+replicas:
+  min: 2
+  max: 6
+
+# Resource limits (small pods: suitable for dev/test)
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Image configuration
+image:
+  # Override with --set image.registry=your-registry
+  registry: ghcr.io/rushit
+  pullPolicy: IfNotPresent
+  # Overrides the image tag (default to Chart appVersion)
+  # tag: "0.11.0"
+
+# Ecommerce services configuration
+services:
+  users:
+    enabled: true
+    version: "0.1.0"
+    replicas: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    autoscale:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    mesh:
+      enabled: true
+      provider: cilium
+    # Service dependencies (required before this service starts)
+    depends_on: []
+
+  orders:
+    enabled: true
+    version: "0.1.0"
+    replicas: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    autoscale:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    mesh:
+      enabled: true
+      provider: cilium
+    # Orders depends on users and products services
+    depends_on:
+      - users
+      - products
+
+  products:
+    enabled: true
+    version: "0.1.0"
+    replicas: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    autoscale:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    mesh:
+      enabled: true
+      provider: cilium
+    # Service dependencies
+    depends_on: []
+
+# Telemetry configuration
+telemetry:
+  enabled: true
+  otlpEndpoint: http://otel-collector.observability.svc.cluster.local:4317
+  logLevel: info
+  # Enable zradar baggage propagation
+  zradarBaggage: true
+
+# MCP Sidecar configuration (optional)
+mcp:
+  enabled: false
+  image: ghcr.io/rushit/tonin-mcp-sidecar:0.11.0
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# Persistent storage (for databases/caches in services)
+storage:
+  enabled: false
+  # Configure only if services require persistent state
+  storageClass: standard
+  size: 10Gi
+
+# Network policies
+networkPolicy:
+  enabled: true
+  # Restrict ingress to k8s DNS only
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+
+# Service mesh configuration (Cilium/Istio)
+serviceMesh:
+  enabled: true
+  provider: cilium
+  # If using Istio, enable mTLS
+  # mTLS: true
+
+# ConfigMap for shared configuration
+configMap:
+  # Environment variables applied to all services
+  env:
+    RUST_LOG: info
+    TONIN_TELEMETRY: "on"
+
+# Secrets (reference external secrets via Secret objects)
+# secrets:
+#   database_url: ...
+#   api_key: ...
+
+# Node affinity / pod anti-affinity
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - tonin-service
+          topologyKey: kubernetes.io/hostname
+
+# Labels applied to all resources
+labels:
+  app: tonin
+  version: "0.1.0"
+
+# Annotations applied to all resources
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
