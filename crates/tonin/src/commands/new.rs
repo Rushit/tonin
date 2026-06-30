@@ -1014,8 +1014,8 @@ template repository instead of the CLI's built-in copy:
 # Scaffold with the standard tonin templates
 tonin service new <name> --lang rust --template-repo github.com/Rushit/tonin-templates
 
-# Scaffold with the Agnitiv production templates (distroless, CI workflows, migration checks)
-tonin service new <name> --lang rust --template-repo github.com/Rushit/agnitiv-templates
+# Scaffold with your org's production templates (distroless, CI workflows, migration checks)
+tonin service new <name> --lang rust --template-repo github.com/your-org/your-templates
 
 # Pin to a specific release
 tonin service new <name> --lang rust --template-repo github.com/Rushit/tonin-templates@v0.4.0
@@ -1118,7 +1118,7 @@ Use `tonin service new` with `--template-repo` to pull from a remote template re
 tonin service new <name> --lang rust --template-repo github.com/Rushit/tonin-templates
 
 # Production templates (distroless, CI, migration safety, CLAUDE.md)
-tonin service new <name> --lang rust --template-repo github.com/Rushit/agnitiv-templates
+tonin service new <name> --lang rust --template-repo github.com/your-org/your-templates
 
 # Pin to a tag
 tonin service new <name> --lang rust --template-repo github.com/Rushit/tonin-templates@v0.4.0

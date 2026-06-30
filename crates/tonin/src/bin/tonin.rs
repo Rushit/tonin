@@ -134,6 +134,42 @@ enum TopCmd {
         cmd: commands::helm::HelmCmd,
     },
 
+    /// Compute which services are affected by changed files, with wave ordering.
+    Affected(commands::affected::AffectedArgs),
+
+    /// Reconcile the cluster to the environment version lock in wave order.
+    ///
+    /// Reads environments/<env>/lock.toml, computes which services need updating,
+    /// and runs helm upgrade in dependency-wave order. Use --dry-run to preview.
+    ///
+    ///   tonin deploy --env staging           # reconcile staging
+    ///   tonin deploy --env staging --dry-run # preview only
+    ///   tonin deploy --env prod --converge   # force all services
+    Deploy(commands::deploy::DeployArgs),
+
+    /// Show current fleet state vs the environment lock.
+    ///
+    /// Compares environments/<env>/lock.toml (desired) against running helm
+    /// release versions (actual) and reports drift.
+    ///
+    ///   tonin status --env staging
+    Status(commands::status::StatusArgs),
+
+    /// Write a new service version into an environment lock.
+    ///
+    /// Called from CI after building and pushing a new image. Updates
+    /// environments/<env>/lock.toml so tonin deploy can pick it up.
+    ///
+    ///   tonin release --service users-service --version 1.4.0 \
+    ///                 --image ghcr.io/org/users-service@sha256:abc \
+    ///                 --git-sha deadbeef --env staging
+    Release(commands::release::ReleaseArgs),
+
+    /// Run integration and end-to-end tests against a live environment.
+    ///
+    ///   tonin test e2e --env dev     # baggage propagation E2E test
+    Test(commands::run_tests::TestArgs),
+
     /// [removed] Kubernetes manifest generation has moved to `tonin helm`.
     ///
     /// Install tonin-helm and use:
@@ -180,6 +216,11 @@ fn dispatch(cli: Cli) -> Result<()> {
         TopCmd::Upgrade(args) => commands::upgrade::run(args),
         TopCmd::Doctor(args) => commands::doctor::run(args),
         TopCmd::Helm { cmd } => commands::helm::run(cmd),
+        TopCmd::Affected(args) => commands::affected::run(args),
+        TopCmd::Deploy(args) => commands::deploy::run(args),
+        TopCmd::Status(args) => commands::status::run(args),
+        TopCmd::Release(args) => commands::release::run(args),
+        TopCmd::Test(args) => commands::run_tests::run(args),
         TopCmd::K8s { .. } => {
             eprintln!("error: `tonin k8s` has been removed.");
             eprintln!();

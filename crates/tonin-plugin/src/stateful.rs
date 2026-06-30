@@ -418,8 +418,8 @@ pub(crate) fn resolve_callers(raw: &RawCallers, env: &str) -> Vec<crate::plan::S
     for (key, entry) in &raw.0 {
         match entry {
             RawCallerEntry::Namespace(ns) => {
-                // {env} is substituted so `gateway = "agnitiv-{env}"` resolves
-                // to "agnitiv-dev", "agnitiv-prod", etc. per environment.
+                // {env} is substituted so `orders-service = "myapp-{env}"` resolves
+                // to "myapp-dev", "myapp-prod", etc. per environment.
                 base.insert(key.clone(), crate::plan::apply_env(ns, env));
             }
             RawCallerEntry::Env(map) if key == env => {
@@ -800,13 +800,13 @@ mod tests {
         let raw = parse_callers(
             r#"
             [callers]
-            gateway         = "agnitiv"
-            zradar-platform = "agnitiv"
+            orders-service    = "myapp"
+            inventory-service = "myapp"
         "#,
         );
         let callers = resolve_callers(&raw, "dev");
         assert_eq!(callers.len(), 2);
-        assert!(callers.iter().all(|c| c.namespace == "agnitiv"));
+        assert!(callers.iter().all(|c| c.namespace == "myapp"));
     }
 
     #[test]
@@ -814,22 +814,22 @@ mod tests {
         let raw = parse_callers(
             r#"
             [callers]
-            gateway         = "agnitiv"
-            zradar-platform = "agnitiv"
+            orders-service    = "myapp"
+            inventory-service = "myapp"
 
             [callers.dev]
-            gateway         = "agnitiv-dev"
-            zradar-platform = "agnitiv-dev"
+            orders-service    = "myapp-dev"
+            inventory-service = "myapp-dev"
         "#,
         );
         let dev = resolve_callers(&raw, "dev");
         assert!(
-            dev.iter().all(|c| c.namespace == "agnitiv-dev"),
+            dev.iter().all(|c| c.namespace == "myapp-dev"),
             "dev overlay must win"
         );
         let prod = resolve_callers(&raw, "prod");
         assert!(
-            prod.iter().all(|c| c.namespace == "agnitiv"),
+            prod.iter().all(|c| c.namespace == "myapp"),
             "prod falls back to base"
         );
     }
@@ -839,11 +839,11 @@ mod tests {
         let raw = parse_callers(
             r#"
             [callers]
-            gateway = "agnitiv"
+            orders-service = "myapp"
 
             [callers.dev]
-            gateway    = "agnitiv-dev"
-            debug-tool = "agnitiv-dev"
+            orders-service = "myapp-dev"
+            debug-tool     = "myapp-dev"
         "#,
         );
         let dev = resolve_callers(&raw, "dev");
@@ -857,23 +857,23 @@ mod tests {
         let raw = parse_callers(
             r#"
             [callers]
-            gateway         = "agnitiv-{env}"
-            zradar-platform = "agnitiv-{env}"
+            orders-service    = "myapp-{env}"
+            inventory-service = "myapp-{env}"
         "#,
         );
         let dev = resolve_callers(&raw, "dev");
         assert!(
-            dev.iter().all(|c| c.namespace == "agnitiv-dev"),
+            dev.iter().all(|c| c.namespace == "myapp-dev"),
             "dev: {{env}} -> -dev"
         );
         let staging = resolve_callers(&raw, "staging");
         assert!(
-            staging.iter().all(|c| c.namespace == "agnitiv-staging"),
+            staging.iter().all(|c| c.namespace == "myapp-staging"),
             "staging: {{env}} -> -staging"
         );
         let prod = resolve_callers(&raw, "prod");
         assert!(
-            prod.iter().all(|c| c.namespace == "agnitiv-prod"),
+            prod.iter().all(|c| c.namespace == "myapp-prod"),
             "prod: {{env}} -> -prod"
         );
     }
@@ -884,21 +884,21 @@ mod tests {
         let raw = parse_callers(
             r#"
             [callers]
-            gateway         = "agnitiv-{env}"
-            zradar-platform = "agnitiv-{env}"
+            orders-service    = "myapp-{env}"
+            inventory-service = "myapp-{env}"
 
             [callers.prod]
-            gateway         = "agnitiv"
-            zradar-platform = "agnitiv"
+            orders-service    = "myapp"
+            inventory-service = "myapp"
         "#,
         );
         let dev = resolve_callers(&raw, "dev");
-        assert!(dev.iter().all(|c| c.namespace == "agnitiv-dev"));
+        assert!(dev.iter().all(|c| c.namespace == "myapp-dev"));
         let staging = resolve_callers(&raw, "staging");
-        assert!(staging.iter().all(|c| c.namespace == "agnitiv-staging"));
+        assert!(staging.iter().all(|c| c.namespace == "myapp-staging"));
         let prod = resolve_callers(&raw, "prod");
         assert!(
-            prod.iter().all(|c| c.namespace == "agnitiv"),
+            prod.iter().all(|c| c.namespace == "myapp"),
             "prod override wins over {{env}}"
         );
     }
@@ -914,7 +914,7 @@ mod tests {
             url    = "postgresql://postgres:postgres@shared.svc:5432/mydb"
         "#;
         let raw = toml_to_raw_db(toml);
-        let spec = resolve_database(&raw, "dev", "identity", "agnitiv");
+        let spec = resolve_database(&raw, "dev", "identity", "myapp");
         assert_eq!(
             spec.url_template("identity"),
             "postgresql://postgres:postgres@shared.svc:5432/mydb"
@@ -933,7 +933,7 @@ mod tests {
             url    = "postgresql://postgres:postgres@shared.svc:5432/mydb"
         "#;
         let raw = toml_to_raw_db(toml);
-        let spec = resolve_database(&raw, "prod", "identity", "agnitiv");
+        let spec = resolve_database(&raw, "prod", "identity", "myapp");
         assert!(spec.url_override.is_none());
         assert!(
             spec.url_template("identity")
@@ -953,7 +953,7 @@ mod tests {
             url    = "postgresql://postgres:postgres@shared.svc:5432/mydb"
         "#;
         let raw = toml_to_raw_db(toml);
-        let spec = resolve_database(&raw, "dev", "identity", "agnitiv");
+        let spec = resolve_database(&raw, "dev", "identity", "myapp");
         let mut env = EmittedEnv::default();
         env.extend_database(&spec, "identity");
         assert!(
@@ -974,7 +974,7 @@ mod tests {
             engine = "postgres"
         "#;
         let raw = toml_to_raw_db(toml);
-        let spec = resolve_database(&raw, "prod", "identity", "agnitiv");
+        let spec = resolve_database(&raw, "prod", "identity", "myapp");
         let mut env = EmittedEnv::default();
         env.extend_database(&spec, "identity");
         assert!(env.from_secret.iter().any(|s| s == "DATABASE_PASSWORD"));
@@ -995,7 +995,7 @@ mod tests {
             url = "postgresql://postgres:postgres@shared.svc:5432/app_dev"
         "#;
         let w: Wrapper = toml::from_str(toml).unwrap();
-        let spec = resolve_database(w.databases.get("write").unwrap(), "dev", "app", "agnitiv");
+        let spec = resolve_database(w.databases.get("write").unwrap(), "dev", "app", "myapp");
         let mut env = EmittedEnv::default();
         env.extend_database_named("WRITE_DATABASE", &spec, "app");
         assert!(env.literals.iter().any(|(k, _)| k == "WRITE_DATABASE_URL"));
@@ -1023,7 +1023,7 @@ mod tests {
             .clone()
             .try_into()
             .unwrap();
-        let spec = resolve_cache(&raw, "dev", "identity", "agnitiv");
+        let spec = resolve_cache(&raw, "dev", "identity", "myapp");
         let mut env = EmittedEnv::default();
         env.extend_cache_named("SESSION_REDIS", &spec);
         assert!(

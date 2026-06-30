@@ -185,6 +185,25 @@ pub async fn service_token() -> Result<AuthCtx, AuthError> {
     minter.mint().await
 }
 
+use opentelemetry::Context;
+use opentelemetry::baggage::BaggageExt;
+
+/// Extract W3C baggage from the current OTel context and merge into AuthCtx.extra.
+/// Called in the auth middleware layer after the request context is established.
+pub fn bridge_baggage_to_authctx(ctx: &AuthCtx, otel_cx: &Context) -> AuthCtx {
+    let mut extra = ctx.extra.clone();
+    for (key, value) in otel_cx.baggage().iter() {
+        extra.insert(
+            key.as_str().to_string(),
+            serde_json::Value::String(value.0.as_str().to_string()),
+        );
+    }
+    AuthCtx {
+        extra,
+        ..ctx.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +260,20 @@ mod tests {
         let err = chain.verify(&token).await.unwrap_err();
         // Last err wins.
         matches!(err, AuthError::Expired);
+    }
+
+    #[test]
+    fn bridge_baggage_to_authctx_maps_test_keys() {
+        use opentelemetry::Context;
+        use opentelemetry::baggage::BaggageExt;
+
+        let cx = Context::current()
+            .with_baggage(vec![opentelemetry::KeyValue::new("test-id", "uuid-abc")]);
+        let auth_ctx = AuthCtx::anonymous();
+        let enriched = bridge_baggage_to_authctx(&auth_ctx, &cx);
+        assert_eq!(
+            enriched.extra.get("test-id").and_then(|v| v.as_str()),
+            Some("uuid-abc")
+        );
     }
 }

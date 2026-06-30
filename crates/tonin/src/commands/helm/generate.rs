@@ -385,12 +385,12 @@ version = "1.2.3"
 [deploy]
 replicas    = 2
 mesh        = "cilium"
-namespace   = "agnitiv"
+namespace   = "myapp"
 mcp_sidecar = true
 
 [deploy.dev]
 replicas  = 1
-namespace = "agnitiv-dev"
+namespace = "myapp-dev"
 
 [resources]
 cpu    = "100m"
@@ -419,10 +419,10 @@ dir    = "migrations/"
 run_on = "init-container"
 
 [callers]
-gateway = "agnitiv"
+orders-service = "myapp"
 
 [callers.dev]
-gateway = "agnitiv-dev"
+orders-service = "myapp-dev"
 "#;
 
     fn write_service(dir: &Path, toml: &str) {
@@ -488,8 +488,8 @@ gateway = "agnitiv-dev"
         assert!(prod.contains("DATABASE_PASSWORD"));
         assert!(prod.contains("JWT_SIGNING_KEY"));
         // Cilium policy allowlist resolves the base caller namespace.
-        assert!(prod.contains("name: gateway"));
-        assert!(prod.contains("namespace: agnitiv"));
+        assert!(prod.contains("name: orders-service"));
+        assert!(prod.contains("namespace: myapp"));
     }
 
     #[test]
@@ -514,7 +514,7 @@ gateway = "agnitiv-dev"
         // The shared URL is injected verbatim as stateful env.
         assert!(dev.contains("postgres.shared-dev.svc.cluster.local"));
         // Caller dev overlay applies.
-        assert!(dev.contains("namespace: agnitiv-dev"));
+        assert!(dev.contains("namespace: myapp-dev"));
     }
 
     #[test]

@@ -247,6 +247,19 @@ struct RawSecurity {
     container: Option<toml::Value>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct RawPathRule {
+    pattern: String,
+    #[serde(default)]
+    propagate_to_callers: bool,
+    #[serde(default)]
+    layer: Option<String>,
+    #[serde(default)]
+    packages: Vec<String>,
+    #[serde(default)]
+    build_order: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     #[serde(default)]
@@ -283,6 +296,8 @@ struct RawConfig {
     image: Option<RawImage>,
     #[serde(default)]
     security: Option<RawSecurity>,
+    #[serde(default)]
+    path_rules: Vec<RawPathRule>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -512,6 +527,15 @@ pub struct SecuritySection {
     pub container: Option<toml::Value>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathRule {
+    pub pattern: String,
+    pub propagate_to_callers: bool,
+    pub layer: Option<String>,
+    pub packages: Vec<String>,
+    pub build_order: Option<usize>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub name: String,
@@ -552,6 +576,7 @@ pub struct Plan {
     pub emitted_env: EmittedEnv,
     pub selected_env: String,
     pub client: ClientSpec,
+    pub path_rules: Vec<PathRule>,
 }
 
 impl Plan {
@@ -820,6 +845,17 @@ impl Plan {
             client,
             emitted_env,
             selected_env: env.to_string(),
+            path_rules: raw
+                .path_rules
+                .into_iter()
+                .map(|r| PathRule {
+                    pattern: r.pattern,
+                    propagate_to_callers: r.propagate_to_callers,
+                    layer: r.layer,
+                    packages: r.packages,
+                    build_order: r.build_order,
+                })
+                .collect(),
         })
     }
 
@@ -858,6 +894,85 @@ impl Plan {
         plans.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(plans)
     }
+}
+
+/// Compute deployment wave groups from a slice of plans using topological sort.
+///
+/// Returns `Vec<Vec<&Plan>>` where each inner Vec is one wave. Plans in the
+/// same wave have no dependency on each other and can be deployed in parallel.
+/// Plans in wave N+1 all depend (directly or transitively) on plans in wave N.
+///
+/// Cycles are handled gracefully: if a cycle is detected, all cycle participants
+/// land in wave 0 together (fail-safe, not fail-hard).
+pub fn wave_groups(plans: &[Plan]) -> Vec<Vec<&Plan>> {
+    use std::collections::HashMap;
+
+    let name_to_idx: HashMap<&str, usize> = plans
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.name.as_str(), i))
+        .collect();
+
+    // in-degree counts how many *known* deps each plan has
+    let mut in_degree = vec![0usize; plans.len()];
+    for plan in plans {
+        for dep in &plan.depends_on {
+            if name_to_idx.contains_key(dep.name.as_str()) {
+                in_degree[name_to_idx[plan.name.as_str()]] += 1;
+            }
+        }
+    }
+
+    // Kahn's BFS
+    let mut queue: std::collections::VecDeque<usize> = in_degree
+        .iter()
+        .enumerate()
+        .filter(|&(_, &d)| d == 0)
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut wave_assignment = vec![0usize; plans.len()];
+    let mut visited = 0usize;
+
+    while !queue.is_empty() {
+        // Drain current wave
+        let current_wave: Vec<usize> = queue.drain(..).collect();
+        visited += current_wave.len();
+
+        for &idx in &current_wave {
+            let plan = &plans[idx];
+            let my_wave = wave_assignment[idx];
+
+            for other in plans {
+                if other.depends_on.iter().any(|d| d.name == plan.name)
+                    && let Some(&oidx) = name_to_idx.get(other.name.as_str())
+                {
+                    in_degree[oidx] -= 1;
+                    wave_assignment[oidx] = wave_assignment[oidx].max(my_wave + 1);
+                    if in_degree[oidx] == 0 {
+                        queue.push_back(oidx);
+                    }
+                }
+            }
+        }
+    }
+
+    // If cycle: any unvisited node goes to wave 0 (fail-safe)
+    if visited < plans.len() {
+        for i in 0..plans.len() {
+            if in_degree[i] > 0 {
+                wave_assignment[i] = 0;
+            }
+        }
+    }
+
+    // Group by wave
+    let max_wave = wave_assignment.iter().copied().max().unwrap_or(0);
+    let mut groups: Vec<Vec<&Plan>> = vec![vec![]; max_wave + 1];
+    for (i, &wave) in wave_assignment.iter().enumerate() {
+        groups[wave].push(&plans[i]);
+    }
+    groups.into_iter().filter(|g| !g.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -975,41 +1090,41 @@ mod tests {
 
     #[test]
     fn depends_on_literal_is_backward_compatible() {
-        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = \"agnitiv-dev\"\n"].concat();
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nusers-service = \"myapp-dev\"\n"].concat();
         let p = try_load_env(&body, "prod").unwrap();
         // No {env} → literal namespace, identical in every env (today's behaviour).
-        assert_eq!(dep(&p, "identity").as_deref(), Some("agnitiv-dev"));
+        assert_eq!(dep(&p, "users-service").as_deref(), Some("myapp-dev"));
     }
 
     #[test]
     fn depends_on_env_placeholder_resolves_per_env() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"agnitiv-{env}\"\n[depends_on]\nidentity = \"agnitiv-{env}\"\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"myapp-{env}\"\n[depends_on]\nusers-service = \"myapp-{env}\"\n",
         ]
         .concat();
         let dev = try_load_env(&body, "dev").unwrap();
-        assert_eq!(dev.namespace, "agnitiv-dev");
-        assert_eq!(dep(&dev, "identity").as_deref(), Some("agnitiv-dev"));
+        assert_eq!(dev.namespace, "myapp-dev");
+        assert_eq!(dep(&dev, "users-service").as_deref(), Some("myapp-dev"));
         let prod = try_load_env(&body, "prod").unwrap();
-        assert_eq!(prod.namespace, "agnitiv-prod");
-        assert_eq!(dep(&prod, "identity").as_deref(), Some("agnitiv-prod"));
+        assert_eq!(prod.namespace, "myapp-prod");
+        assert_eq!(dep(&prod, "users-service").as_deref(), Some("myapp-prod"));
     }
 
     #[test]
     fn depends_on_table_per_env_override_wins() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nzradar = { namespace = \"zradar-{env}\", prod = \"zradar-shared\" }\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\ninventory-service = { namespace = \"inventory-{env}\", prod = \"inventory-shared\" }\n",
         ]
         .concat();
         assert_eq!(
-            dep(&try_load_env(&body, "dev").unwrap(), "zradar").as_deref(),
-            Some("zradar-dev")
+            dep(&try_load_env(&body, "dev").unwrap(), "inventory-service").as_deref(),
+            Some("inventory-dev")
         );
         assert_eq!(
-            dep(&try_load_env(&body, "prod").unwrap(), "zradar").as_deref(),
-            Some("zradar-shared")
+            dep(&try_load_env(&body, "prod").unwrap(), "inventory-service").as_deref(),
+            Some("inventory-shared")
         );
     }
 
@@ -1038,7 +1153,7 @@ mod tests {
 
     #[test]
     fn depends_on_unresolved_placeholder_is_error() {
-        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = \"agnitiv-{environment}\"\n"].concat();
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nusers-service = \"myapp-{environment}\"\n"].concat();
         let err = try_load_env(&body, "prod").unwrap_err();
         assert!(
             matches!(err, Error::UnresolvedNamespace { .. }),
@@ -1050,7 +1165,7 @@ mod tests {
     fn depends_on_missing_namespace_for_env_is_error() {
         // Only a dev override; prod has nothing to resolve to → hard error,
         // never a silent fallback.
-        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = { dev = \"agnitiv-dev\" }\n"].concat();
+        let body = [SVC, "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nusers-service = { dev = \"myapp-dev\" }\n"].concat();
         let err = try_load_env(&body, "prod").unwrap_err();
         assert!(
             matches!(err, Error::InvalidDependency { .. }),
@@ -1076,7 +1191,7 @@ mod tests {
     fn deploy_namespace_unresolved_placeholder_is_error() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"agnitiv-{cluster}\"\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"myapp-{cluster}\"\n",
         ]
         .concat();
         let err = try_load_env(&body, "prod").unwrap_err();
@@ -1256,5 +1371,103 @@ allowPrivilegeEscalation = false
             McpMode::None,
             "explicit mcp_sidecar=false still works as override"
         );
+    }
+
+    // ---- wave_groups --------------------------------------------------------
+
+    fn make_test_plan(name: &str, depends_on: &[&str]) -> Plan {
+        Plan {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            language: "rust".to_string(),
+            kind: ServiceKind::Backend,
+            web_mode: None,
+            port: 50051,
+            http_port: None,
+            health: None,
+            namespace: "demo".to_string(),
+            mesh: Mesh::Cilium,
+            replicas: 1,
+            max_replicas: 1,
+            mcp_mode: McpMode::InProcess,
+            needs_outbound_proxy: false,
+            expose: None,
+            cpu: "100m".to_string(),
+            memory: "128Mi".to_string(),
+            image: "mock".to_string(),
+            image_registry: None,
+            security: None,
+            depends_on: depends_on
+                .iter()
+                .map(|d| ServiceRef {
+                    name: d.to_string(),
+                    namespace: "demo".to_string(),
+                })
+                .collect(),
+            callers: Vec::new(),
+            dir: std::path::PathBuf::from("."),
+            database: None,
+            named_databases: Vec::new(),
+            cache: None,
+            named_caches: Vec::new(),
+            secrets: None,
+            migrations: None,
+            config: None,
+            emitted_env: Default::default(),
+            selected_env: "prod".to_string(),
+            client: ClientSpec::default(),
+            path_rules: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn wave_groups_linear_3_node() {
+        // users-service → inventory-service → orders-service
+        // Expected: wave 0=[users], wave 1=[inventory], wave 2=[orders]
+        let plans = vec![
+            make_test_plan("users-service", &[]),
+            make_test_plan("inventory-service", &["users-service"]),
+            make_test_plan("orders-service", &["inventory-service"]),
+        ];
+        let groups = super::wave_groups(&plans);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0][0].name, "users-service");
+        assert_eq!(groups[1][0].name, "inventory-service");
+        assert_eq!(groups[2][0].name, "orders-service");
+    }
+
+    #[test]
+    fn wave_groups_parallel_deps() {
+        // users-service (wave 0)
+        // inventory-service + payments-service both depend only on users-service → wave 1 parallel
+        // orders-service depends on inventory-service → wave 2
+        let plans = vec![
+            make_test_plan("users-service", &[]),
+            make_test_plan("inventory-service", &["users-service"]),
+            make_test_plan("payments-service", &["users-service"]),
+            make_test_plan("orders-service", &["inventory-service"]),
+        ];
+        let groups = super::wave_groups(&plans);
+        let wave1_names: Vec<&str> = groups[1].iter().map(|p| p.name.as_str()).collect();
+        assert!(
+            wave1_names.contains(&"inventory-service"),
+            "inventory must be wave 1"
+        );
+        assert!(
+            wave1_names.contains(&"payments-service"),
+            "payments must be wave 1 alongside inventory"
+        );
+        assert_eq!(groups[2][0].name, "orders-service");
+    }
+
+    #[test]
+    fn wave_groups_no_deps_all_wave_0() {
+        let plans = vec![
+            make_test_plan("users-service", &[]),
+            make_test_plan("inventory-service", &[]),
+        ];
+        let groups = super::wave_groups(&plans);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
     }
 }

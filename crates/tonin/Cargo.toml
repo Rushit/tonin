@@ -46,6 +46,7 @@ cli = [
     "dep:reqwest",
     "dep:flate2",
     "dep:tar",
+    "dep:regex",
 ]
 
 [[bin]]
@@ -86,3 +87,4 @@ toml_edit    = { version = "0.22", optional = true }
 reqwest      = { workspace = true, optional = true }
 flate2       = { workspace = true, optional = true }
 tar          = { workspace = true, optional = true }
+regex        = { version = "1", optional = true }

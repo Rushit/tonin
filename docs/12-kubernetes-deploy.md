@@ -227,11 +227,11 @@ single declaration covers every environment:
 
 ```toml
 [deploy]
-namespace = "agnitiv-{env}"          # → agnitiv-dev / agnitiv-staging / agnitiv-prod
+namespace = "myapp-{env}"          # → myapp-dev / myapp-staging / myapp-prod
 
 [depends_on]
-identity        = "agnitiv-{env}"    # egress target follows the same convention
-zradar-platform = "zradar-{env}"
+users-service     = "myapp-{env}"      # egress target follows the same convention
+inventory-service = "inventory-{env}"
 ```
 
 When a dependency doesn't follow the `<base>-<env>` convention, use the table
@@ -240,10 +240,10 @@ ergonomics as a `Cargo.toml` dependency):
 
 ```toml
 [depends_on]
-identity        = "agnitiv-{env}"                                   # shorthand
-zradar-platform = { namespace = "zradar-{env}", prod = "zradar-shared" }  # prod overrides the convention
-audit-sink      = { namespace = "security-{env}", envs = ["prod"] }       # only egresses in prod
-billing         = { namespace = "@inherit" }                        # namespace set at deploy time; omitted from the chart
+users-service     = "myapp-{env}"                                                          # shorthand
+inventory-service = { namespace = "inventory-{env}", prod = "inventory-shared" }           # prod overrides the convention
+audit-sink        = { namespace = "security-{env}", envs = ["prod"] }                      # only egresses in prod
+billing           = { namespace = "@inherit" }                                             # namespace set at deploy time; omitted from the chart
 ```
 
 Resolution rules for an environment `E`:
