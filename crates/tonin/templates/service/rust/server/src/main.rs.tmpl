@@ -33,5 +33,13 @@ async fn main() -> tonin::Result<()> {
             Ok({{ ServiceCamel }}ImplMcpAdapter::new(mcp_handler.clone()))
         });
 
-    svc.handler({{ ServiceCamel }}Server::new(handler)).run().await
+    // Enable gzip compression on responses for reduced bandwidth.
+    // Clients can control compression via accept-encoding header.
+    svc.handler(
+        {{ ServiceCamel }}Server::new(handler)
+            .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+            .accept_compressed(tonic::codec::CompressionEncoding::Gzip),
+    )
+    .run()
+    .await
 }

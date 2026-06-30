@@ -2,6 +2,7 @@ mod breaker;
 mod cache;
 mod coalesce;
 mod config;
+mod pool;
 mod proxy;
 mod retry;
 
