@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use anyhow::anyhow;
 use bytes::Bytes;
@@ -19,10 +18,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::interval;
-use tracing::{debug, info, warn};
-
-const POOL_SIZE: usize = 8;
-const IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+use tracing::{debug, warn};
 
 /// Manages a pool of HTTP/2 connections to a single upstream.
 pub struct ConnectionPool {
@@ -33,8 +29,6 @@ pub struct ConnectionPool {
 
 struct PooledChannel {
     sender: SendRequest<Full<Bytes>>,
-    /// Last time this channel was used (for idle eviction).
-    last_used: std::time::Instant,
 }
 
 impl ConnectionPool {
@@ -45,52 +39,6 @@ impl ConnectionPool {
             channels: Arc::new(Mutex::new(Vec::new())),
             round_robin: AtomicUsize::new(0),
         }
-    }
-
-    /// Ensure the pool has at least one ready connection.
-    /// Lazily creates channels on first request. If all channel creations fail,
-    /// returns an error so the request can propagate the failure.
-    async fn ensure_initialized(&self) -> anyhow::Result<()> {
-        let mut channels = self.channels.lock().await;
-        if channels.is_empty() {
-            debug!("initializing connection pool for {}", self.upstream);
-            let mut created = 0;
-            let mut last_err = None;
-
-            for i in 0..POOL_SIZE {
-                match self.create_channel().await {
-                    Ok(channel) => {
-                        channels.push(channel);
-                        created += 1;
-                    }
-                    Err(e) => {
-                        last_err = Some(e);
-                        debug!(
-                            "failed to create channel {} in pool: {}",
-                            i,
-                            last_err.as_ref().unwrap()
-                        );
-                    }
-                }
-            }
-
-            if created == 0 {
-                return Err(anyhow!(
-                    "failed to create any pool connections: {}",
-                    last_err.map(|e| e.to_string()).unwrap_or_default()
-                ));
-            }
-
-            if created < POOL_SIZE {
-                info!(
-                    "initialized pool with {}/{} channels (some connections failed)",
-                    created, POOL_SIZE
-                );
-            } else {
-                info!("initialized pool with {} channels", created);
-            }
-        }
-        Ok(())
     }
 
     /// Create a single HTTP/2 channel with keep-alive task.
@@ -110,7 +58,6 @@ impl ConnectionPool {
 
         let channel = PooledChannel {
             sender: sender.clone(),
-            last_used: std::time::Instant::now(),
         };
 
         // Spawn keep-alive task for this channel.
@@ -158,7 +105,7 @@ impl ConnectionPool {
         }
     }
 
-    /// Send a request through the pool, selecting a channel via round-robin.
+    /// Send a request through the pool, creating channels on-demand.
     pub async fn send_request(
         &self,
         method: http::Method,
@@ -166,19 +113,25 @@ impl ConnectionPool {
         headers: http::HeaderMap,
         body: Bytes,
     ) -> anyhow::Result<Bytes> {
-        self.ensure_initialized().await?;
-
         let mut channels = self.channels.lock().await;
 
+        // Lazily create a channel if the pool is empty.
         if channels.is_empty() {
-            return Err(anyhow!("no channels available in pool"));
+            debug!(
+                "creating first channel in pool on-demand for {}",
+                self.upstream
+            );
+            match self.create_channel().await {
+                Ok(channel) => channels.push(channel),
+                Err(e) => {
+                    return Err(anyhow!("failed to create upstream connection: {e}"));
+                }
+            }
         }
 
-        // Round-robin selection.
+        // Round-robin selection across existing channels.
         let idx = self.round_robin.fetch_add(1, Ordering::Relaxed) % channels.len();
         let channel = &mut channels[idx];
-
-        channel.last_used = std::time::Instant::now();
 
         let full_uri: hyper::Uri = format!("http://{}{}", self.upstream, path).parse()?;
 
@@ -209,16 +162,6 @@ impl ConnectionPool {
 
         let resp_bytes = resp.into_body().collect().await?.to_bytes();
         Ok(resp_bytes)
-    }
-
-    /// Clean up idle connections (optional background task).
-    #[allow(dead_code)]
-    pub async fn evict_idle(&self) {
-        let mut channels = self.channels.lock().await;
-        let now = std::time::Instant::now();
-
-        channels.retain(|ch| now.duration_since(ch.last_used) < IDLE_TIMEOUT);
-        debug!("evicted idle channels, pool size now: {}", channels.len());
     }
 }
 
