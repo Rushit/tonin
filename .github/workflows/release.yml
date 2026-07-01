@@ -18,8 +18,8 @@
 # crate it just uploaded.
 #
 # Binary targets (CLI `tonin` and `tonin-proxy`, built per release):
-#   - x86_64-unknown-linux-gnu   (Linux x86_64)
-#   - aarch64-unknown-linux-gnu  (Linux ARM64, e.g. Graviton)
+#   - x86_64-unknown-linux-musl   (Linux x86_64)
+#   - aarch64-unknown-linux-musl  (Linux ARM64, e.g. Graviton)
 #   - x86_64-apple-darwin        (macOS Intel)
 #   - aarch64-apple-darwin       (macOS Apple Silicon)
 #   - x86_64-pc-windows-msvc     (Windows x86_64)
@@ -183,10 +183,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             archive: tar.gz
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             archive: tar.gz
           - target: x86_64-apple-darwin
@@ -228,6 +228,10 @@ jobs:
           else
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Install musl-tools
+        if: matrix.target == 'x86_64-unknown-linux-musl' && steps.check.outputs.skipped != 'true'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust 1.93 with target ${{ matrix.target }}
         if: steps.check.outputs.skipped != 'true'
@@ -274,10 +278,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             archive: tar.gz
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             archive: tar.gz
           - target: x86_64-apple-darwin
@@ -316,6 +320,10 @@ jobs:
           else
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Install musl-tools
+        if: matrix.target == 'x86_64-unknown-linux-musl' && steps.check.outputs.skipped != 'true'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust 1.93 with target ${{ matrix.target }}
         if: steps.check.outputs.skipped != 'true'

@@ -82,8 +82,8 @@ detect_target() {
     case "$os" in
         Linux)
             case "$arch" in
-                x86_64)  echo "x86_64-unknown-linux-gnu" ;;
-                aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
+                x86_64)  echo "x86_64-unknown-linux-musl" ;;
+                aarch64|arm64) echo "aarch64-unknown-linux-musl" ;;
                 *) err "Unsupported Linux architecture: $arch (pre-built binary not available; use 'cargo install tonin')" ;;
             esac ;;
         Darwin)
@@ -143,7 +143,7 @@ install_binary() {
     local repo="$1"      # e.g. Rushit/tonin
     local bin="$2"       # e.g. tonin
     local version="$3"   # e.g. v0.5.4
-    local target="$4"    # e.g. x86_64-unknown-linux-gnu
+    local target="$4"    # e.g. x86_64-unknown-linux-musl
     local dest_dir="$5"  # e.g. /usr/local/bin
 
     local dest="${dest_dir}/${bin}"
