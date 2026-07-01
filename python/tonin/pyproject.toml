@@ -10,16 +10,16 @@ license = { text = "Apache-2.0" }
 # redis.asyncio for redis, httpx (not requests) for JWKS fetch.
 dependencies = [
   "tonin-client",        # shared AuthCtx, RetryPolicy, CircuitBreaker
-  "grpcio>=1.66",          # gRPC runtime
-  "pyjwt[crypto]>=2.9",    # JWT signature + claim validation
-  "httpx>=0.27",           # async HTTP for JWKS fetch + minter
-  "asyncpg>=0.30",         # async Postgres pool
-  "redis>=5.1",            # redis.asyncio
-  "mcp>=1.27",             # FastMCP — in-process MCP server runtime
-  "opentelemetry-api>=1.27",
-  "opentelemetry-sdk>=1.27",
-  "opentelemetry-exporter-otlp>=1.27",
-  "opentelemetry-instrumentation-grpc>=0.48b0",
+  "grpcio>=1.81",          # gRPC runtime
+  "pyjwt[crypto]>=2.13",   # JWT signature + claim validation
+  "httpx>=0.28",           # async HTTP for JWKS fetch + minter
+  "asyncpg>=0.31",         # async Postgres pool
+  "redis>=8.0",            # redis.asyncio
+  "mcp>=1.28",             # FastMCP — in-process MCP server runtime
+  "opentelemetry-api>=1.43",
+  "opentelemetry-sdk>=1.43",
+  "opentelemetry-exporter-otlp>=1.43",
+  "opentelemetry-instrumentation-grpc>=0.63b1",
 ]
 
 [project.optional-dependencies]

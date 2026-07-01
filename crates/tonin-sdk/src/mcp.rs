@@ -32,7 +32,7 @@ use hyper_util::server::conn::auto::Builder as HyperBuilder;
 use hyper_util::service::TowerToHyperService;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{
-    CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
+    CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
 };
 use rmcp::transport::streamable_http_server::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -52,7 +52,7 @@ pub use rmcp as __rmcp_reexport;
 
 pub use rmcp::handler::server::wrapper::Parameters;
 pub use rmcp::model::CallToolResult as McpCallToolResult;
-pub use rmcp::model::Content as McpContent;
+pub use rmcp::model::ContentBlock as McpContent;
 pub use rmcp::{ErrorData as McpErrorData, ServerHandler as McpServerHandler};
 
 /// Configuration for the in-process MCP listener.
@@ -99,7 +99,7 @@ impl McpServer {
     /// same orchestration probes during the rollout.
     #[tool(description = "Liveness probe. Returns 'ok' if the service is running.")]
     async fn health(&self) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text("ok")]))
+        Ok(CallToolResult::success(vec![ContentBlock::text("ok")]))
     }
 }
 

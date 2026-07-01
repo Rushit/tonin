@@ -15,12 +15,13 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-tonin  = "0.1"
+tonin  = "0.12"
 {{ service_name }}-client = { path = "../client-rust" }
 
 tokio = { version = "1", features = ["full"] }
-tonic = "0.12"
-prost = "0.13"
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
 async-trait = "0.1"
 tracing = "0.1"
 futures = "0.3"
@@ -31,8 +32,8 @@ futures = "0.3"
 # transitively required by the macro output only.
 serde_json  = "1"
 schemars    = "1"
-rmcp        = { version = "1", default-features = false, features = ["server", "macros"] }
-rmcp-macros = "1"
+rmcp        = { version = "2", default-features = false, features = ["server", "macros"] }
+rmcp-macros = "2"
 
 tokio-stream = "0.1"
 
@@ -42,4 +43,4 @@ tokio-stream = "0.1"
 [build-dependencies]
 # Server build.rs generates the SERVER side (Greeter trait, GreeterServer)
 # only — message types come from ../client-rust via the path dep above.
-tonic-build = "0.12"
+tonic-prost-build = "0.14"

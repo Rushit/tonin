@@ -33,20 +33,20 @@
 //!         .await
 //! }
 //!
-//! # use tonic::body::BoxBody;
+//! # use tonic::body::Body;
 //! # #[derive(Clone)]
 //! # struct MyGrpc;
 //! # impl tonic::server::NamedService for MyGrpc {
 //! #     const NAME: &'static str = "my.Grpc";
 //! # }
-//! # impl tower::Service<http::Request<BoxBody>> for MyGrpc {
-//! #     type Response = http::Response<BoxBody>;
+//! # impl tower::Service<http::Request<Body>> for MyGrpc {
+//! #     type Response = http::Response<Body>;
 //! #     type Error = std::convert::Infallible;
 //! #     type Future = std::pin::Pin<Box<dyn std::future::Future<
 //! #         Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
 //! #     fn poll_ready(&mut self, _: &mut std::task::Context<'_>)
 //! #         -> std::task::Poll<std::result::Result<(), Self::Error>> { unimplemented!() }
-//! #     fn call(&mut self, _: http::Request<BoxBody>) -> Self::Future { unimplemented!() }
+//! #     fn call(&mut self, _: http::Request<Body>) -> Self::Future { unimplemented!() }
 //! # }
 //! # fn my_grpc_service() -> MyGrpc { MyGrpc }
 //! ```
@@ -278,12 +278,13 @@ impl Service {
     pub fn handler<S>(mut self, svc: S) -> Self
     where
         S: tower::Service<
-                http::Request<tonic::body::BoxBody>,
-                Response = http::Response<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
+                Response = http::Response<tonic::body::Body>,
                 Error = std::convert::Infallible,
             > + tonic::server::NamedService
             + Clone
             + Send
+            + Sync
             + 'static,
         S::Future: Send + 'static,
     {
@@ -318,7 +319,7 @@ impl Service {
         // Serve grpc.health.v1.Health so Kubernetes `grpc:` probes work out of
         // the box. Mark the overall ("") service SERVING; the auth layer
         // allowlists this path so probes pass without credentials.
-        let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+        let (health_reporter, health_service) = tonic_health::server::health_reporter();
         health_reporter
             .set_service_status("", tonic_health::ServingStatus::Serving)
             .await;

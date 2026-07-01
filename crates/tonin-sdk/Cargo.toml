@@ -16,7 +16,7 @@ description = "tonin-sdk: Service builder, Config, Context, Error, and runtime f
 tokio       = { workspace = true }
 tonic       = { workspace = true }
 # Serves grpc.health.v1.Health so Kubernetes `grpc:` probes work out of the box.
-tonic-health = "0.12"
+tonic-health = "0.14"
 tower       = { workspace = true }
 hyper       = { workspace = true, features = ["server", "http1", "http2"] }
 http        = { workspace = true }
@@ -44,20 +44,20 @@ opentelemetry-semantic-conventions = "0.32"
 opentelemetry-http                = "0.32"
 
 # MCP runtime (folded from tonin-mcp)
-rmcp        = { version = "1", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
-rmcp-macros = "1"
-schemars    = "0.8"
+rmcp        = { version = "2", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp-macros = "2"
+schemars    = "1"
 hyper-util  = { version = "0.1", features = ["server-auto", "tokio", "service"] }
 
 # Auth defaults — JWT validation + JWKS fetch.
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
-reqwest      = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest      = { workspace = true, features = ["rustls", "json"] }
 base64       = "0.22"
 
 # Pre-wired state: postgres + redis. Lazy — connections only open if
 # DATABASE_URL / REDIS_URL are present at boot. See src/state.rs.
 sqlx  = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
-redis = { version = "0.27", default-features = false, features = ["tokio-rustls-comp"] }
+redis = { version = "1", default-features = false, features = ["tokio-rustls-comp"] }
 
 [dev-dependencies]
 tokio                = { workspace = true }

@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Server-side codegen: emit the Greeter trait + GreeterServer.
     // Messages and the GreeterClient come from `../client-rust` via the
     // path dep in Cargo.toml — no duplicate codegen.
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(true)
         .build_client(false)
         .extern_path(".{{ service_name_snake }}.v1", "::{{ service_name_snake }}_client::proto")

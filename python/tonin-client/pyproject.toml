@@ -10,7 +10,7 @@ license = { text = "Apache-2.0" }
 # the Metadata type AuthCtx.propagate writes into. Peers already have it
 # via the generated stubs; pinning it here makes the typing explicit.
 dependencies = [
-  "grpcio>=1.66",
+  "grpcio>=1.81",
 ]
 
 [project.optional-dependencies]

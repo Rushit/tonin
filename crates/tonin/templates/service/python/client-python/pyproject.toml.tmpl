@@ -10,14 +10,14 @@ license = { text = "Apache-2.0" }
 # to call this service install only this package + grpcio + protobuf;
 # they DO NOT pull in the server framework.
 dependencies = [
-  "grpcio>=1.66",
+  "grpcio>=1.81",
   "protobuf>=5",
   "tonin-client",
 ]
 
 [project.optional-dependencies]
 codegen = [
-  "grpcio-tools>=1.66",
+  "grpcio-tools>=1.81",
 ]
 
 [build-system]
