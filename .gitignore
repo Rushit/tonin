@@ -7,6 +7,7 @@
 # Cargo.
 **/Cargo.lock.bak
 .cargo/
+!.cargo/config.toml
 
 # Incremental compilation / cache.
 **/*.rlib
