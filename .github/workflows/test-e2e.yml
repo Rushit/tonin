@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # for git describe
 
@@ -50,10 +50,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@25.x
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2

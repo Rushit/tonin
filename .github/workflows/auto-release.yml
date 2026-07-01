@@ -57,7 +57,7 @@ jobs:
       ! contains(github.event.head_commit.message, '[skip ci]')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # RELEASE_PAT (not GITHUB_TOKEN) so the bump commit can push to
@@ -151,10 +151,9 @@ jobs:
 
       - name: Install protoc
         if: steps.ver.outputs.release == 'true'
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@25.x
 
       - name: Cache cargo
         if: steps.ver.outputs.release == 'true'
