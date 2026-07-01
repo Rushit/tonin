@@ -52,7 +52,7 @@ jobs:
       - name: Install protoc
         uses: taiki-e/install-action@v2
         with:
-          tool: protoc@25.x
+          tool: protoc@25.5
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2

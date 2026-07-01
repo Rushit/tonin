@@ -153,7 +153,7 @@ jobs:
         if: steps.ver.outputs.release == 'true'
         uses: taiki-e/install-action@v2
         with:
-          tool: protoc@25.x
+          tool: protoc@25.5
 
       - name: Cache cargo
         if: steps.ver.outputs.release == 'true'
