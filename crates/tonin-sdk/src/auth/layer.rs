@@ -17,7 +17,7 @@ use std::task::{Context, Poll};
 use futures_util::future::BoxFuture;
 use http::{Request, Response};
 use tonic::Status;
-use tonic::body::BoxBody;
+use tonic::body::Body;
 use tower::{Layer, Service};
 
 use super::{AuthCtx, AuthError, CURRENT_AUTH, TokenExtractor, TokenVerifier};
@@ -72,13 +72,13 @@ pub struct AuthService<S> {
     optional: bool,
 }
 
-impl<S> Service<Request<BoxBody>> for AuthService<S>
+impl<S> Service<Request<Body>> for AuthService<S>
 where
-    S: Service<Request<BoxBody>, Response = Response<BoxBody>> + Clone + Send + 'static,
+    S: Service<Request<Body>, Response = Response<Body>> + Clone + Send + 'static,
     S::Error: Send + 'static,
     S::Future: Send + 'static,
 {
-    type Response = Response<BoxBody>;
+    type Response = Response<Body>;
     type Error = S::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -86,7 +86,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, mut req: Request<BoxBody>) -> Self::Future {
+    fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         // The gRPC health service backs Kubernetes `grpc:` probes, which send
         // no credentials. Let it through without auth so liveness/readiness
         // checks aren't 401'd on services that require a token.
@@ -140,7 +140,7 @@ fn metadata_from_headers(h: &http::HeaderMap) -> tonic::metadata::MetadataMap {
 
 /// Encode an `AuthError` as a gRPC status response. tonic 0.12 exposes
 /// `Status::into_http()` for this.
-fn error_response(e: AuthError) -> Response<BoxBody> {
+fn error_response(e: AuthError) -> Response<Body> {
     let status: Status = e.into();
     status.into_http()
 }

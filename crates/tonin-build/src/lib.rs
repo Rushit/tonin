@@ -65,10 +65,10 @@ pub fn compile(protos: &[&str], includes: &[&str]) -> Result<(), Box<dyn std::er
             eprintln!(
                 "tonin-build: codec=buffa requested; falling back to prost (codegen plugin not yet wired)"
             );
-            tonic_build::configure().compile_protos(protos, includes)?;
+            tonic_prost_build::configure().compile_protos(protos, includes)?;
         }
         Codec::Prost => {
-            tonic_build::configure().compile_protos(protos, includes)?;
+            tonic_prost_build::configure().compile_protos(protos, includes)?;
         }
     }
     Ok(())

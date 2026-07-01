@@ -13,11 +13,12 @@ license     = "Apache-2.0"
 # cost. schemars is pulled in for MCP schema derivation (build-time
 # attribute on every generated message), still no runtime overhead
 # for non-MCP consumers.
-tonic          = "0.12"
-prost          = "0.13"
+tonic          = "0.14"
+tonic-prost    = "0.14"
+prost          = "0.14"
 serde          = { version = "1", features = ["derive"] }
 schemars       = "1"
-tonin-client = "0.1"
+tonin-client = "0.12"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-prost-build = "0.14"
