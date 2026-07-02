@@ -1,11 +1,36 @@
-#!/usr/bin/env bash
-# Strip "Co-Authored-By: Claude ..." lines injected by AI coding assistants.
-set -euo pipefail
+#!/usr/bin/env python3
+"""
+commit-msg hook: strips AI-injected "Co-Authored-By: Claude ..." trailers
+and trims trailing blank lines from the commit message.
 
-COMMIT_MSG_FILE="$1"
+Works on macOS, Linux, and Windows (Git Bash / WSL).
+Install once via:  just install-hooks   (or: make install-hooks)
+"""
 
-grep -v '^Co-Authored-By: Claude' "$COMMIT_MSG_FILE" > "${COMMIT_MSG_FILE}.tmp" \
-  && mv "${COMMIT_MSG_FILE}.tmp" "$COMMIT_MSG_FILE" || true
+from __future__ import annotations
 
-# Remove blank lines that may be left at the end of the message.
-perl -0777 -i -pe 's/\n+$/\n/' "$COMMIT_MSG_FILE"
+import re
+import sys
+from pathlib import Path
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("usage: commit-msg <commit-msg-file>", file=sys.stderr)
+        sys.exit(1)
+
+    msg_file = Path(sys.argv[1])
+    original = msg_file.read_text(encoding="utf-8")
+
+    # Strip any "Co-Authored-By: Claude ..." lines (AI assistant trailers).
+    cleaned = re.sub(r"(?m)^Co-Authored-By: Claude[^\n]*\n?", "", original)
+
+    # Remove trailing blank lines, keep a single trailing newline.
+    cleaned = cleaned.rstrip("\n") + "\n"
+
+    if cleaned != original:
+        msg_file.write_text(cleaned, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()
