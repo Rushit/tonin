@@ -69,37 +69,8 @@ jobs:
 
       - name: Verify
         run: |
-          set -euo pipefail
-          REF="${{ github.event.inputs.version || github.ref_name }}"
-          TAG_VERSION="${REF#v}"
-          # /VERSION is the source of truth. scripts/bump-version.sh keeps
-          # Cargo.toml's [workspace.package].version in sync; we still cross-
-          # check it here to catch the case where someone hand-edited one
-          # without the other.
-          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
-          CARGO_VERSION="$(
-            awk '
-              /^\[workspace\.package\]/ { in_section=1; next }
-              /^\[/ && in_section      { in_section=0 }
-              in_section && /^version[[:space:]]*=/ {
-                match($0, /"[^"]+"/)
-                print substr($0, RSTART+1, RLENGTH-2)
-                exit
-              }
-            ' Cargo.toml
-          )"
-          echo "Tag version:       ${TAG_VERSION}"
-          echo "VERSION file:      ${FILE_VERSION}"
-          echo "Cargo.toml:        ${CARGO_VERSION}"
-          if [ "${FILE_VERSION}" != "${CARGO_VERSION}" ]; then
-            echo "::error::VERSION (${FILE_VERSION}) and Cargo.toml (${CARGO_VERSION}) are out of sync." >&2
-            echo "::error::Run scripts/bump-version.sh to resync, then re-tag." >&2
-            exit 1
-          fi
-          if [ "${TAG_VERSION}" != "${FILE_VERSION}" ]; then
-            echo "::error::Tag ${REF} does not match /VERSION (${FILE_VERSION})." >&2
-            exit 1
-          fi
+          python3 scripts/check-version.py \
+            --tag "${{ github.event.inputs.version || github.ref_name }}"
 
   # ----------------------------------------------------------------------
   # Publish all six crates to crates.io in dep order.
@@ -124,28 +95,29 @@ jobs:
       - name: Check if all crates already published
         id: check
         run: |
-          set -euo pipefail
-          REF="${{ github.event.inputs.version || github.ref_name }}"
-          VERSION="${REF#v}"
-          CRATES=(tonin-client tonin-mcp-macros tonin-build tonin-plugin tonin-sdk tonin)
-          ALL_PUBLISHED=true
-          for crate in "${CRATES[@]}"; do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
-              -H "User-Agent: tonin-ci (github.com/${{ github.repository }})" \
-              "https://crates.io/api/v1/crates/${crate}/${VERSION}" || true)
-            if [ "$STATUS" != "200" ]; then
-              ALL_PUBLISHED=false
-              echo "${crate}@${VERSION}: not yet on crates.io (HTTP ${STATUS})"
-            else
-              echo "${crate}@${VERSION}: already on crates.io — will skip if all published"
-            fi
-          done
-          if $ALL_PUBLISHED; then
-            echo "::notice::All crates already published at ${VERSION} — skipping publish step."
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skipped=false" >> "$GITHUB_OUTPUT"
-          fi
+          python3 - <<'EOF'
+          import urllib.request, urllib.error, json, os, sys
+          ref = "${{ github.event.inputs.version || github.ref_name }}"
+          version = ref.lstrip("v")
+          crates = ["tonin-client", "tonin-mcp-macros", "tonin-build",
+                    "tonin-plugin", "tonin-sdk", "tonin"]
+          repo   = "${{ github.repository }}"
+          all_published = True
+          for crate in crates:
+              url = f"https://crates.io/api/v1/crates/{crate}/{version}"
+              req = urllib.request.Request(url, headers={"User-Agent": f"tonin-ci ({repo})"})
+              try:
+                  urllib.request.urlopen(req)
+                  print(f"{crate}@{version}: already on crates.io — will skip if all published")
+              except urllib.error.HTTPError as e:
+                  all_published = False
+                  print(f"{crate}@{version}: not yet on crates.io (HTTP {e.code})")
+          output = os.environ["GITHUB_OUTPUT"]
+          with open(output, "a") as f:
+              f.write(f"skipped={'true' if all_published else 'false'}\n")
+          if all_published:
+              print(f"::notice::All crates already published at {version} — skipping publish step.")
+          EOF
 
       - name: Install Rust 1.93
         if: steps.check.outputs.skipped != 'true'
@@ -450,12 +422,17 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "::notice::NPM_TOKEN not set — skipping npm publish of tonin-client."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          fi
+          python3 - <<'EOF'
+          import os
+          token = os.environ.get("NPM_TOKEN", "")
+          output = os.environ["GITHUB_OUTPUT"]
+          with open(output, "a") as f:
+              if not token:
+                  print("::notice::NPM_TOKEN not set — skipping npm publish of tonin-client.")
+                  f.write("publish=false\n")
+              else:
+                  f.write("publish=true\n")
+          EOF
 
       - name: Setup Node
         if: steps.gate.outputs.publish == 'true'
@@ -509,11 +486,8 @@ jobs:
           REF="${{ github.event.inputs.version || github.ref_name }}"
           WANT="${REF#v}"
           DEST="$(mktemp -d)"
-          # Pass --version explicitly so install.sh skips the GitHub API
-          # "latest release" lookup — that unauthenticated call returns 403
-          # on shared Actions runners due to rate limiting.
           bash scripts/install.sh --dir "$DEST" --version "$REF"
-          GOT="$("$DEST/tonin" --version | awk '{print $NF}')"
+          GOT="$("$DEST/tonin" --version | python3 -c 'import sys; print(sys.stdin.read().split()[-1])')"
           echo "install.sh installed tonin ${GOT} (expected ${WANT})"
           if [ "${GOT}" != "${WANT}" ]; then
             echo "::error::install.sh installed ${GOT} but the released tag is ${WANT}" >&2

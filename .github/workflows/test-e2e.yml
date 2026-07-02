@@ -111,8 +111,8 @@ jobs:
           # The e2e:: tests are #[ignore]'d by default (they require live
           # services, like etcd_round_trip/integration_real_github), so
           # --run-ignored all opts them back in only for this workflow.
-          # (Note: `make e2e`'s --include-ignored is not a valid nextest flag
-          # on this nextest version; --run-ignored all is the correct form.)
+          # The e2e:: tests are #[ignore]'d by default (they require live
+          # services), so --run-ignored all opts them back in only for this workflow.
           cargo nextest run --test-threads=1 --profile ci --run-ignored all e2e::
         env:
           RUST_LOG: tonin=debug

@@ -144,33 +144,20 @@ show-version:
 
 # Verify VERSION file and Cargo.toml [workspace.package].version are in sync
 check-version:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    FILE="$(tr -d '[:space:]' < VERSION)"
-    CARGO="$(awk '
-      /^\[workspace\.package\]/ { s=1; next }
-      /^\[/ && s { s=0 }
-      s && /^version[[:space:]]*=/ { match($0, /"[^"]+"/) ; print substr($0, RSTART+1, RLENGTH-2) ; exit }
-    ' Cargo.toml)"
-    if [ "$FILE" != "$CARGO" ]; then
-        echo "error: VERSION ($FILE) and Cargo.toml ($CARGO) are out of sync" >&2
-        echo "fix:   scripts/bump-version.sh $CARGO" >&2
-        exit 1
-    fi
-    echo "check-version: ok ($FILE)"
+    python3 scripts/check-version.py
 
 # Bump VERSION + Cargo.toml to an explicit X.Y.Z and commit locally
 version VER:
-    ./scripts/bump-version.sh "{{ VER }}"
+    python3 ./scripts/bump-version.py "{{ VER }}"
 
 # Bump unified PATCH version locally (does not tag/push)
 bump-patch:
-    ./scripts/bump-version.sh patch
+    python3 ./scripts/bump-version.py patch
 
 # Bump unified MINOR version locally (does not tag/push)
 bump-minor:
-    ./scripts/bump-version.sh minor
+    python3 ./scripts/bump-version.py minor
 
 # Bump unified MAJOR version locally (does not tag/push)
 bump-major:
-    ./scripts/bump-version.sh major
+    python3 ./scripts/bump-version.py major
