@@ -1,33 +1,119 @@
-#!/usr/bin/env bash
-# Pre-commit hook: mirrors the `make ci` gate (fmt-check + clippy + test + doc).
-# Install once via: make install-hooks
-set -euo pipefail
+#!/usr/bin/env python3
+"""
+Pre-commit hook: mirrors the `just ci` / `make ci` gate.
+  version-sync → fmt-check → clippy → test → doc
 
-cd "$(git rev-parse --show-toplevel)"
+Works on macOS, Linux, and Windows (Git Bash / WSL).
+Install once via:  just install-hooks   (or: make install-hooks)
+"""
 
-echo "pre-commit: version-sync..."
-FILE="$(tr -d '[:space:]' < VERSION)"
-CARGO="$(awk '
-  /^\[workspace\.package\]/ { s=1; next }
-  /^\[/ && s { s=0 }
-  s && /^version[[:space:]]*=/ { match($0, /"[^"]+"/) ; print substr($0, RSTART+1, RLENGTH-2) ; exit }
-' Cargo.toml)"
-if [ "$FILE" != "$CARGO" ]; then
-  echo "error: VERSION ($FILE) and Cargo.toml ($CARGO) are out of sync" >&2
-  echo "fix:   scripts/bump-version.sh $CARGO" >&2
-  exit 1
-fi
+from __future__ import annotations
 
-echo "pre-commit: fmt-check..."
-cargo fmt --all -- --check
+import os
+import platform
+import subprocess
+import sys
+from pathlib import Path
 
-echo "pre-commit: clippy..."
-cargo clippy --workspace --all-targets -- -D warnings
 
-echo "pre-commit: test..."
-cargo test --workspace
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-echo "pre-commit: doc..."
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
+def _is_windows() -> bool:
+    return platform.system() == "Windows"
 
-echo "pre-commit: ok"
+
+def _cargo() -> str:
+    """Return the cargo executable name (handles Windows .exe extension)."""
+    return "cargo.exe" if _is_windows() else "cargo"
+
+
+def run(cmd: list[str], *, label: str, extra_env: dict[str, str] | None = None) -> None:
+    """Run *cmd*, print a progress label, and sys.exit on failure."""
+    print(f"pre-commit: {label}...")
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    result = subprocess.run(cmd, env=env)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+# ---------------------------------------------------------------------------
+# Version-sync check (pure Python — no awk dependency)
+# ---------------------------------------------------------------------------
+
+def check_version_sync(root: Path) -> None:
+    print("pre-commit: version-sync...")
+
+    file_ver = (root / "VERSION").read_text(encoding="utf-8").strip()
+
+    cargo_ver: str | None = None
+    in_workspace_pkg = False
+    for line in (root / "Cargo.toml").read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped == "[workspace.package]":
+            in_workspace_pkg = True
+            continue
+        if stripped.startswith("[") and in_workspace_pkg:
+            break
+        if in_workspace_pkg and stripped.startswith("version"):
+            # version = "x.y.z"
+            cargo_ver = stripped.split("=", 1)[1].strip().strip('"')
+            break
+
+    if cargo_ver is None:
+        print(
+            "error: could not find version in Cargo.toml [workspace.package]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if file_ver != cargo_ver:
+        print(
+            f"error: VERSION ({file_ver}) and Cargo.toml ({cargo_ver}) are out of sync",
+            file=sys.stderr,
+        )
+        print(f"fix:   scripts/bump-version.sh {cargo_ver}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    # Resolve repo root — works on all platforms via Git
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("error: not inside a git repository", file=sys.stderr)
+        sys.exit(1)
+
+    root = Path(result.stdout.strip())
+    os.chdir(root)
+
+    cargo = _cargo()
+
+    check_version_sync(root)
+    run([cargo, "fmt", "--all", "--", "--check"], label="fmt-check")
+    run(
+        [cargo, "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
+        label="clippy",
+    )
+    run([cargo, "test", "--workspace"], label="test")
+    run(
+        [cargo, "doc", "--workspace", "--no-deps", "--quiet"],
+        label="doc",
+        extra_env={"RUSTDOCFLAGS": os.environ.get("RUSTDOCFLAGS", "-D warnings")},
+    )
+
+    print("pre-commit: ok")
+
+
+if __name__ == "__main__":
+    main()

@@ -170,7 +170,7 @@ jobs:
 
           # Reuse the proven bump script (edits VERSION + Cargo.toml + dep pins,
           # refreshes Cargo.lock via cargo check, and commits).
-          ./scripts/bump-version.sh "$NEW"
+          python3 ./scripts/bump-version.py "$NEW"
 
           # Mark the commit [skip ci] so pushing it back to main does not loop.
           git commit --amend -m "chore: release v${NEW} [skip ci]"

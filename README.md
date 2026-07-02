@@ -41,12 +41,15 @@ For those counting — the commands to get a running, instrumented, MCP-enabled 
 service are:
 
 ```bash
-# 1. install the CLI
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
-# or: cargo install tonin
+```
 
-tonin service new greeter  # 2. scaffold
-cd greeter && cargo run    # 3. run
+```bash
+tonin service new greeter
+```
+
+```bash
+cd greeter && cargo run
 ```
 
 That's it. A gRPC server on `:50051`, an MCP server on `:50052` exposing every RPC as a
@@ -105,14 +108,35 @@ Pre-built archives are published for Linux (x86_64, ARM64), macOS (Intel, Apple 
 and Windows (x86_64) on every release. Helm chart generation is built in — no extra
 plugin needed.
 
+**macOS / Linux** (bash):
 ```bash
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
 ```
 
-**Custom install directory:**
+**Windows** (PowerShell — no Git Bash required):
+```powershell
+py -3 -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.py').read())"
+```
+
+**Any platform** (Python 3):
+```bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.py | python3
+```
+
+Or after cloning:
+```bash
+python3 scripts/install.py
+```
+
+**Custom install directory — macOS / Linux:**
 ```bash
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
   | bash -s -- --dir /usr/local/bin
+```
+
+**Custom install directory — Windows PowerShell:**
+```powershell
+python3 scripts/install.py --dir $env:USERPROFILE\.local\bin
 ```
 
 **Via cargo-binstall:**
@@ -128,8 +152,12 @@ cargo install tonin
 ## Update
 
 ```bash
-tonin upgrade          # upgrades the CLI + every installed plugin
-tonin upgrade --check  # preview the plan without changing anything
+tonin upgrade
+```
+
+Preview the plan without making changes:
+```bash
+tonin upgrade --check
 ```
 
 `tonin upgrade` discovers plugins on your `$PATH`, shows an upgrade plan, asks for
@@ -163,12 +191,29 @@ than hand-editing the generated charts.
 
 ## Everyday commands
 
+Scaffold a new service:
 ```bash
-tonin service new <name>                                        # scaffold (built-in templates)
-tonin service new <name> --template-repo github.com/Org/repo   # scaffold from a GitHub template repo
-tonin proto generate                                            # re-run codegen after editing .proto
-tonin helm generate                                             # render Helm charts from tonin.toml
-tonin helm check                                                # detect drift between tonin.toml and rendered charts
+tonin service new <name>
+```
+
+Scaffold from a GitHub template repo:
+```bash
+tonin service new <name> --template-repo github.com/Org/repo
+```
+
+Re-run codegen after editing `.proto`:
+```bash
+tonin proto generate
+```
+
+Render Helm charts from `tonin.toml`:
+```bash
+tonin helm generate
+```
+
+Detect drift between `tonin.toml` and rendered charts:
+```bash
+tonin helm check
 ```
 
 The CLI binary is `tonin`. See `tonin --help` for the full surface.
@@ -178,18 +223,19 @@ The CLI binary is `tonin`. See `tonin --help` for the full surface.
 `tonin service new` has built-in templates compiled into the binary. For production use, pass
 `--template-repo` to download templates from a GitHub repository at scaffold time:
 
+Standard templates:
 ```bash
-# Standard templates (all languages: Rust, Python, TypeScript)
-tonin service new my-svc --lang rust \
-  --template-repo github.com/Rushit/tonin-templates
+tonin service new my-svc --lang rust --template-repo github.com/Rushit/tonin-templates
+```
 
-# Pin to a release tag
-tonin service new my-svc --lang rust \
-  --template-repo github.com/Rushit/tonin-templates@v0.4.0
+Pin to a release tag:
+```bash
+tonin service new my-svc --lang rust --template-repo github.com/Rushit/tonin-templates@v0.4.0
+```
 
-# Custom / private template repo
-tonin service new my-svc --lang rust \
-  --template-repo github.com/myorg/my-templates
+Custom or private template repo:
+```bash
+tonin service new my-svc --lang rust --template-repo github.com/myorg/my-templates
 ```
 
 The flag accepts `github.com/Org/repo` or just `Org/repo`. Append `@ref` for a branch or tag

@@ -56,17 +56,22 @@ jobs:
         with:
           tool: nextest
 
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
       - name: cargo fmt --check
-        run: make fmt-check
+        run: just fmt-check
 
       - name: cargo clippy
-        run: make lint
+        run: just lint
 
       - name: cargo test
-        run: make test
+        run: just test
 
       - name: cargo doc (deny broken intra-doc links)
-        run: make doc
+        run: just doc
 
   version-sync:
     name: VERSION file matches Cargo.toml [workspace.package]
@@ -75,25 +80,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Check VERSION == Cargo.toml [workspace.package].version
-        run: |
-          set -euo pipefail
-          FILE_VERSION=$(tr -d '[:space:]' < VERSION)
-          CARGO_VERSION=$(awk '
-            /^\[workspace\.package\]/ { in_section=1; next }
-            /^\[/ && in_section        { in_section=0 }
-            in_section && /^version[[:space:]]*=/ {
-              match($0, /"[^"]+"/)
-              print substr($0, RSTART+1, RLENGTH-2)
-              exit
-            }
-          ' Cargo.toml)
-          echo "VERSION file : ${FILE_VERSION}"
-          echo "Cargo.toml   : ${CARGO_VERSION}"
-          if [ "${FILE_VERSION}" != "${CARGO_VERSION}" ]; then
-            echo "::error::VERSION (${FILE_VERSION}) and Cargo.toml (${CARGO_VERSION}) are out of sync."
-            echo "::error::Run  scripts/bump-version.sh ${CARGO_VERSION}  to fix both at once, or update VERSION manually."
-            exit 1
-          fi
+        run: python3 scripts/check-version.py
 
   # ---------------------------------------------------------------------------
   # tonin-proxy smoke test
