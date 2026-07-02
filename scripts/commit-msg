@@ -3,8 +3,8 @@
 commit-msg hook: strips AI-injected "Co-Authored-By: Claude ..." trailers
 and trims trailing blank lines from the commit message.
 
-Works on macOS, Linux, and Windows (Git Bash / WSL).
-Install once via:  just install-hooks   (or: make install-hooks)
+Works on macOS, Linux, and Windows (Git Bash / WSL / PowerShell).
+Install once via:  just install-hooks
 """
 
 from __future__ import annotations
