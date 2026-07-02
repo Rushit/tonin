@@ -27,17 +27,26 @@ commit to `main` directly.
 
 Pinned toolchain: Rust `1.90` with `rustfmt` + `clippy` (`rust-toolchain.toml`).
 
+The project supports **two task runners** that are kept in sync:
+- [`justfile`](justfile) — preferred; requires [`just`](https://github.com/casey/just) (`cargo install just` or your OS package manager)
+- [`Makefile`](Makefile) — fallback if `just` is not available
+
+Every `make <target>` has an exact `just <recipe>` equivalent. Use whichever you have installed; they run the same commands.
+
 ```bash
+# List all available recipes / targets
+just          # or: make help
+
 # Build / check the whole workspace
-cargo build
+just build    # or: make build
 cargo check --workspace --all-targets
 
 # Lint + format
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+just fmt      # or: make fmt
+just lint     # or: make lint
 
 # Tests — entire workspace, one crate, or a single test
-cargo test --workspace
+just test     # or: make test
 cargo test -p tonin-sdk
 # Run the CLI (binary `tonin`, built from the umbrella crate `crates/tonin`)
 cargo run -p tonin -- service new greeter
@@ -148,14 +157,14 @@ an allocation.
 
 ## Definition of done
 
-Drive the gate through `make` (run `make help` for the full target table):
+Drive the gate through `just` (or `make` if `just` is unavailable — both run the same commands):
 
-- **`make fmt` then `make ci`** passes — `ci` is the same gate CI runs: `fmt-check` + clippy
+- **`just fmt` then `just ci`** passes — `ci` is the same gate CI runs: `fmt-check` + clippy
   `-D warnings` + `test` + `doc`. Zero warnings is a gate, not advice.
 - New `plan.rs` behavior has a unit test (plain `#[test]` / `#[tokio::test]` — there is no
   snapshot harness; don't add one without reason).
 - Touched a capability or `tonin.toml` field? Update its `docs/NN-*.md` + Status block in the same
-  change. Touched a template in `crates/tonin/templates/helm/`? Run **`make gen-example`** (re-renders
+  change. Touched a template in `crates/tonin/templates/helm/`? Run **`just gen-example`** (re-renders
   the greeter Helm chart and confirms it builds).
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, …); see `CONTRIBUTING.md`.
 
