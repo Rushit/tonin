@@ -1,13 +1,9 @@
 //! `tonin doctor` — check the local environment and installed plugins for
 //! compatibility with this CLI.
 //!
-//! **Environment checks** run first: each required/optional tool is probed with
-//! `env <tool> --version` (or equivalent) so the check works regardless of how
-//! the tool was installed. Purely local (no network).
-//!
-//! **Plugin checks** follow: reads each plugin's `--tonin-meta` and compares
-//! its declared minimum CLI version against the running `tonin`. When a plugin
-//! needs a newer CLI it offers to run `tonin upgrade`.
+//! Checks whether required tools (`just`, `cargo`, `python3`) are installed
+//! before checking plugin compatibility. Plugins that need a newer CLI offer
+//! to run `tonin upgrade`.
 
 use std::process::Command;
 
@@ -26,17 +22,14 @@ pub struct DoctorArgs {
 // Environment tool checks
 // ---------------------------------------------------------------------------
 
-/// A tool that `tonin doctor` probes for.
 struct Tool {
-    /// Binary name looked up via `env <name>`.
+    /// Binary name to look up on PATH.
     name: &'static str,
     /// Human-readable label shown in output.
     label: &'static str,
-    /// If false the tool is optional (warn, but don't count as a problem).
+    /// If false the tool is optional (warn, don't count as a problem).
     required: bool,
-    /// Extra args appended after `--version` when the default `--version`
-    /// flag isn't the right probe (e.g. `python3 --version` works, but some
-    /// tools use `version` subcommand instead).
+    /// Flag used to retrieve the version string.
     version_flag: &'static str,
 }
 
@@ -55,14 +48,8 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "just",
-        label: "just (task runner)",
-        required: false,
-        version_flag: "--version",
-    },
-    Tool {
-        name: "gh",
-        label: "GitHub CLI (gh)",
-        required: false,
+        label: "just (task runner — https://github.com/casey/just)",
+        required: true,
         version_flag: "--version",
     },
     Tool {
@@ -85,23 +72,36 @@ const TOOLS: &[Tool] = &[
     },
 ];
 
-/// Probe a tool via `env <name> <version_flag>`.
+/// Probe whether *tool* is available on `PATH`.
 ///
-/// Using `env` as the outer command means the lookup goes through the shell's
-/// `PATH` even when the caller is not a shell (e.g. git hooks, CI runners).
+/// On Unix/macOS the lookup goes through `env <name>` so it works in
+/// non-login shells (git hooks, CI). On Windows `env` is not a standard
+/// command, so the tool is invoked directly — `Command` searches `PATH`
+/// on all platforms.
 fn probe_tool(tool: &Tool) -> Option<String> {
-    let out = Command::new("env")
+    #[cfg(unix)]
+    let output = Command::new("env")
         .args([tool.name, tool.version_flag])
         .output()
         .ok()?;
 
-    if out.status.success() {
-        // Take only the first line of whatever `--version` prints.
-        let raw = String::from_utf8_lossy(&out.stdout);
-        Some(raw.lines().next().unwrap_or("").trim().to_string())
-    } else {
-        None
-    }
+    #[cfg(not(unix))]
+    let output = Command::new(tool.name)
+        .arg(tool.version_flag)
+        .output()
+        .ok()?;
+
+    // Return the first non-empty line from stdout, then stderr (e.g. protoc).
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let line = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string);
+
+    if output.status.success() { line } else { None }
 }
 
 fn check_environment() -> usize {

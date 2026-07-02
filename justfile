@@ -5,7 +5,7 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-cargo := env_var_or_default("CARGO", "cargo")
+cargo        := env_var_or_default("CARGO", "cargo")
 rustdocflags := env_var_or_default("RUSTDOCFLAGS", "-D warnings")
 
 # Show available recipes (default)
