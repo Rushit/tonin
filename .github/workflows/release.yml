@@ -157,7 +157,7 @@ jobs:
         if: steps.check.outputs.skipped != 'true'
         uses: taiki-e/install-action@v2
         with:
-          tool: protoc@25.5
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         if: steps.check.outputs.skipped != 'true'
@@ -239,7 +239,7 @@ jobs:
         if: steps.check.outputs.skipped != 'true'
         uses: taiki-e/install-action@v2
         with:
-          tool: protoc@25.5
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         if: steps.check.outputs.skipped != 'true'
@@ -326,7 +326,7 @@ jobs:
         if: steps.check.outputs.skipped != 'true'
         uses: taiki-e/install-action@v2
         with:
-          tool: protoc@25.5
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         if: steps.check.outputs.skipped != 'true'
@@ -384,7 +384,7 @@ jobs:
         if: steps.check.outputs.skipped != 'true'
         uses: taiki-e/install-action@v2
         with:
-          tool: protoc@25.5
+          tool: protoc@3.25.5
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.skipped != 'true'
