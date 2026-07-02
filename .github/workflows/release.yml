@@ -167,9 +167,15 @@ jobs:
         if: steps.check.outputs.skipped != 'true'
         run: cargo update --workspace
 
+      - name: Install just
+        if: steps.check.outputs.skipped != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
       - name: Publish all crates to crates.io
         if: steps.check.outputs.skipped != 'true'
-        run: make publish
+        run: just publish
 
   # ----------------------------------------------------------------------
   # Cross-platform CLI binary builds. Each matrix entry produces one archive

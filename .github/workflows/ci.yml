@@ -56,17 +56,22 @@ jobs:
         with:
           tool: nextest
 
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
       - name: cargo fmt --check
-        run: make fmt-check
+        run: just fmt-check
 
       - name: cargo clippy
-        run: make lint
+        run: just lint
 
       - name: cargo test
-        run: make test
+        run: just test
 
       - name: cargo doc (deny broken intra-doc links)
-        run: make doc
+        run: just doc
 
   version-sync:
     name: VERSION file matches Cargo.toml [workspace.package]

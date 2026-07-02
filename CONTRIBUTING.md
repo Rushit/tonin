@@ -23,17 +23,17 @@ rustup show
 The same gates CI enforces:
 
 ```bash
-make ci    # runs fmt-check + lint + test + doc — same gate as CI
+just ci    # runs fmt-check + lint + test + doc — same gate as CI
 ```
 
 If that fails locally, CI will fail too. Don't merge over a red CI.
 
-### Useful targets
+### Useful recipes
 
-Run `make help` to list every target with a one-line description. The most
-common ones during development are `make build`, `make test`, `make fmt`,
-and `make lint`; see the Makefile for the full set including the
-publish-side targets.
+Run `just` (or `just --list`) to list every recipe with a one-line description.
+The most common ones during development are `just build`, `just test`,
+`just fmt`, and `just lint`; see the [justfile](justfile) for the full set
+including the publish-side recipes.
 
 ## What kinds of changes are welcome
 

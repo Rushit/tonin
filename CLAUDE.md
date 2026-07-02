@@ -17,36 +17,33 @@ commit to `main` directly.
 - **Concise commit messages.** Conventional Commits (`feat:`, `fix:`, `ci:`,
   `test:`, `docs:`, `chore:`) with a one-line subject; add a body only when it
   explains *why*. Do **not** add a `Co-authored-by` trailer.
-- **Green before pushing.** Run `make ci` (the pre-commit hook also runs it).
+- **Green before pushing.** Run `just ci` (the pre-commit hook also runs it).
 - **Unified single version & commit-driven releases.** All three published artifacts — the `tonin` CLI, the Rust `tonin-sdk`, and `tonin-proxy` — share ONE version: the workspace version in `/VERSION` (mirrored into `[workspace.package].version`). `tonin-sdk` and `tonin-proxy` inherit it via `version.workspace = true`; there is one tag scheme, `v*`.
   - Releases are automated by `.github/workflows/auto-release.yml`: merge a Conventional-Commit PR to `main` and it computes the next version (feat → minor, fix/perf → patch, breaking → minor pre-1.0), bumps + commits straight to `main` via `RELEASE_PAT` (a bypass token; `[skip ci]` prevents loops), tags `v*`, creates the Release, and dispatches `release.yml`. **No second "Release PR."**
   - `release.yml` is the single publisher off that one tag: all six crates → crates.io, `tonin` + `tonin-proxy` binaries → the GitHub Release, and the `tonin-proxy` Docker image → ghcr.io. (Future `tonin-sdk-py` → PyPI would add a `publish-pypi` job here.)
-  - To force a specific version, run `auto-release` from the Actions tab with `bump` = `patch|minor|major|X.Y.Z`, or land a PR that already bumped `/VERSION` via `make version VERSION=X.Y.Z`.
+  - To force a specific version, run `auto-release` from the Actions tab with `bump` = `patch|minor|major|X.Y.Z`, or land a PR that already bumped `/VERSION` via `just version X.Y.Z`.
 
 ## Common commands
 
 Pinned toolchain: Rust `1.90` with `rustfmt` + `clippy` (`rust-toolchain.toml`).
 
-The project supports **two task runners** that are kept in sync:
-- [`justfile`](justfile) — preferred; requires [`just`](https://github.com/casey/just) (`cargo install just` or your OS package manager)
-- [`Makefile`](Makefile) — fallback if `just` is not available
-
-Every `make <target>` has an exact `just <recipe>` equivalent. Use whichever you have installed; they run the same commands.
+The project uses [`just`](https://github.com/casey/just) as its task runner.
+Install it once: `cargo install just` or via your OS package manager.
 
 ```bash
-# List all available recipes / targets
-just          # or: make help
+# List all available recipes
+just
 
 # Build / check the whole workspace
-just build    # or: make build
+just build
 cargo check --workspace --all-targets
 
 # Lint + format
-just fmt      # or: make fmt
-just lint     # or: make lint
+just fmt
+just lint
 
 # Tests — entire workspace, one crate, or a single test
-just test     # or: make test
+just test
 cargo test -p tonin-sdk
 # Run the CLI (binary `tonin`, built from the umbrella crate `crates/tonin`)
 cargo run -p tonin -- service new greeter
@@ -157,7 +154,7 @@ an allocation.
 
 ## Definition of done
 
-Drive the gate through `just` (or `make` if `just` is unavailable — both run the same commands):
+Drive the gate through `just`:
 
 - **`just fmt` then `just ci`** passes — `ci` is the same gate CI runs: `fmt-check` + clippy
   `-D warnings` + `test` + `doc`. Zero warnings is a gate, not advice.
