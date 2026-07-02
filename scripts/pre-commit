@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Pre-commit hook: mirrors the `just ci` / `make ci` gate.
+Pre-commit hook: mirrors the `just ci` gate.
   version-sync → fmt-check → clippy → test → doc
 
-Works on macOS, Linux, and Windows (Git Bash / WSL).
-Install once via:  just install-hooks   (or: make install-hooks)
+Works on macOS, Linux, and Windows (Git Bash / WSL / PowerShell).
+Install once via:  just install-hooks
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def check_version_sync(root: Path) -> None:
             f"error: VERSION ({file_ver}) and Cargo.toml ({cargo_ver}) are out of sync",
             file=sys.stderr,
         )
-        print(f"fix:   scripts/bump-version.sh {cargo_ver}", file=sys.stderr)
+        print(f"fix:   python3 scripts/bump-version.py {cargo_ver}", file=sys.stderr)
         sys.exit(1)
 
 
