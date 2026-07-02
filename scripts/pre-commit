@@ -1,33 +1,76 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 # Pre-commit hook: mirrors the `just ci` / `make ci` gate (fmt-check + clippy + test + doc).
 # Install once via: just install-hooks  (or: make install-hooks)
-set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
+import subprocess
+import sys
+import os
 
-echo "pre-commit: version-sync..."
-FILE="$(tr -d '[:space:]' < VERSION)"
-CARGO="$(awk '
-  /^\[workspace\.package\]/ { s=1; next }
-  /^\[/ && s { s=0 }
-  s && /^version[[:space:]]*=/ { match($0, /"[^"]+"/) ; print substr($0, RSTART+1, RLENGTH-2) ; exit }
-' Cargo.toml)"
-if [ "$FILE" != "$CARGO" ]; then
-  echo "error: VERSION ($FILE) and Cargo.toml ($CARGO) are out of sync" >&2
-  echo "fix:   scripts/bump-version.sh $CARGO" >&2
-  exit 1
-fi
 
-echo "pre-commit: fmt-check..."
-cargo fmt --all -- --check
+def run(cmd: list[str], *, label: str) -> None:
+    """Run a command, print a label, and exit on failure."""
+    print(f"pre-commit: {label}...")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
 
-echo "pre-commit: clippy..."
-cargo clippy --workspace --all-targets -- -D warnings
 
-echo "pre-commit: test..."
-cargo test --workspace
+def check_version_sync() -> None:
+    """Verify /VERSION and Cargo.toml [workspace.package].version are identical."""
+    print("pre-commit: version-sync...")
+    with open("VERSION") as f:
+        file_ver = f.read().strip()
 
-echo "pre-commit: doc..."
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
+    cargo_ver = None
+    in_workspace_pkg = False
+    with open("Cargo.toml") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped == "[workspace.package]":
+                in_workspace_pkg = True
+                continue
+            if stripped.startswith("[") and in_workspace_pkg:
+                break
+            if in_workspace_pkg and stripped.startswith("version"):
+                # version = "x.y.z"
+                cargo_ver = stripped.split("=", 1)[1].strip().strip('"')
+                break
 
-echo "pre-commit: ok"
+    if cargo_ver is None:
+        print("error: could not find version in Cargo.toml [workspace.package]", file=sys.stderr)
+        sys.exit(1)
+
+    if file_ver != cargo_ver:
+        print(
+            f"error: VERSION ({file_ver}) and Cargo.toml ({cargo_ver}) are out of sync",
+            file=sys.stderr,
+        )
+        print(f"fix:   scripts/bump-version.sh {cargo_ver}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main() -> None:
+    # Change to repo root (same as `cd "$(git rev-parse --show-toplevel)"`)
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("error: not inside a git repository", file=sys.stderr)
+        sys.exit(1)
+    os.chdir(result.stdout.strip())
+
+    check_version_sync()
+    run(["cargo", "fmt", "--all", "--", "--check"], label="fmt-check")
+    run(["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], label="clippy")
+    run(["cargo", "test", "--workspace"], label="test")
+    # Deny rustdoc warnings (must be set before the subprocess is spawned).
+    os.environ.setdefault("RUSTDOCFLAGS", "-D warnings")
+    run(["cargo", "doc", "--workspace", "--no-deps", "--quiet"], label="doc")
+
+    print("pre-commit: ok")
+
+
+if __name__ == "__main__":
+    main()
