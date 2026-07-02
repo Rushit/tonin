@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain (${{ matrix.rust }})
         uses: dtolnay/rust-toolchain@master
@@ -41,10 +41,9 @@ jobs:
       # which requires `protoc` on PATH. Ubuntu/macOS/Windows runners
       # don't ship it preinstalled. arduino/setup-protoc handles all 3.
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@3.25.5
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
@@ -73,7 +72,7 @@ jobs:
     name: VERSION file matches Cargo.toml [workspace.package]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check VERSION == Cargo.toml [workspace.package].version
         run: |
@@ -110,7 +109,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust 1.93 (MSRV)
         uses: dtolnay/rust-toolchain@master
@@ -118,10 +117,9 @@ jobs:
           toolchain: "1.93"
 
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -209,7 +207,7 @@ jobs:
       run:
         working-directory: ts/tonin-client
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -244,7 +242,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust 1.93 (MSRV)
         uses: dtolnay/rust-toolchain@master
@@ -252,10 +250,9 @@ jobs:
           toolchain: "1.93"
 
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -290,7 +287,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust 1.93 (MSRV)
         uses: dtolnay/rust-toolchain@master
@@ -298,10 +295,9 @@ jobs:
           toolchain: "1.93"
 
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

@@ -65,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Verify
         run: |
@@ -119,7 +119,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check if all crates already published
         id: check
@@ -155,10 +155,9 @@ jobs:
 
       - name: Install protoc
         if: steps.check.outputs.skipped != 'true'
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         if: steps.check.outputs.skipped != 'true'
@@ -209,7 +208,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check if binary asset already uploaded
         id: check
@@ -242,10 +241,9 @@ jobs:
 
       - name: Install protoc
         if: steps.check.outputs.skipped != 'true'
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         if: steps.check.outputs.skipped != 'true'
@@ -301,7 +299,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check if proxy binary asset already uploaded
         id: check
@@ -334,10 +332,9 @@ jobs:
 
       - name: Install protoc
         if: steps.check.outputs.skipped != 'true'
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@3.25.5
 
       - name: Cache cargo
         if: steps.check.outputs.skipped != 'true'
@@ -371,7 +368,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve version
         id: ver
@@ -393,10 +390,9 @@ jobs:
 
       - name: Install protoc
         if: steps.check.outputs.skipped != 'true'
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          version: "25.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc@3.25.5
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.skipped != 'true'
@@ -441,7 +437,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Gate on NPM_TOKEN presence
         id: gate
@@ -499,7 +495,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install via install.sh and assert version
         run: |
