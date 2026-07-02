@@ -105,14 +105,31 @@ Pre-built archives are published for Linux (x86_64, ARM64), macOS (Intel, Apple 
 and Windows (x86_64) on every release. Helm chart generation is built in — no extra
 plugin needed.
 
+**macOS / Linux** (bash):
 ```bash
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh | bash
 ```
 
+**Windows** (PowerShell — no Git Bash required):
+```powershell
+py -3 -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.py').read())"
+```
+
+**Any platform** (Python 3):
+```bash
+curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.py | python3
+# or, after cloning:
+python3 scripts/install.py
+```
+
 **Custom install directory:**
 ```bash
+# macOS / Linux
 curl -sSfL https://raw.githubusercontent.com/Rushit/tonin/main/scripts/install.sh \
   | bash -s -- --dir /usr/local/bin
+
+# Windows PowerShell
+python3 scripts/install.py --dir $env:USERPROFILE\.local\bin
 ```
 
 **Via cargo-binstall:**
