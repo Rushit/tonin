@@ -34,6 +34,13 @@ pub enum Error {
          (only `{{env}}` is supported)"
     )]
     UnresolvedNamespace { context: String, value: String },
+    #[error("[env].{key}: {reason}")]
+    InvalidEnvVar { key: String, reason: String },
+    #[error(
+        "[env].{key} collides with the {origin} env var of the same name that \
+         tonin already emits — rename the [env] key or drop the duplicate"
+    )]
+    ReservedEnvKey { key: String, origin: String },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,10 +76,33 @@ impl ServiceRef {
     }
 }
 
+/// Default egress port for a `[depends_on]` entry — the tonin gRPC listen
+/// convention. Matches the port the generated network policy hardcoded before
+/// ports were declarable, so bare-string dependencies render identically.
+pub const DEFAULT_DEPENDENCY_PORT: u32 = 50051;
+
+fn default_dependency_port() -> u32 {
+    DEFAULT_DEPENDENCY_PORT
+}
+
+/// One resolved `[depends_on]` entry: the downstream service, the namespace it
+/// lives in for the selected environment, and the port egress is allowed on.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DependencyRef {
+    pub name: String,
+    pub namespace: String,
+    /// Dependency's listen port (`port` in the table form). Defaults to
+    /// [`DEFAULT_DEPENDENCY_PORT`] so the bare-string shorthand keeps
+    /// rendering today's egress rule.
+    #[serde(default = "default_dependency_port")]
+    pub port: u32,
+}
+
 /// One `[depends_on]` entry parsed from TOML, before environment resolution.
 ///
 /// Both the shorthand (`name = "<ns>"`) and the table form
-/// (`name = { namespace = "<ns>", <env> = "<ns>", envs = [..] }`) land here.
+/// (`name = { namespace = "<ns>", port = <p>, <env> = "<ns>", envs = [..] }`)
+/// land here.
 struct DepSpec {
     /// Default namespace pattern (may contain `{env}`), if declared.
     namespace: Option<String>,
@@ -80,6 +110,8 @@ struct DepSpec {
     env_overrides: BTreeMap<String, String>,
     /// Restrict the dependency to these envs; `None` ⇒ every env.
     envs: Option<Vec<String>>,
+    /// Declared egress port; `None` ⇒ [`DEFAULT_DEPENDENCY_PORT`].
+    port: Option<u32>,
 }
 
 /// Substitute the `{env}` placeholder in a namespace pattern.
@@ -110,11 +142,13 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
             namespace: Some(s),
             env_overrides: BTreeMap::new(),
             envs: None,
+            port: None,
         }),
         toml::Value::Table(table) => {
             let mut namespace = None;
             let mut envs = None;
             let mut env_overrides = BTreeMap::new();
+            let mut port = None;
             for (key, val) in table {
                 match key.as_str() {
                     "namespace" => {
@@ -123,6 +157,15 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
                                 .ok_or_else(|| invalid("`namespace` must be a string".into()))?
                                 .to_string(),
                         );
+                    }
+                    "port" => {
+                        let p = val
+                            .as_integer()
+                            .ok_or_else(|| invalid("`port` must be an integer".into()))?;
+                        if !(1..=65535).contains(&p) {
+                            return Err(invalid(format!("`port` {p} is outside 1-65535")));
+                        }
+                        port = Some(p as u32);
                     }
                     "envs" => {
                         let arr = val
@@ -153,6 +196,7 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
                 namespace,
                 env_overrides,
                 envs,
+                port,
             })
         }
         other => Err(invalid(format!(
@@ -175,7 +219,7 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
 fn resolve_depends_on(
     raw: BTreeMap<String, toml::Value>,
     env: &str,
-) -> Result<Vec<ServiceRef>, Error> {
+) -> Result<Vec<DependencyRef>, Error> {
     let mut out = Vec::new();
     for (name, value) in raw {
         let spec = parse_dependency(&name, value)?;
@@ -204,12 +248,68 @@ fn resolve_depends_on(
                 reason: format!("namespace for env '{env}' is empty"),
             });
         }
-        out.push(ServiceRef {
+        out.push(DependencyRef {
             name,
             namespace: resolved,
+            port: spec.port.unwrap_or(DEFAULT_DEPENDENCY_PORT),
         });
     }
     Ok(out)
+}
+
+/// Resolve the optional `[env]` table (plain, non-secret runtime env vars)
+/// for one environment.
+///
+/// - `KEY = "value"` string entries form the base set.
+/// - `[env.<env>]` sub-tables override the base for that environment only.
+/// - `{env}` in values is substituted with the environment being rendered
+///   (keys are taken literally). Other `{...}` tokens pass through verbatim,
+///   since env values may legitimately contain braces.
+///
+/// Returns a sorted list so rendered output is deterministic.
+fn resolve_env_vars(
+    raw: &BTreeMap<String, toml::Value>,
+    env: &str,
+) -> Result<Vec<(String, String)>, Error> {
+    let mut merged: BTreeMap<String, String> = BTreeMap::new();
+    // Base entries first ...
+    for (key, value) in raw {
+        match value {
+            toml::Value::String(s) => {
+                merged.insert(key.clone(), apply_env(s, env));
+            }
+            toml::Value::Table(_) => {} // per-env overlay, handled below
+            other => {
+                return Err(Error::InvalidEnvVar {
+                    key: key.clone(),
+                    reason: format!(
+                        "must be a string (write PORT = \"8080\") or a per-env \
+                         override table, got {}",
+                        other.type_str()
+                    ),
+                });
+            }
+        }
+    }
+    // ... then the overlay for the selected env wins. Inactive env tables are
+    // still type-checked so a typo fails in every environment, not just one.
+    for (table_key, value) in raw {
+        let toml::Value::Table(table) = value else {
+            continue;
+        };
+        for (key, val) in table {
+            let Some(s) = val.as_str() else {
+                return Err(Error::InvalidEnvVar {
+                    key: format!("{table_key}.{key}"),
+                    reason: format!("must be a string, got {}", val.type_str()),
+                });
+            };
+            if table_key == env {
+                merged.insert(key.clone(), apply_env(s, env));
+            }
+        }
+    }
+    Ok(merged.into_iter().collect())
 }
 
 // ---------- on-disk TOML shape ----------
@@ -231,7 +331,10 @@ pub const SUPPORTED_SCHEMAS: &[&str] = &["v1"];
 /// 0.6.0: per-environment namespaces and dependencies (`{env}` placeholders
 /// and the Cargo-style `[depends_on]` table form) — a CLI older than this
 /// can't render them.
-pub const RECOMMENDED_CLI_MIN: &str = "0.6.0";
+///
+/// 0.14.0: `[env]` / `[env.<env>]` plain env-var tables (older CLIs silently
+/// ignore them) and the `port` field in the `[depends_on]` table form.
+pub const RECOMMENDED_CLI_MIN: &str = "0.14.0";
 
 #[derive(Debug, Deserialize)]
 struct RawImage {
@@ -270,10 +373,14 @@ struct RawConfig {
     #[serde(default)]
     autoscale: Option<RawAutoscale>,
     // String shorthand (`name = "<ns>"`) or table form
-    // (`name = { namespace = "<ns>", <env> = "<ns>", envs = [..] }`).
+    // (`name = { namespace = "<ns>", port = <p>, <env> = "<ns>", envs = [..] }`).
     // Parsed as raw values and interpreted by `resolve_depends_on`.
     #[serde(default)]
     depends_on: BTreeMap<String, toml::Value>,
+    // Plain (non-secret) runtime env vars: `KEY = "value"` string entries plus
+    // `[env.<env>]` per-env override tables. Interpreted by `resolve_env_vars`.
+    #[serde(default)]
+    env: BTreeMap<String, toml::Value>,
     #[serde(default)]
     callers: RawCallers,
     #[serde(default)]
@@ -563,7 +670,7 @@ pub struct Plan {
     pub image: String,
     pub image_registry: Option<String>,
     pub security: Option<SecuritySection>,
-    pub depends_on: Vec<ServiceRef>,
+    pub depends_on: Vec<DependencyRef>,
     pub callers: Vec<ServiceRef>,
     pub dir: PathBuf,
     pub database: Option<DatabaseSpec>,
@@ -574,6 +681,9 @@ pub struct Plan {
     pub migrations: Option<MigrationsSpec>,
     pub config: Option<ConfigSpec>,
     pub emitted_env: EmittedEnv,
+    /// Plain env vars from `[env]` (+ `[env.<env>]` overlay), resolved for
+    /// `selected_env` and sorted by key. Rendered into the chart's `env:` map.
+    pub env_vars: Vec<(String, String)>,
     pub selected_env: String,
     pub client: ClientSpec,
     pub path_rules: Vec<PathRule>,
@@ -602,6 +712,7 @@ impl Plan {
         }
 
         let depends_on = resolve_depends_on(raw.depends_on, env)?;
+        let env_vars = resolve_env_vars(&raw.env, env)?;
 
         let explicit_callers = stateful::resolve_callers(&raw.callers, env);
 
@@ -811,6 +922,26 @@ impl Plan {
             emitted_env.extend_secrets(s);
         }
 
+        // Reserved-name guard: `[env]` must not shadow env vars tonin already
+        // emits (stateful literals like DATABASE_URL / REDIS_URL, or
+        // secret-sourced keys). Duplicate container env names are
+        // last-one-wins in Kubernetes — silently overriding a resolved URL is
+        // exactly the drift tonin.toml exists to prevent, so hard-error.
+        for (key, _) in &env_vars {
+            if emitted_env.literals.iter().any(|(k, _)| k == key) {
+                return Err(Error::ReservedEnvKey {
+                    key: key.clone(),
+                    origin: "stateful ([database]/[cache])".into(),
+                });
+            }
+            if emitted_env.from_secret.iter().any(|k| k == key) {
+                return Err(Error::ReservedEnvKey {
+                    key: key.clone(),
+                    origin: "secret-sourced ([secrets])".into(),
+                });
+            }
+        }
+
         Ok(Plan {
             name: raw.service.name,
             version: raw.service.version,
@@ -844,6 +975,7 @@ impl Plan {
             config,
             client,
             emitted_env,
+            env_vars,
             selected_env: env.to_string(),
             path_rules: raw
                 .path_rules
@@ -871,7 +1003,7 @@ impl Plan {
             .map(|e| Plan::load_with_env(e.path(), env))
             .collect::<Result<_, _>>()?;
 
-        let snapshot: Vec<(String, String, Vec<ServiceRef>)> = plans
+        let snapshot: Vec<(String, String, Vec<DependencyRef>)> = plans
             .iter()
             .map(|p| (p.name.clone(), p.namespace.clone(), p.depends_on.clone()))
             .collect();
@@ -1174,6 +1306,77 @@ mod tests {
     }
 
     #[test]
+    fn depends_on_bare_string_defaults_port_50051() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = \"platform-{env}\"\n",
+        ]
+        .concat();
+        let p = try_load_env(&body, "prod").unwrap();
+        let d = p.depends_on.iter().find(|d| d.name == "identity").unwrap();
+        assert_eq!(d.port, DEFAULT_DEPENDENCY_PORT, "shorthand keeps 50051");
+    }
+
+    #[test]
+    fn depends_on_table_port_is_used() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nzradar-platform = { namespace = \"zradar-{env}\", port = 4317 }\ngateway = { namespace = \"edge-{env}\", port = 7001, prod = \"edge\" }\n",
+        ]
+        .concat();
+        let p = try_load_env(&body, "prod").unwrap();
+        let zr = p
+            .depends_on
+            .iter()
+            .find(|d| d.name == "zradar-platform")
+            .unwrap();
+        assert_eq!(zr.namespace, "zradar-prod");
+        assert_eq!(zr.port, 4317);
+        let gw = p.depends_on.iter().find(|d| d.name == "gateway").unwrap();
+        assert_eq!(gw.namespace, "edge", "per-env override still wins");
+        assert_eq!(gw.port, 7001, "port applies alongside env overrides");
+    }
+
+    #[test]
+    fn depends_on_table_without_port_defaults_to_50051() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nbilling = { namespace = \"billing-{env}\" }\n",
+        ]
+        .concat();
+        let p = try_load_env(&body, "dev").unwrap();
+        assert_eq!(p.depends_on[0].port, DEFAULT_DEPENDENCY_PORT);
+    }
+
+    #[test]
+    fn depends_on_non_integer_port_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = { namespace = \"demo\", port = \"grpc\" }\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidDependency { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn depends_on_out_of_range_port_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nidentity = { namespace = \"demo\", port = 70000 }\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidDependency { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
     fn depends_on_bad_type_is_error() {
         let body = [
             SVC,
@@ -1185,6 +1388,128 @@ mod tests {
             matches!(err, Error::InvalidDependency { .. }),
             "got {err:?}"
         );
+    }
+
+    // ---- [env] plain env vars ---------------------------------------------
+
+    fn env_var(plan: &Plan, key: &str) -> Option<String> {
+        plan.env_vars
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn env_base_entries_resolve_with_env_placeholder() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env]\nIDENTITY_GRPC_URL = \"http://identity.zvectorlabs-{env}.svc.cluster.local:50051\"\nLOG_FORMAT = \"json\"\n",
+        ]
+        .concat();
+        let dev = try_load_env(&body, "dev").unwrap();
+        assert_eq!(
+            env_var(&dev, "IDENTITY_GRPC_URL").as_deref(),
+            Some("http://identity.zvectorlabs-dev.svc.cluster.local:50051")
+        );
+        let prod = try_load_env(&body, "prod").unwrap();
+        assert_eq!(
+            env_var(&prod, "IDENTITY_GRPC_URL").as_deref(),
+            Some("http://identity.zvectorlabs-prod.svc.cluster.local:50051")
+        );
+        assert_eq!(env_var(&prod, "LOG_FORMAT").as_deref(), Some("json"));
+    }
+
+    #[test]
+    fn env_per_env_overlay_merges_over_base() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env]\nLOG_FORMAT = \"json\"\nFEATURE_X = \"off\"\n[env.dev]\nLOG_FORMAT = \"pretty\"\nDEV_ONLY = \"1\"\n",
+        ]
+        .concat();
+        let dev = try_load_env(&body, "dev").unwrap();
+        assert_eq!(
+            env_var(&dev, "LOG_FORMAT").as_deref(),
+            Some("pretty"),
+            "overlay wins"
+        );
+        assert_eq!(
+            env_var(&dev, "FEATURE_X").as_deref(),
+            Some("off"),
+            "base keys survive the merge"
+        );
+        assert_eq!(env_var(&dev, "DEV_ONLY").as_deref(), Some("1"));
+        let prod = try_load_env(&body, "prod").unwrap();
+        assert_eq!(env_var(&prod, "LOG_FORMAT").as_deref(), Some("json"));
+        assert!(
+            env_var(&prod, "DEV_ONLY").is_none(),
+            "dev-only stays in dev"
+        );
+    }
+
+    #[test]
+    fn env_non_string_value_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env]\nPORT = 8080\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(matches!(err, Error::InvalidEnvVar { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn env_non_string_value_in_overlay_is_error_even_when_inactive() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env.dev]\nPORT = 8080\n",
+        ]
+        .concat();
+        // Rendering prod, but the broken dev overlay must still fail loudly.
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(matches!(err, Error::InvalidEnvVar { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn env_braces_other_than_env_pass_through() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env]\nLOG_PATTERN = \"{level} {msg}\"\n",
+        ]
+        .concat();
+        let p = try_load_env(&body, "prod").unwrap();
+        assert_eq!(
+            env_var(&p, "LOG_PATTERN").as_deref(),
+            Some("{level} {msg}"),
+            "env values may contain braces; only {{env}} is substituted"
+        );
+    }
+
+    #[test]
+    fn env_key_colliding_with_stateful_env_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[database]\nengine = \"postgres\"\n[env]\nDATABASE_URL = \"postgres://elsewhere/db\"\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(matches!(err, Error::ReservedEnvKey { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn env_key_colliding_with_secret_key_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[secrets]\nrequired = [\"JWT_SIGNING_KEY\"]\n[env]\nJWT_SIGNING_KEY = \"plaintext-oops\"\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(matches!(err, Error::ReservedEnvKey { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn no_env_section_yields_empty_env_vars() {
+        let p = load("[service]\nname = \"svc\"\nversion = \"0.1.0\"");
+        assert!(p.env_vars.is_empty());
     }
 
     #[test]
@@ -1399,9 +1724,10 @@ allowPrivilegeEscalation = false
             security: None,
             depends_on: depends_on
                 .iter()
-                .map(|d| ServiceRef {
+                .map(|d| DependencyRef {
                     name: d.to_string(),
                     namespace: "demo".to_string(),
+                    port: DEFAULT_DEPENDENCY_PORT,
                 })
                 .collect(),
             callers: Vec::new(),
@@ -1414,6 +1740,7 @@ allowPrivilegeEscalation = false
             migrations: None,
             config: None,
             emitted_env: Default::default(),
+            env_vars: Vec::new(),
             selected_env: "prod".to_string(),
             client: ClientSpec::default(),
             path_rules: Vec::new(),

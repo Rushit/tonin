@@ -297,6 +297,7 @@ mod tests {
             migrations: None,
             config: None,
             emitted_env: Default::default(),
+            env_vars: vec![],
             selected_env: "dev".to_string(),
             client: Default::default(),
             path_rules: vec![],
@@ -358,7 +359,7 @@ mod tests {
 
     /// Helper to create a mock Plan for testing.
     fn mock_plan(name: &str, deps: Vec<&str>) -> Plan {
-        use tonin_plugin::ServiceRef;
+        use tonin_plugin::{DEFAULT_DEPENDENCY_PORT, DependencyRef};
 
         Plan {
             name: name.to_string(),
@@ -383,9 +384,10 @@ mod tests {
             security: None,
             depends_on: deps
                 .into_iter()
-                .map(|d| ServiceRef {
+                .map(|d| DependencyRef {
                     name: d.to_string(),
                     namespace: "default".to_string(),
+                    port: DEFAULT_DEPENDENCY_PORT,
                 })
                 .collect(),
             callers: vec![],
@@ -398,6 +400,7 @@ mod tests {
             migrations: None,
             config: None,
             emitted_env: Default::default(),
+            env_vars: vec![],
             selected_env: "dev".to_string(),
             client: Default::default(),
             path_rules: vec![],
