@@ -43,6 +43,16 @@ spec:
             - { port: "{{ .Values.service.mcpPort }}", protocol: TCP }
             {{- end }}
   egress:
+    # DNS (kube-dns). Any egress rule makes this policy default-deny for the
+    # pod, which would otherwise silently break service discovery.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: observability
@@ -56,7 +66,8 @@ spec:
             service.identity: {{ .name }}.{{ .namespace }}
       toPorts:
         - ports:
-            - { port: "50051", protocol: TCP }
+            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
+            - { port: "{{ .port | default 50051 }}", protocol: TCP }
     {{- end }}
     {{- if .Values.database.enabled }}
     # Database egress (shared or owned).

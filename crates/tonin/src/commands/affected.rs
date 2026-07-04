@@ -447,7 +447,10 @@ fn print_packages_table(pkgs: &[AffectedPackage]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tonin_plugin::plan::{ClientSpec, McpMode, Mesh, PathRule, ServiceKind, ServiceRef};
+    use tonin_plugin::plan::{
+        ClientSpec, DEFAULT_DEPENDENCY_PORT, DependencyRef, McpMode, Mesh, PathRule, ServiceKind,
+        ServiceRef,
+    };
 
     fn make_mock_plan(name: &str, depends_on: &[&str], path_rules: Vec<PathRule>) -> Plan {
         Plan {
@@ -473,9 +476,10 @@ mod tests {
             security: None,
             depends_on: depends_on
                 .iter()
-                .map(|d| ServiceRef {
+                .map(|d| DependencyRef {
                     name: d.to_string(),
                     namespace: "demo".to_string(),
+                    port: DEFAULT_DEPENDENCY_PORT,
                 })
                 .collect(),
             callers: Vec::new(),
@@ -488,6 +492,7 @@ mod tests {
             migrations: None,
             config: None,
             emitted_env: Default::default(),
+            env_vars: Vec::new(),
             selected_env: "staging".to_string(),
             client: ClientSpec::default(),
             path_rules,

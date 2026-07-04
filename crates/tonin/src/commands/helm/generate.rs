@@ -281,6 +281,11 @@ fn build_context(plan: &Plan) -> tera::Context {
     ctx.insert("stateful_env_literals", &plan.emitted_env.literals);
     ctx.insert("secret_keys", &plan.emitted_env.from_secret);
 
+    // ---- Plain env vars from [env] (+ [env.<env>] overlay), resolved for
+    //      this env. Rendered into the chart's `env:` map, which the
+    //      deployment template already injects into the server container.
+    ctx.insert("env_vars", &plan.env_vars);
+
     // ---- Migrations. `enabled` when tonin.toml asks for a managed migration
     //      step (run_on = init-container). The chart renders either an
     //      initContainer (default, dev / owned DB) or a pre-upgrade hook Job
@@ -1111,6 +1116,140 @@ audit    = { namespace = "security-{env}", envs = ["prod"] }
             "prod override must not leak into dev: {dev}"
         );
         assert!(!dev.contains("name: audit"), "audit is prod-only: {dev}");
+    }
+
+    #[test]
+    fn env_tables_render_into_values_env_map() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(
+            svc.path(),
+            r#"
+schema = "v1"
+[service]
+name    = "gateway"
+version = "0.1.0"
+type    = "http"
+port    = 7001
+[deploy]
+replicas  = 1
+mesh      = "cilium"
+namespace = "zvectorlabs-{env}"
+[resources]
+cpu    = "100m"
+memory = "128Mi"
+[env]
+IDENTITY_GRPC_URL = "http://identity.zvectorlabs-{env}.svc.cluster.local:50051"
+LOG_FORMAT        = "json"
+[env.dev]
+LOG_FORMAT = "pretty"
+"#,
+        );
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["dev".into(), "prod".into()],
+        })
+        .unwrap();
+
+        // {env} resolves per environment; the dev overlay wins in dev only.
+        let dev = read(&out.join("values-dev.yaml"));
+        assert!(
+            dev.contains(
+                "IDENTITY_GRPC_URL: \"http://identity.zvectorlabs-dev.svc.cluster.local:50051\""
+            ),
+            "{dev}"
+        );
+        assert!(dev.contains("LOG_FORMAT: \"pretty\""), "{dev}");
+        let prod = read(&out.join("values-prod.yaml"));
+        assert!(
+            prod.contains(
+                "IDENTITY_GRPC_URL: \"http://identity.zvectorlabs-prod.svc.cluster.local:50051\""
+            ),
+            "{prod}"
+        );
+        assert!(prod.contains("LOG_FORMAT: \"json\""), "{prod}");
+        // Base values.yaml carries the map too, and the deployment template
+        // injects .Values.env into the server container.
+        let base = read(&out.join("values.yaml"));
+        assert!(base.contains("IDENTITY_GRPC_URL:"), "{base}");
+        let deployment = read(&out.join("templates").join("deployment.yaml"));
+        assert!(deployment.contains(".Values.env"), "{deployment}");
+    }
+
+    #[test]
+    fn no_env_section_renders_empty_env_map() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+        let values = read(&out.join("values.yaml"));
+        // Column-0 anchor: distinguishes from the nested `migrations.env: {}`.
+        assert!(values.contains("\nenv: {}"), "{values}");
+    }
+
+    #[test]
+    fn depends_on_port_renders_into_values_and_policy_template() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(
+            svc.path(),
+            r#"
+schema = "v1"
+[service]
+name    = "zvectorlabs-api"
+version = "0.1.0"
+type    = "http"
+port    = 7001
+[deploy]
+namespace = "zvectorlabs-{env}"
+replicas  = 1
+mesh      = "cilium"
+[resources]
+cpu    = "100m"
+memory = "256Mi"
+[depends_on]
+identity        = "zvectorlabs-{env}"
+zradar-platform = { namespace = "zradar-{env}", port = 4317 }
+"#,
+        );
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+
+        let prod = read(&out.join("values-prod.yaml"));
+        // Bare-string form keeps the historical 50051 default.
+        assert!(
+            prod.contains("- name: identity\n      namespace: zvectorlabs-prod\n      port: 50051"),
+            "{prod}"
+        );
+        // Table form carries its declared port.
+        assert!(
+            prod.contains(
+                "- name: zradar-platform\n      namespace: zradar-prod\n      port: 4317"
+            ),
+            "{prod}"
+        );
+
+        let policy = read(&out.join("templates").join("networkpolicy.yaml"));
+        assert!(
+            policy.contains(r#"port: "{{ .port | default 50051 }}""#),
+            "egress uses the per-dependency port: {policy}"
+        );
+        assert!(
+            !policy.contains(r#"- { port: "50051", protocol: TCP }"#),
+            "hardcoded dependency egress port must be gone: {policy}"
+        );
+        // DNS egress ships alongside — default-deny would break discovery.
+        assert!(policy.contains("k8s-app: kube-dns"), "{policy}");
     }
 
     #[test]

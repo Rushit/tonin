@@ -38,9 +38,9 @@ pub use config::ConfigLoader;
 
 // Plan loading + schema types
 pub use plan::{
-    CURRENT_SCHEMA, ClientSpec, Error, HealthSpec, McpMode, Mesh, MethodCacheSpec, Plan,
-    RECOMMENDED_CLI_MIN, SUPPORTED_SCHEMAS, SecuritySection, ServiceKind, ServiceRef, WebMode,
-    wave_groups,
+    CURRENT_SCHEMA, ClientSpec, DEFAULT_DEPENDENCY_PORT, DependencyRef, Error, HealthSpec, McpMode,
+    Mesh, MethodCacheSpec, Plan, RECOMMENDED_CLI_MIN, SUPPORTED_SCHEMAS, SecuritySection,
+    ServiceKind, ServiceRef, WebMode, wave_groups,
 };
 
 // Env resolution + resolved stateful types

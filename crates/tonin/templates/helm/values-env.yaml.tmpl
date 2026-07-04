@@ -21,6 +21,13 @@ statefulEnv:{% if stateful_env_literals | length == 0 %} {}{% endif %}
   {{ kv.0 }}: "{{ kv.1 }}"
 {%- endfor %}
 
+# Plain env vars from tonin.toml [env], merged with the [env.{{ env_name }}]
+# overlay and with {env} substituted for this environment.
+env:{% if env_vars | length == 0 %} {}{% endif %}
+{%- for kv in env_vars %}
+  {{ kv.0 }}: "{{ kv.1 }}"
+{%- endfor %}
+
 database:
   enabled: {{ db_enabled }}
   shared: {% if db_shared %}true{% else %}false{% endif %}
@@ -68,4 +75,5 @@ networkPolicy:
 {%- for d in depends_on %}
     - name: {{ d.name }}
       namespace: {{ d.namespace }}
+      port: {{ d.port }}
 {%- endfor %}
