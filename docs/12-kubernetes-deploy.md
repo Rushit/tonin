@@ -244,6 +244,7 @@ users-service     = "myapp-{env}"                                               
 inventory-service = { namespace = "inventory-{env}", prod = "inventory-shared" }           # prod overrides the convention
 audit-sink        = { namespace = "security-{env}", envs = ["prod"] }                      # only egresses in prod
 billing           = { namespace = "@inherit" }                                             # namespace set at deploy time; omitted from the chart
+otel-gateway      = { namespace = "observability-{env}", port = 4317 }                     # non-gRPC / non-default listen port
 ```
 
 Resolution rules for an environment `E`:
@@ -252,8 +253,41 @@ Resolution rules for an environment `E`:
 - `envs = [...]` restricts the dependency to those environments; elsewhere it is dropped.
 - `@inherit` omits the entry from the rendered policy — supply it at deploy time (`--set-json`) or via GitOps.
 - If an active dependency has no namespace for `E`, or a `{...}` placeholder is left unresolved, generation **fails** — there is no silent fallback to a base value, which is what previously let a dev namespace leak into a prod chart.
+- `port` declares the dependency's listen port; the generated CiliumNetworkPolicy egress rule allows exactly that port. Omitted (and for the shorthand string form) it defaults to `50051`, the tonin gRPC convention — so existing files render the same egress rule as before.
 
 Both the shorthand string form and literal namespaces (no `{env}`) keep working unchanged.
+
+### Plain environment variables (`[env]`)
+
+Runtime configuration that is neither stateful (`[database]`/`[cache]` emit
+`DATABASE_URL`/`REDIS_URL` for you) nor secret (`[secrets]` emits
+`secretKeyRef` env) goes in the optional `[env]` table — plain string env vars
+injected verbatim into the server container:
+
+```toml
+[env]
+IDENTITY_GRPC_URL = "http://identity.myapp-{env}.svc.cluster.local:50051"
+LOG_FORMAT        = "json"
+
+[env.dev]
+LOG_FORMAT = "pretty"        # merged over the base for dev only
+```
+
+- `[env.<env>]` overlays merge over the base entries for that environment
+  (overlay wins per key; other base keys survive).
+- `{env}` in values substitutes the environment being rendered, same as
+  namespaces. Other `{...}` tokens pass through verbatim — env values may
+  legitimately contain braces.
+- Values must be strings (`PORT = "8080"`, not `PORT = 8080`).
+- Keys that collide with env vars tonin already emits (stateful literals like
+  `DATABASE_URL`, or secret-sourced keys) fail generation — duplicate
+  container env names are last-one-wins in Kubernetes, so a collision would
+  silently override the resolved value.
+
+The table renders into the chart's `env:` map in `values.yaml` and each
+`values-<env>.yaml`, so it survives regeneration — unlike hand-edits to the
+`extraEnv: []` deploy-time escape hatch, which `tonin helm generate`
+intentionally leaves empty.
 
 ## How it fits together
 
