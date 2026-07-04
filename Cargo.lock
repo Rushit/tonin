@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "greeter"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "futures-util",
  "prost 0.14.4",
@@ -1604,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "inventory"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "prost 0.14.4",
  "tokio",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "orders"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "prost 0.14.4",
  "tokio",
@@ -3971,7 +3971,7 @@ dependencies = [
 
 [[package]]
 name = "tonin"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4000,14 +4000,14 @@ dependencies = [
 
 [[package]]
 name = "tonin-build"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "tonic-prost-build",
 ]
 
 [[package]]
 name = "tonin-client"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "dashmap",
  "futures-util",
@@ -4024,7 +4024,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-config-etcd"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "async-trait",
  "etcd-client",
@@ -4036,7 +4036,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-config-github"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -4051,7 +4051,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-mcp-macros"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -4061,7 +4061,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-plugin"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -4075,7 +4075,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-proxy"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4092,7 +4092,7 @@ dependencies = [
 
 [[package]]
 name = "tonin-sdk"
-version = "0.13.4"
+version = "0.14.0"
 dependencies = [
  "async-stream",
  "async-trait",
