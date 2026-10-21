@@ -22,7 +22,7 @@ tracing      = { workspace = true }
 tokio        = { workspace = true, features = ["sync", "time"] }
 dashmap      = { workspace = true }
 futures-util = { workspace = true }
-opentelemetry = "0.32"
+opentelemetry = "0.33"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

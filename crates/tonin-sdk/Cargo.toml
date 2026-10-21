@@ -36,16 +36,16 @@ tonin-mcp-macros = { workspace = true }
 
 # Telemetry (folded from tonin-telemetry)
 tracing-subscriber                = { workspace = true }
-tracing-opentelemetry             = "0.33"
-opentelemetry                     = "0.32"
-opentelemetry_sdk                 = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp                = { version = "0.32", features = ["grpc-tonic", "trace"] }
-opentelemetry-semantic-conventions = "0.32"
-opentelemetry-http                = "0.32"
+tracing-opentelemetry             = "0.34"
+opentelemetry                     = "0.33"
+opentelemetry_sdk                 = { version = "0.33", features = ["rt-tokio"] }
+opentelemetry-otlp                = { version = "0.33", features = ["grpc-tonic", "trace"] }
+opentelemetry-semantic-conventions = "0.33"
+opentelemetry-http                = "0.33"
 
 # MCP runtime (folded from tonin-mcp)
-rmcp        = { version = "2", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
-rmcp-macros = "2"
+rmcp        = { version = "3", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp-macros = "3"
 schemars    = "1"
 hyper-util  = { version = "0.1", features = ["server-auto", "tokio", "service"] }
 
@@ -63,9 +63,9 @@ redis = { version = "1", default-features = false, features = ["tokio-rustls-com
 tokio                = { workspace = true }
 tokio-test           = "0.4"
 tracing-subscriber   = { workspace = true }
-tracing-opentelemetry = "0.33"
+tracing-opentelemetry = "0.34"
 async-stream         = "0.3"
 futures-util         = "0.3"
 async-trait          = { workspace = true }
-opentelemetry        = "0.32"
-opentelemetry_sdk    = { version = "0.32", features = ["testing"] }
+opentelemetry        = "0.33"
+opentelemetry_sdk    = { version = "0.33", features = ["testing"] }
