@@ -45,8 +45,6 @@ spec:
       labels:
         app: web-shell
         service.identity: web-shell.platform-dev
-      annotations:
-        io.cilium/encryption: enabled
     spec:
       securityContext:
         fsGroup: 1000

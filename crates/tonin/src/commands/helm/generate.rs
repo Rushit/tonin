@@ -199,14 +199,6 @@ fn build_context(plan: &Plan) -> tera::Context {
     ctx.insert("is_cilium", &(plan.mesh.as_str() == "cilium"));
     ctx.insert("expose", &plan.expose);
 
-    // Mesh-derived pod annotations. Generated (not hand-edited) so they survive
-    // `tonin helm generate`. Cilium gets transparent (WireGuard) encryption.
-    let mut pod_annotations: Vec<(String, String)> = Vec::new();
-    if plan.mesh.as_str() == "cilium" {
-        pod_annotations.push(("io.cilium/encryption".into(), "enabled".into()));
-    }
-    ctx.insert("pod_annotations", &pod_annotations);
-
     // Service protocol. `backend` → gRPC; `http` → HTTP; `web` → frontend.
     // A gRPC backend can ALSO expose an HTTP port via `plan.http_port`.
     let is_web = matches!(plan.kind, ServiceKind::Web);
@@ -332,7 +324,6 @@ fn base_context(plan: &Plan) -> tera::Context {
     ctx.insert("mcp_mode", McpMode::None.as_str());
     // Derived from [depends_on].
     ctx.insert("needs_proxy", &false);
-    ctx.insert("pod_annotations", &Vec::<(String, String)>::new());
     // [database] / [cache] / [secrets] / [env] / [callers] / [depends_on].
     ctx.insert("db_enabled", &false);
     insert_no_database(&mut ctx);
@@ -972,7 +963,7 @@ registry = "ghcr.io/myorg"
     }
 
     #[test]
-    fn cilium_mesh_emits_pod_annotations_and_escape_hatches() {
+    fn cilium_mesh_has_no_pod_annotations_and_keeps_escape_hatches() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);
         let out = svc.path().join("chart");
@@ -984,8 +975,12 @@ registry = "ghcr.io/myorg"
         .unwrap();
 
         let values = read(&out.join("values.yaml"));
-        // Cilium transparent encryption is generated, not hand-edited.
-        assert!(read(&out.join("values-prod.yaml")).contains("io.cilium/encryption"));
+        // No mesh-derived pod annotations: Cilium transparent encryption is a
+        // cluster setting, not a per-pod annotation (and is off by design).
+        assert!(values.contains("podAnnotations: {}"), "{values}");
+        let prod = read(&out.join("values-prod.yaml"));
+        assert!(!prod.contains("io.cilium/encryption"), "{prod}");
+        assert!(!prod.contains("podAnnotations"), "{prod}");
         // Escape hatches default empty so regeneration never clobbers them.
         assert!(values.contains("extraEnv: []"));
         assert!(values.contains("extraManifests: []"));
