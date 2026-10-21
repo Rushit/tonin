@@ -93,8 +93,6 @@ spec:
       labels:
         app: identity
         service.identity: identity.platform-prd
-      annotations:
-        io.cilium/encryption: enabled
     spec:
       securityContext:
         fsGroup: 65532

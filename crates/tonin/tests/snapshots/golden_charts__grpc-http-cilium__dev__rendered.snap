@@ -50,8 +50,6 @@ spec:
       labels:
         app: telemetry
         service.identity: telemetry.telemetry-dev
-      annotations:
-        io.cilium/encryption: enabled
     spec:
       securityContext:
         fsGroup: 65532

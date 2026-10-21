@@ -104,8 +104,8 @@ rustService: true
 # overlays, {env} substituted). Injected verbatim into the server container.
 env: {}
 
-# Pod annotations. Mesh-derived entries (e.g. cilium transparent encryption) are
-# generated here; add your own at deploy time via --set podAnnotations.key=value.
+# Pod annotations. tonin generates none; add your own at deploy time via
+# --set podAnnotations.key=value.
 podAnnotations: {}
 
 # Escape hatches — empty by design so `tonin helm generate` never clobbers them.

@@ -28,9 +28,6 @@ ingress:
   enabled: false
   host: ""
 
-podAnnotations:
-  io.cilium/encryption: "enabled"
-
 # Stateful env resolves per-env (e.g. dev points at a shared instance URL).
 statefulEnv:
   DATABASE_URL: "postgres://identity:$(DATABASE_PASSWORD)@identity-db.platform-prd.svc.cluster.local:5432/identity"

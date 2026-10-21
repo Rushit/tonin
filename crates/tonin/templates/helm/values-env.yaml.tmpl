@@ -24,11 +24,6 @@ ingress:
   enabled: {% if expose %}true{% else %}false{% endif %}
   host: "{{ expose | default(value="") }}"
 
-podAnnotations:{% if pod_annotations | length == 0 %} {}{% endif %}
-{%- for kv in pod_annotations %}
-  {{ kv.0 }}: "{{ kv.1 }}"
-{%- endfor %}
-
 # Stateful env resolves per-env (e.g. dev points at a shared instance URL).
 statefulEnv:{% if stateful_env_literals | length == 0 %} {}{% endif %}
 {%- for kv in stateful_env_literals %}
