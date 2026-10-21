@@ -79,8 +79,8 @@ spec:
               value: "service.namespace=telemetry-dev,service.version=0.2.3"
             - name: RUST_LOG
               value: "info"
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             - name: TELEMETRY_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -98,6 +98,8 @@ spec:
                   key: AWS_SECRET_ACCESS_KEY
             - name: DATABASE_URL
               value: "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/telemetry_dev"
+            - name: ANALYTICS_DATABASE_URL
+              value: "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/analytics_dev"
             - name: REDIS_URL
               value: "redis://redis.shared-dev.svc.cluster.local:6379"
             - name: IDENTITY_GRPC_URL
@@ -160,8 +162,8 @@ spec:
 ---
 # Source: telemetry/templates/networkpolicy.yaml
 # CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, own DB/cache). mTLS, retries, and
-# circuit breaking stay with the mesh, not this policy.
+# (observability, declared dependencies, the platform contract's databases and
+# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -220,17 +222,25 @@ spec:
         - ports:
             # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
-    # Database egress (shared or owned).
+    # [database] (platform contract)
     - toEndpoints:
         - matchLabels:
-            service.identity: telemetry-db.telemetry-dev
+            k8s:io.kubernetes.pod.namespace: shared-dev
+            app.kubernetes.io/name: "postgres"
       toPorts:
         - ports:
             - { port: "5432", protocol: TCP }
-    # Cache egress (shared or owned).
+    # [databases.analytics] (platform contract)
     - toEndpoints:
         - matchLabels:
-            service.identity: telemetry-cache.telemetry-dev
+            cnpg.io/cluster: "telemetry-analytics-pg"
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # [cache] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: "telemetry-cache"
       toPorts:
         - ports:
             - { port: "6379", protocol: TCP }

@@ -41,6 +41,19 @@ pub enum Error {
          tonin already emits — rename the [env] key or drop the duplicate"
     )]
     ReservedEnvKey { key: String, origin: String },
+    #[error("{field} is no longer supported (tonin 0.15): {hint}")]
+    RemovedField { field: String, hint: String },
+    #[error("{field}: {reason}")]
+    InvalidField { field: String, reason: String },
+    #[error(
+        "env var {key} is emitted twice, by {first} and by {second}; \
+         rename one (e.g. `env = \"…\"` on a [database]/[cache] table)"
+    )]
+    DuplicateEnvVar {
+        key: String,
+        first: String,
+        second: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -845,37 +858,32 @@ impl Plan {
             !is_rust && !depends_on.is_empty() && proxy_override != Some(false);
 
         let svc_name = raw.service.name.clone();
-        let svc_ns = deploy_namespace.clone();
-        let database = raw
-            .database
-            .as_ref()
-            .map(|r| stateful::resolve_database(r, env, &svc_name, &svc_ns));
-        let named_databases: Vec<(String, DatabaseSpec)> = raw
-            .databases
-            .iter()
-            .map(|(name, r)| {
-                (
-                    name.clone(),
-                    stateful::resolve_database(r, env, &svc_name, &svc_ns),
-                )
-            })
-            .collect();
-        let cache = raw
-            .cache
-            .as_ref()
-            .map(|r| stateful::resolve_cache(r, env, &svc_name, &svc_ns));
-        let named_caches: Vec<(String, CacheSpec)> = raw
-            .caches
-            .iter()
-            .map(|(name, r)| {
-                (
-                    name.clone(),
-                    stateful::resolve_cache(r, env, &svc_name, &svc_ns),
-                )
-            })
-            .collect();
+        let database = match &raw.database {
+            Some(r) => stateful::resolve_database(r, env, &svc_name, None)?,
+            None => None,
+        };
+        let mut named_databases: Vec<(String, DatabaseSpec)> = Vec::new();
+        for (name, r) in &raw.databases {
+            if let Some(spec) = stateful::resolve_database(r, env, &svc_name, Some(name))? {
+                named_databases.push((name.clone(), spec));
+            }
+        }
+        let cache = match &raw.cache {
+            Some(r) => stateful::resolve_cache(r, env, &svc_name, None)?,
+            None => None,
+        };
+        let mut named_caches: Vec<(String, CacheSpec)> = Vec::new();
+        for (name, r) in &raw.caches {
+            if let Some(spec) = stateful::resolve_cache(r, env, &svc_name, Some(name))? {
+                named_caches.push((name.clone(), spec));
+            }
+        }
         let secrets = raw.secrets.as_ref().map(stateful::resolve_secrets);
-        let migrations = raw.migrations.as_ref().map(stateful::resolve_migrations);
+        let migrations = raw
+            .migrations
+            .as_ref()
+            .map(|m| stateful::resolve_migrations(m, env))
+            .transpose()?;
         let config = raw.config.as_ref().map(stateful::resolve_config);
 
         let client = raw
@@ -904,40 +912,40 @@ impl Plan {
             .unwrap_or_default();
 
         let mut emitted_env = EmittedEnv::default();
-        if let Some(d) = &database {
-            emitted_env.extend_database(d, &svc_name);
+        if let Some(s) = &secrets {
+            emitted_env.extend_secrets(s);
         }
-        for (name, d) in &named_databases {
-            let prefix = format!("{}_DATABASE", name.to_uppercase());
-            emitted_env.extend_database_named(&prefix, d, &svc_name);
+        if let Some(d) = &database {
+            emitted_env.extend_database(d);
+        }
+        for (_, d) in &named_databases {
+            emitted_env.extend_database(d);
         }
         if let Some(c) = &cache {
             emitted_env.extend_cache(c);
         }
-        for (name, c) in &named_caches {
-            let prefix = format!("{}_REDIS", name.to_uppercase());
-            emitted_env.extend_cache_named(&prefix, c);
-        }
-        if let Some(s) = &secrets {
-            emitted_env.extend_secrets(s);
+        for (_, c) in &named_caches {
+            emitted_env.extend_cache(c);
         }
 
-        // Reserved-name guard: `[env]` must not shadow env vars tonin already
-        // emits (stateful literals like DATABASE_URL / REDIS_URL, or
-        // secret-sourced keys). Duplicate container env names are
-        // last-one-wins in Kubernetes — silently overriding a resolved URL is
-        // exactly the drift tonin.toml exists to prevent, so hard-error.
-        for (key, _) in &env_vars {
-            if emitted_env.literals.iter().any(|(k, _)| k == key) {
-                return Err(Error::ReservedEnvKey {
+        // Duplicate container env names are last-one-wins in Kubernetes, so
+        // two sections emitting the same var (or `[env]` shadowing one tonin
+        // emits) would silently override a resolved value: hard-error.
+        let declared = emitted_env.declared();
+        for (i, (key, origin)) in declared.iter().enumerate() {
+            if let Some((_, first)) = declared[..i].iter().find(|(k, _)| k == key) {
+                return Err(Error::DuplicateEnvVar {
                     key: key.clone(),
-                    origin: "stateful ([database]/[cache])".into(),
+                    first: first.clone(),
+                    second: origin.clone(),
                 });
             }
-            if emitted_env.from_secret.iter().any(|k| k == key) {
+        }
+        for (key, _) in &env_vars {
+            if let Some((_, origin)) = declared.iter().find(|(k, _)| k == key) {
                 return Err(Error::ReservedEnvKey {
                     key: key.clone(),
-                    origin: "secret-sourced ([secrets])".into(),
+                    origin: origin.clone(),
                 });
             }
         }
@@ -1504,6 +1512,29 @@ mod tests {
         .concat();
         let err = try_load_env(&body, "prod").unwrap_err();
         assert!(matches!(err, Error::ReservedEnvKey { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn datastore_env_colliding_with_a_secret_key_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[secrets]\nrequired = [\"PLATFORM_DATABASE_URL\"]\n[database]\nengine = \"postgres\"\nenv = \"PLATFORM_DATABASE_URL\"\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(matches!(err, Error::DuplicateEnvVar { .. }), "got {err:?}");
+        assert!(err.to_string().contains("[secrets].required"), "{err}");
+    }
+
+    #[test]
+    fn removed_database_field_fails_the_plan() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[database]\nengine = \"postgres\"\nsize = \"10Gi\"\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(matches!(err, Error::RemovedField { .. }), "got {err:?}");
     }
 
     #[test]

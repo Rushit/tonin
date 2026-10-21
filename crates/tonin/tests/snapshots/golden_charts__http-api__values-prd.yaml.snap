@@ -28,46 +28,42 @@ ingress:
   enabled: false
   host: ""
 
-# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
-statefulEnv: {}
-
 # Plain env vars from tonin.toml [env], merged with the [env.prd]
 # overlay and with {env} substituted for this environment.
 env:
   IDENTITY_GRPC_ADDR: "http://identity.platform-prd.svc.cluster.local:50051"
-  PLATFORM_REDIS_URL: "redis://redis.shared-prd.svc.cluster.local:6379"
   PLATFORM_SERVER_PORT: "7001"
   TELEMETRY_URL: "http://telemetry.telemetry-prd.svc.cluster.local:8080"
 
-database:
-  enabled: false
-  shared: false
-  engine: "none"
-  name: ""
-  namespace: ""
-  port: 5432
-  image: ""
-  storage: "2Gi"
-
-cache:
-  enabled: false
-  shared: false
-  engine: "none"
-  name: ""
-  namespace: ""
-  port: 6379
-  storage: "1Gi"
+# Databases and caches of the platform contract, resolved for prd.
+datastores:
+  - name: database
+    env: PLATFORM_DATABASE_URL
+    secret:
+      env: PLATFORM_DATABASE_URL
+      name: platform-api-pg-app
+      key: uri
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: platform-api-pg
+  - name: cache
+    env: PLATFORM_REDIS_URL
+    secret:
+      env: PLATFORM_REDIS_URL
+      name: platform-api-cache
+      key: uri
+    egress:
+      port: 6379
+      labels:
+        app.kubernetes.io/name: platform-api-cache
 
 secrets:
   keys:
-    - PLATFORM_DATABASE_URL
     - TELEMETRY_SERVICE_TOKEN
 
 migrations:
-  enabled: false
-  mode: init-container
-  command: []
-  env: {}
+  mode: job
 
 networkPolicy:
   enabled: true

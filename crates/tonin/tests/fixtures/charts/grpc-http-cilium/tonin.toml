@@ -1,5 +1,7 @@
 # Golden fixture: gRPC service that also serves HTTP (health on the HTTP
-# port), cilium mesh, database + cache, per-env env, and an autoscale range.
+# port), cilium mesh, database + cache (dev: shared instances by URL, with
+# egress overridden to them), a named database, per-env env, and an autoscale
+# range.
 # Modelled on the zvectorlabs `zradar-platform` service.
 schema = "v1"
 
@@ -55,15 +57,22 @@ max_replicas = 4
 engine = "postgres"
 
 [database.dev]
-shared = true
-url    = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/telemetry_dev"
+url       = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/telemetry_dev"
+namespace = "shared-dev"
+labels    = { "app.kubernetes.io/name" = "postgres" }
+
+# Named variant: env ANALYTICS_DATABASE_URL, Secret telemetry-analytics-pg-app.
+[databases.analytics]
+engine = "postgres"
+
+[databases.analytics.dev]
+url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/analytics_dev"
 
 [cache]
 engine = "redis"
 
 [cache.dev]
-shared = true
-url    = "redis://redis.shared-dev.svc.cluster.local:6379"
+url = "redis://redis.shared-dev.svc.cluster.local:6379"
 
 [env]
 IDENTITY_GRPC_URL = "http://identity.platform-{env}.svc.cluster.local:50051"

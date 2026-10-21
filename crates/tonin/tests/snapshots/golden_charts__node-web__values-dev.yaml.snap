@@ -28,40 +28,18 @@ ingress:
   enabled: false
   host: ""
 
-# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
-statefulEnv: {}
-
 # Plain env vars from tonin.toml [env], merged with the [env.dev]
 # overlay and with {env} substituted for this environment.
 env: {}
 
-database:
-  enabled: false
-  shared: false
-  engine: "none"
-  name: ""
-  namespace: ""
-  port: 5432
-  image: ""
-  storage: "2Gi"
-
-cache:
-  enabled: false
-  shared: false
-  engine: "none"
-  name: ""
-  namespace: ""
-  port: 6379
-  storage: "1Gi"
+# Databases and caches of the platform contract, resolved for dev.
+datastores: []
 
 secrets:
   keys: []
 
 migrations:
-  enabled: false
-  mode: init-container
-  command: []
-  env: {}
+  mode: none
 
 networkPolicy:
   enabled: true

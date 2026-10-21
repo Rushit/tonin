@@ -1,14 +1,62 @@
-{{- if and .Values.migrations.enabled (eq .Values.migrations.mode "job") }}
-# Migration Job — a pre-install/pre-upgrade hook. Helm runs it to completion
-# and only applies the rest of the release if it SUCCEEDS, so the rollout is
-# strictly gated on a successful migration ("migrate, then release"). With
-# `helm upgrade --wait --atomic`, a failed migration rolls the release back.
-#
-# Prerequisites (because pre-upgrade hooks run BEFORE the chart's own
-# StatefulSet/Secret are created):
-#   - the database must already exist  → use a managed/shared DB (database.shared=true)
-#   - the Secret must already exist     → use secrets.create=false (externally
-#     managed: Sealed Secrets / ExternalSecrets / kubectl)
+{{- if eq .Values.migrations.mode "job" }}
+{{- /*
+Migration Job: a pre-install/pre-upgrade hook. Helm runs it to completion and
+only applies the rest of the release if it SUCCEEDS, so the rollout is gated
+on a successful migration ("migrate, then release"). With
+`helm upgrade --wait --atomic`, a failed migration rolls the release back.
+
+Hooks run BEFORE the chart's own resources exist (on install) or are updated
+(on upgrade). So the Job relies only on things outside the release:
+  - the database and its Secret come from the platform contract
+    (`<service>-pg-app`, `<service>-pg-ca`), not from this chart;
+  - `[secrets]` keys are read with `optional: true`: the chart-owned
+    `<service>-secrets` Secret does not exist yet on a first install
+    (secrets.create=true), only from the first upgrade on;
+  - its CiliumNetworkPolicy is a hook too, with a lower weight, so egress to
+    the database is allowed before the Job starts;
+  - it runs as the namespace's default ServiceAccount.
+The Job's pods carry their own labels: the Service selector (`app`) does not
+match them, `service.identity` does, so the service's policies apply.
+*/}}
+{{- if and .Values.networkPolicy.enabled (eq .Values.mesh "cilium") }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "service.name" . }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: {{ include "service.name" . }}.{{ .Release.Namespace }}
+      app.kubernetes.io/component: migrate
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    {{- with include "service.datastoreEgress" . | trim }}
+    {{- . | nindent 4 }}
+    {{- end }}
+---
+{{- end }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -16,6 +64,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "0"
@@ -26,30 +75,52 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/name: {{ include "service.name" . }}
+        app.kubernetes.io/component: migrate
+        service.identity: {{ include "service.name" . }}.{{ .Release.Namespace }}
     spec:
       restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: migrate
           image: {{ include "service.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.migrations.command }}
           command:
-            {{- range .Values.migrations.command }}
+            {{- range . }}
             - {{ . | quote }}
             {{- end }}
+          {{- end }}
           env:
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
             {{- range .Values.secrets.keys }}
             - name: {{ . }}
               valueFrom:
                 secretKeyRef:
                   name: {{ include "service.name" $ }}-secrets
                   key: {{ . }}
+                  optional: true
             {{- end }}
-            {{- range $k, $v := .Values.statefulEnv }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
+            {{- with include "service.datastoreEnv" . | trim }}
+            {{- . | nindent 12 }}
             {{- end }}
             {{- range $k, $v := .Values.migrations.env }}
             - name: {{ $k }}
@@ -58,4 +129,14 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with include "service.datastoreVolumeMounts" . | trim }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
+      {{- with include "service.datastoreVolumes" . | trim }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
 {{- end }}

@@ -3,52 +3,6 @@ source: crates/tonin/tests/golden_charts.rs
 expression: rendered
 ---
 ---
-# Source: identity/templates/cache-service.yaml
-# Headless Service for the cache StatefulSet. Its name is the DNS host the
-# server resolves to via REDIS_URL.
-apiVersion: v1
-kind: Service
-metadata:
-  name: identity-cache
-  namespace: platform-prd
-  labels:
-    app: identity
-    app.kubernetes.io/name: identity
-    app.kubernetes.io/version: "0.3.7"
-    helm.sh/chart: identity-0.3.7
-spec:
-  clusterIP: None
-  selector:
-    app: identity-cache
-  ports:
-    - name: redis
-      port: 6379
-      targetPort: 6379
-
----
-# Source: identity/templates/db-service.yaml
-# Headless Service for the database StatefulSet. Its name is the DNS host the
-# server resolves to via DATABASE_URL.
-apiVersion: v1
-kind: Service
-metadata:
-  name: identity-db
-  namespace: platform-prd
-  labels:
-    app: identity
-    app.kubernetes.io/name: identity
-    app.kubernetes.io/version: "0.3.7"
-    helm.sh/chart: identity-0.3.7
-spec:
-  clusterIP: None
-  selector:
-    app: identity-db
-  ports:
-    - name: postgres
-      port: 5432
-      targetPort: 5432
-
----
 # Source: identity/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -99,40 +53,6 @@ spec:
         runAsGroup: 65532
         runAsNonRoot: true
         runAsUser: 65532
-      # DB migrations run to completion before the server starts. For the
-      # pre-upgrade Job alternative, set migrations.mode=job (see migration-job.yaml).
-      initContainers:
-        - name: migrate
-          image: "ghcr.io/example/identity:0.3.7"
-          imagePullPolicy: IfNotPresent
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-              - ALL
-            readOnlyRootFilesystem: true
-            seccompProfile:
-              type: RuntimeDefault
-          command:
-            - "/usr/local/bin/identity"
-            - "migrate"
-          env:
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
-            - name: DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: identity-secrets
-                  key: DATABASE_PASSWORD
-            - name: JWT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: identity-secrets
-                  key: JWT_SECRET
-            - name: DATABASE_URL
-              value: "postgres://identity:$(DATABASE_PASSWORD)@identity-db.platform-prd.svc.cluster.local:5432/identity"
-            - name: REDIS_URL
-              value: "redis://identity-cache.platform-prd.svc.cluster.local:6379"
       containers:
         - name: server
           image: "ghcr.io/example/identity:0.3.7"
@@ -156,22 +76,25 @@ spec:
               value: "service.namespace=platform-prd,service.version=0.3.7"
             - name: RUST_LOG
               value: "info"
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
-            - name: DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: identity-secrets
-                  key: DATABASE_PASSWORD
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: identity-secrets
                   key: JWT_SECRET
+            - name: TONIN_PG_URI
+              valueFrom:
+                secretKeyRef:
+                  name: identity-pg-app
+                  key: uri
             - name: DATABASE_URL
-              value: "postgres://identity:$(DATABASE_PASSWORD)@identity-db.platform-prd.svc.cluster.local:5432/identity"
+              value: "$(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt"
             - name: REDIS_URL
-              value: "redis://identity-cache.platform-prd.svc.cluster.local:6379"
+              valueFrom:
+                secretKeyRef:
+                  name: identity-cache
+                  key: uri
           ports:
             - containerPort: 50051
               name: grpc
@@ -195,6 +118,17 @@ spec:
             requests:
               cpu: 100m
               memory: 128Mi
+          volumeMounts:
+            - name: pg-ca
+              mountPath: /etc/pg-ca
+              readOnly: true
+      volumes:
+        - name: pg-ca
+          secret:
+            secretName: identity-pg-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
 
 ---
 # Source: identity/templates/hpa.yaml
@@ -224,120 +158,10 @@ spec:
           averageUtilization: 70
 
 ---
-# Source: identity/templates/cache-statefulset.yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: identity-cache
-  namespace: platform-prd
-  labels:
-    app: identity-cache
-    service.identity: identity-cache.platform-prd
-    app: identity
-    app.kubernetes.io/name: identity
-    app.kubernetes.io/version: "0.3.7"
-    helm.sh/chart: identity-0.3.7
-spec:
-  serviceName: identity-cache
-  replicas: 1
-  selector:
-    matchLabels:
-      app: identity-cache
-  template:
-    metadata:
-      labels:
-        app: identity-cache
-        service.identity: identity-cache.platform-prd
-    spec:
-      containers:
-        - name: redis
-          image: redis:7
-          # Persist for restart-survivability; drop if the cache is ephemeral.
-          args: ["--save", "60", "1", "--loglevel", "warning"]
-          ports:
-            - containerPort: 6379
-              name: redis
-          volumeMounts:
-            - name: data
-              mountPath: /data
-          resources:
-            requests: { cpu: "50m",  memory: "64Mi"  }
-            limits:   { cpu: "500m", memory: "512Mi" }
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
-
----
-# Source: identity/templates/db-statefulset.yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: identity-db
-  namespace: platform-prd
-  labels:
-    app: identity-db
-    service.identity: identity-db.platform-prd
-    app: identity
-    app.kubernetes.io/name: identity
-    app.kubernetes.io/version: "0.3.7"
-    helm.sh/chart: identity-0.3.7
-spec:
-  serviceName: identity-db
-  replicas: 1
-  selector:
-    matchLabels:
-      app: identity-db
-  template:
-    metadata:
-      labels:
-        app: identity-db
-        service.identity: identity-db.platform-prd
-    spec:
-      containers:
-        - name: postgres
-          image: "postgres:18"
-          ports:
-            - containerPort: 5432
-              name: postgres
-          env:
-            - name: POSTGRES_DB
-              value: "identity"
-            - name: POSTGRES_USER
-              value: "identity"
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: identity-secrets
-                  key: DATABASE_PASSWORD
-            # Postgres expects PGDATA on a subpath so lost+found doesn't trip initdb.
-            - name: PGDATA
-              value: /var/lib/postgresql/data/pgdata
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
-          resources:
-            requests: { cpu: "100m", memory: "256Mi" }
-            limits:   { cpu: "1",    memory: "1Gi"   }
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        # storageClassName omitted — uses the cluster default.
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 2Gi
-
----
 # Source: identity/templates/networkpolicy.yaml
 # CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, own DB/cache). mTLS, retries, and
-# circuit breaking stay with the mesh, not this policy.
+# (observability, declared dependencies, the platform contract's databases and
+# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -401,17 +225,155 @@ spec:
         - ports:
             # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
-    # Database egress (shared or owned).
+    # [database] (platform contract)
     - toEndpoints:
         - matchLabels:
-            service.identity: identity-db.platform-prd
+            cnpg.io/cluster: "identity-pg"
       toPorts:
         - ports:
             - { port: "5432", protocol: TCP }
-    # Cache egress (shared or owned).
+    # [cache] (platform contract)
     - toEndpoints:
         - matchLabels:
-            service.identity: identity-cache.platform-prd
+            app.kubernetes.io/name: "identity-cache"
+      toPorts:
+        - ports:
+            - { port: "6379", protocol: TCP }
+---
+# Source: identity/templates/migration-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: identity-migrate
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: identity
+        app.kubernetes.io/component: migrate
+        service.identity: identity.platform-prd
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: migrate
+          image: "ghcr.io/example/identity:0.3.7"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - "/usr/local/bin/identity"
+            - "migrate"
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: identity-secrets
+                  key: JWT_SECRET
+                  optional: true
+            - name: TONIN_PG_URI
+              valueFrom:
+                secretKeyRef:
+                  name: identity-pg-app
+                  key: uri
+            - name: DATABASE_URL
+              value: "$(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt"
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: identity-cache
+                  key: uri
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: pg-ca
+              mountPath: /etc/pg-ca
+              readOnly: true
+      volumes:
+        - name: pg-ca
+          secret:
+            secretName: identity-pg-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+
+---
+# Source: identity/templates/migration-job.yaml
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: identity-migrate
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: identity.platform-prd
+      app.kubernetes.io/component: migrate
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    # [database] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: "identity-pg"
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # [cache] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: "identity-cache"
       toPorts:
         - ports:
             - { port: "6379", protocol: TCP }

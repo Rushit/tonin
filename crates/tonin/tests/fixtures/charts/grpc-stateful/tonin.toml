@@ -1,6 +1,8 @@
 # Golden fixture: gRPC Rust service with database, cache, secrets, migrations,
 # callers and depends_on on the cilium mesh. Modelled on the zvectorlabs
-# `identity` service.
+# `identity` service. Covers: contract Secret references (prd), Postgres
+# verify-full with the CA mount (prd), literal dev URLs, and migrations as an
+# initContainer (dev) and a hook Job (prd).
 schema = "v1"
 
 [image]
@@ -49,23 +51,27 @@ max_replicas = 8
 engine = "postgres"
 
 [database.dev]
-shared = true
-url    = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+
+[database.prd]
+tls = "verify-full"
 
 [cache]
 engine = "redis"
 
 [cache.dev]
-shared = true
-url    = "redis://redis.shared-dev.svc.cluster.local:6379"
+url = "redis://redis.shared-dev.svc.cluster.local:6379"
 
 [secrets]
 required = ["JWT_SECRET"]
 
 [migrations]
 tool    = "custom"
-run_on  = "init-container"
+mode    = "init-container"
 command = ["/usr/local/bin/identity", "migrate"]
+
+[migrations.prd]
+mode = "job"
 
 [callers]
 api-gateway = "platform-{env}"

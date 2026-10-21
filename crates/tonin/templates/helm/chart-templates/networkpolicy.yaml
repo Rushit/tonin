@@ -1,7 +1,7 @@
 {{- if and .Values.networkPolicy.enabled (eq .Values.mesh "cilium") }}
 # CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, own DB/cache). mTLS, retries, and
-# circuit breaking stay with the mesh, not this policy.
+# (observability, declared dependencies, the platform contract's databases and
+# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -69,22 +69,7 @@ spec:
             # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "{{ .port | default 50051 }}", protocol: TCP }
     {{- end }}
-    {{- if .Values.database.enabled }}
-    # Database egress (shared or owned).
-    - toEndpoints:
-        - matchLabels:
-            service.identity: {{ .Values.database.name }}.{{ .Values.database.namespace }}
-      toPorts:
-        - ports:
-            - { port: "{{ .Values.database.port }}", protocol: TCP }
-    {{- end }}
-    {{- if .Values.cache.enabled }}
-    # Cache egress (shared or owned).
-    - toEndpoints:
-        - matchLabels:
-            service.identity: {{ .Values.cache.name }}.{{ .Values.cache.namespace }}
-      toPorts:
-        - ports:
-            - { port: "{{ .Values.cache.port }}", protocol: TCP }
+    {{- with include "service.datastoreEgress" . | trim }}
+    {{- . | nindent 4 }}
     {{- end }}
 {{- end }}

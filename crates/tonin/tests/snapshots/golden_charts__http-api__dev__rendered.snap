@@ -74,22 +74,25 @@ spec:
               value: "service.namespace=platform-dev,service.version=0.1.3"
             - name: RUST_LOG
               value: "info"
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
-            - name: PLATFORM_DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: platform-api-secrets
-                  key: PLATFORM_DATABASE_URL
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             - name: TELEMETRY_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: platform-api-secrets
                   key: TELEMETRY_SERVICE_TOKEN
+            - name: PLATFORM_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-pg-app
+                  key: uri
+            - name: PLATFORM_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-cache
+                  key: uri
             - name: IDENTITY_GRPC_ADDR
               value: "http://identity.platform-dev.svc.cluster.local:50051"
-            - name: PLATFORM_REDIS_URL
-              value: "redis://redis.shared-dev.svc.cluster.local:6379"
             - name: PLATFORM_SERVER_ALLOWED_ORIGINS
               value: "http://localhost:7002"
             - name: PLATFORM_SERVER_PORT
@@ -122,8 +125,8 @@ spec:
 ---
 # Source: platform-api/templates/networkpolicy.yaml
 # CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, own DB/cache). mTLS, retries, and
-# circuit breaking stay with the mesh, not this policy.
+# (observability, declared dependencies, the platform contract's databases and
+# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -179,3 +182,142 @@ spec:
         - ports:
             # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "8080", protocol: TCP }
+    # [database] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: "platform-api-pg"
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # [cache] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: "platform-api-cache"
+      toPorts:
+        - ports:
+            - { port: "6379", protocol: TCP }
+---
+# Source: platform-api/templates/migration-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: platform-api-migrate
+  namespace: platform-dev
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/version: "0.1.3"
+    helm.sh/chart: platform-api-0.1.3
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: platform-api
+        app.kubernetes.io/component: migrate
+        service.identity: platform-api.platform-dev
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: migrate
+          image: "ghcr.io/example/platform-api:0.1.3"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - "/usr/local/bin/platform-api"
+            - "migrate"
+          env:
+            - name: TELEMETRY_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: TELEMETRY_SERVICE_TOKEN
+                  optional: true
+            - name: PLATFORM_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-pg-app
+                  key: uri
+            - name: PLATFORM_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-cache
+                  key: uri
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+
+---
+# Source: platform-api/templates/migration-job.yaml
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: platform-api-migrate
+  namespace: platform-dev
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/version: "0.1.3"
+    helm.sh/chart: platform-api-0.1.3
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: platform-api.platform-dev
+      app.kubernetes.io/component: migrate
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    # [database] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: "platform-api-pg"
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # [cache] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: "platform-api-cache"
+      toPorts:
+        - ports:
+            - { port: "6379", protocol: TCP }

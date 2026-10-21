@@ -62,11 +62,10 @@
 //! mcp_sidecar = true             # auto-exposes gRPC routes as LLM tools
 //!
 //! [database]
-//! engine = "postgres"            # auto-provisions and injects Postgres
-//! size   = "10Gi"
+//! engine = "postgres"            # DATABASE_URL from the platform's <name>-pg-app Secret
 //!
 //! [cache]
-//! engine = "redis"               # auto-provisions Redis StatefulSet
+//! engine = "redis"               # REDIS_URL from the platform's <name>-cache Secret
 //! ```
 //!
 //! ---
