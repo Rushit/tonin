@@ -991,6 +991,50 @@ orders-service = "myapp-dev"
     }
 
     #[test]
+    fn ingress_host_renders_when_exposed_and_empty_otherwise() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(
+            svc.path(),
+            r#"
+[service]
+name    = "api"
+version = "1.0.0"
+type    = "http"
+
+[deploy]
+replicas  = 1
+namespace = "platform-{env}"
+
+[deploy.prd]
+expose = "api.example.com"
+
+[resources]
+cpu    = "100m"
+memory = "128Mi"
+"#,
+        );
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["dev".into(), "prd".into()],
+        })
+        .unwrap();
+        let prd = read(&out.join("values-prd.yaml"));
+        assert!(
+            prd.contains("ingress:\n  enabled: true\n  host: \"api.example.com\""),
+            "{prd}"
+        );
+        for file in ["values.yaml", "values-dev.yaml"] {
+            let values = read(&out.join(file));
+            assert!(
+                values.contains("ingress:\n  enabled: false\n  host: \"\""),
+                "{file}:\n{values}"
+            );
+        }
+    }
+
+    #[test]
     fn prod_values_reference_the_platform_contract() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);

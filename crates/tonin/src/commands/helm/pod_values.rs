@@ -208,7 +208,7 @@ args     = ["purge"]
             ),
             "{sa}"
         );
-        assert_eq!(ctx.get("secrets_create").unwrap(), false);
+        assert_eq!(ctx.get("secrets_create").unwrap().as_bool(), Some(false));
 
         let mut dev = tera::Context::new();
         contribute(&plan(TOML, "dev"), &mut dev);
@@ -217,7 +217,7 @@ args     = ["purge"]
             pod.contains("imagePullSecrets: []\nnodeSelector: {}"),
             "{pod}"
         );
-        assert_eq!(dev.get("secrets_create").unwrap(), true);
+        assert_eq!(dev.get("secrets_create").unwrap().as_bool(), Some(true));
     }
 
     #[test]

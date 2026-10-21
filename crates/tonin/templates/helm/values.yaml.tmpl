@@ -130,7 +130,7 @@ rustService: {% if is_rust %}true{% else %}false{% endif %}
 # overlays, {env} substituted). Injected verbatim into the server container.
 env:{% if env_vars | length == 0 %} {}{% endif %}
 {%- for kv in env_vars %}
-  {{ kv.0 }}: "{{ kv.1 }}"
+  {{ kv[0] }}: "{{ kv[1] }}"
 {%- endfor %}
 
 # ServiceAccount the service's pods run as (named after the service; the
