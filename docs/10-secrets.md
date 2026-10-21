@@ -51,6 +51,18 @@ map = { STRIPE_KEY = "STRIPE_API_KEY" }
 # external_store = { name = "aws-secrets-manager", kind = "ClusterSecretStore" }
 ```
 
+The chart templates the `<svc>-secrets` Secret from `secrets.values` when
+`create` is true (the default). Turn it off per environment when the Secret is
+managed elsewhere, e.g. a SealedSecret in prd:
+
+```toml
+[secrets]
+required = ["JWT_SIGNING_KEY"]
+
+[secrets.prd]
+create = false      # values-prd.yaml: secrets.create = false
+```
+
 ## Using it
 
 ```rust
@@ -102,7 +114,7 @@ platform contract's Secrets (`<svc>-pg-app`, `<svc>-cache`; see
   - `SecretStore` trait + `EnvSecretStore` default in `tonin-core`.
   - `Instrumented<SecretStore>` decorator that wraps `get` in a `secret.get` span tagged with `secret.provider` (the key name is never recorded).
   - `[secrets]` block in `tonin.toml` is parsed into a typed `SecretsSpec` (`provider`, `required`, `map`, `external_store`) by the CLI codegen.
-  - The chart reads each `[secrets].required` key from `<svc>-secrets` with `secretKeyRef`, and templates that Secret from `secrets.values` when `secrets.create` is true.
+  - The chart reads each `[secrets].required` key from `<svc>-secrets` with `secretKeyRef`, and templates that Secret from `secrets.values` when `secrets.create` is true (`[secrets] create`, per environment `[secrets.<env>] create`).
 - **Not yet in 0.1**
   - Secret values are never generated: supply them at deploy time, or create the Secret out-of-band (`kubectl create secret`, sealed-secrets, sops, CI) with `secrets.create=false`.
   - `provider = "external-secrets"` / `"vault"` / `"aws-secrets-manager"` parse, but no concrete impl crates ship, and `external_store` is not yet read by the renderer to emit an `ExternalSecret` CR.

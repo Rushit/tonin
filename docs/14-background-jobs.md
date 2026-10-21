@@ -90,10 +90,23 @@ Job scaffolding works for **Rust and Python** today (Python lands the equivalent
 Today, jobs are plain binaries. Ship the same container image as your gRPC server (the Dockerfile builds all binaries in the crate) and run the job as one of:
 
 - a separate `Deployment` with `command: ["orders-reconcile"]` for long-running consumers
-- a one-shot `Job` for migrations
-- a hand-written `CronJob` for scheduled work
+- a one-shot `Job` for migrations (`[migrations] mode = "job"`)
+- a `CronJob` for scheduled work, declared in `tonin.toml`:
 
-Roadmap: a `[[jobs]]` block in `tonin.toml` will let the CLI render a `CronJob` per declared job from the same template tree it uses for `Deployment`. Not in 0.1.
+```toml
+[[cronjobs]]
+name     = "purge-expired"          # CronJob <service>-purge-expired
+schedule = "0 2 * * *"
+command  = ["/usr/local/bin/orders-purge-expired"]
+```
+
+Since 0.15, `tonin helm generate` renders one `CronJob` per `[[cronjobs]]`
+entry. It runs the service image with the service's env, secrets, datastores,
+security context, ServiceAccount, pull secrets and placement, and its pods are
+covered by the service's network policy. All fields (`args`,
+`concurrency_policy`, history limits, `starting_deadline_seconds`, `resources`,
+`env`, `envs`, …) are in
+[12-kubernetes-deploy.md](12-kubernetes-deploy.md#pods-pull-secrets-serviceaccount-placement-disruption-cronjobs).
 
 ## EventBus consumer pattern
 
@@ -121,7 +134,7 @@ Telemetry failure is non-fatal (the job runs without exporters, same posture as 
 
 - `tonin::job::bootstrap` ships and works
 - `tonin service new --with-job <name>` scaffolds a Rust binary
-- `[[jobs]]` config block + `CronJob` rendering: **deferred** to a later release; today, run jobs as a separate Deployment or hand-written CronJob.
+- `[[cronjobs]]` renders a `CronJob` per scheduled job (0.15). Long-running consumers still run as a separate Deployment.
 
 ## See also
 
