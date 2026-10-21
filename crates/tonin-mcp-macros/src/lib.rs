@@ -242,7 +242,7 @@ fn emit_adapter_tool(self_ty: &Type, spec: &GrpcMethodSpec) -> TokenStream2 {
                             ::std::option::Option::None,
                         ))?;
                     Ok(::rmcp::model::CallToolResult::success(vec![
-                        ::rmcp::model::Content::text(body_json),
+                        ::rmcp::model::ContentBlock::text(body_json),
                     ]))
                 }
                 Err(status) => Err(::rmcp::ErrorData::internal_error(
