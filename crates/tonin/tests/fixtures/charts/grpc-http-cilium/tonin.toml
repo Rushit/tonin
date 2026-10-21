@@ -1,7 +1,9 @@
 # Golden fixture: gRPC service that also serves HTTP (health on the HTTP
 # port), cilium mesh, database + cache (dev: shared instances by URL, with
 # egress overridden to them), a named database, per-env env, and an autoscale
-# range.
+# range. Network policy: cloudflared may call only the OTLP/HTTP port; S3
+# egress by FQDN (a pattern in dev, the exact prd endpoint in prd) and a dev
+# CIDR with an exception.
 # Modelled on the zvectorlabs `zradar-platform` service.
 schema = "v1"
 
@@ -86,6 +88,16 @@ required = ["TELEMETRY_SERVICE_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_K
 
 [callers]
 platform-api = "platform-{env}"
+cloudflared  = { namespace = "edge", labels = { "app.kubernetes.io/name" = "cloudflared" }, ports = [4318] }
 
 [depends_on]
 identity = "platform-{env}"
+
+[egress]
+fqdns = [{ pattern = "*.ovh.us", ports = [443] }]
+
+[egress.dev]
+cidrs = [{ cidr = "10.0.0.0/8", except = ["10.96.0.0/12"], ports = [9000] }]
+
+[egress.prd]
+fqdns = [{ name = "s3.us-east-va.io.cloud.ovh.us", ports = [443] }]

@@ -47,6 +47,11 @@ networkPolicy:
   mcp: false
   callers: []
   dependsOn:
-    - name: platform-api
-      namespace: platform-dev
-      port: 7001
+  - name: platform-api
+    namespace: platform-dev
+    ports:
+    - 7001
+  egress:
+    fqdns: []
+    cidrs: []
+    kubeApiserver: false

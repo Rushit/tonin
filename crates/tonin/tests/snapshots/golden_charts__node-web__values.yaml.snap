@@ -151,10 +151,22 @@ migrations:
   command: []
   env: {}
 
-# CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.
+# CiliumNetworkPolicy (mesh=cilium only), set per environment in values-<env>.yaml:
+#   callers:   ingress allowlist ([callers]). Service callers match
+#              `service.identity: <name>.<namespace>`; callers with `labels`
+#              match those pods (in `namespace`, else the release namespace).
+#              No `ports` = the default set (port, service.httpPort, MCP port).
+#   dependsOn: egress to tonin services ([depends_on]) on `ports`.
+#   egress:    fqdns (Cilium toFQDNs), cidrs (toCIDRSet), kubeApiserver
+#              (toEntities: kube-apiserver) from [egress].
+# DNS (kube-dns), the otel-collector (4317) and datastores are always allowed.
 networkPolicy:
   enabled: false
   port: 7002
   mcp: false
   callers: []
   dependsOn: []
+  egress:
+    fqdns: []
+    cidrs: []
+    kubeApiserver: false

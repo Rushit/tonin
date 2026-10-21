@@ -200,9 +200,11 @@ spec:
 
 ---
 # Source: identity/templates/networkpolicy.yaml
-# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, the platform contract's databases and
-# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# CiliumNetworkPolicy for the service's pods: ingress allowlist ([callers])
+# and egress (DNS, the otel-collector, [depends_on], datastores, [egress]).
+# mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# The migration Job has its own policy (migration-job.yaml), so it is
+# excluded here.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -217,7 +219,10 @@ spec:
   endpointSelector:
     matchLabels:
       service.identity: identity.platform-prd
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: NotIn, values: [migrate] }
   ingress:
+    # caller: api-gateway
     - fromEndpoints:
         - matchLabels:
             service.identity: api-gateway.platform-prd
@@ -225,18 +230,10 @@ spec:
         - ports:
             - { port: "50051", protocol: TCP }
             - { port: "50052", protocol: TCP }
+    # caller: telemetry
     - fromEndpoints:
         - matchLabels:
             service.identity: telemetry.telemetry-prd
-      toPorts:
-        - ports:
-            - { port: "50051", protocol: TCP }
-            - { port: "50052", protocol: TCP }
-    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
-    - fromEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: observability
-            app: otel-collector
       toPorts:
         - ports:
             - { port: "50051", protocol: TCP }
@@ -252,6 +249,7 @@ spec:
         - ports:
             - { port: "53", protocol: UDP }
             - { port: "53", protocol: TCP }
+    # The otel-collector is push-only: pods export to it on 4317.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: observability
@@ -259,12 +257,12 @@ spec:
       toPorts:
         - ports:
             - { port: "4317", protocol: TCP }
+    # [depends_on] audit-log
     - toEndpoints:
         - matchLabels:
             service.identity: audit-log.platform-prd
       toPorts:
         - ports:
-            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
     # [database] (platform contract)
     - toEndpoints:
@@ -437,9 +435,11 @@ spec:
 
 ---
 # Source: identity/templates/networkpolicy.yaml
-# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, the platform contract's databases and
-# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# CiliumNetworkPolicy for the service's pods: ingress allowlist ([callers])
+# and egress (DNS, the otel-collector, [depends_on], datastores, [egress]).
+# mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# The migration Job has its own policy (migration-job.yaml), so it is
+# excluded here.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -454,7 +454,10 @@ spec:
   endpointSelector:
     matchLabels:
       service.identity: identity.platform-prd
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: NotIn, values: [migrate] }
   ingress:
+    # caller: api-gateway
     - fromEndpoints:
         - matchLabels:
             service.identity: api-gateway.platform-prd
@@ -462,18 +465,10 @@ spec:
         - ports:
             - { port: "50051", protocol: TCP }
             - { port: "50052", protocol: TCP }
+    # caller: telemetry
     - fromEndpoints:
         - matchLabels:
             service.identity: telemetry.telemetry-prd
-      toPorts:
-        - ports:
-            - { port: "50051", protocol: TCP }
-            - { port: "50052", protocol: TCP }
-    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
-    - fromEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: observability
-            app: otel-collector
       toPorts:
         - ports:
             - { port: "50051", protocol: TCP }
@@ -489,6 +484,7 @@ spec:
         - ports:
             - { port: "53", protocol: UDP }
             - { port: "53", protocol: TCP }
+    # The otel-collector is push-only: pods export to it on 4317.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: observability
@@ -496,12 +492,12 @@ spec:
       toPorts:
         - ports:
             - { port: "4317", protocol: TCP }
+    # [depends_on] audit-log
     - toEndpoints:
         - matchLabels:
             service.identity: audit-log.platform-prd
       toPorts:
         - ports:
-            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
     # [database] (platform contract)
     - toEndpoints:

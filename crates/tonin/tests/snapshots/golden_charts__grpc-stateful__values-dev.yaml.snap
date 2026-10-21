@@ -61,11 +61,16 @@ networkPolicy:
   port: 50051
   mcp: true
   callers:
-    - name: api-gateway
-      namespace: platform-dev
-    - name: telemetry
-      namespace: telemetry-dev
+  - name: api-gateway
+    namespace: platform-dev
+  - name: telemetry
+    namespace: telemetry-dev
   dependsOn:
-    - name: audit-log
-      namespace: platform-dev
-      port: 50051
+  - name: audit-log
+    namespace: platform-dev
+    ports:
+    - 50051
+  egress:
+    fqdns: []
+    cidrs: []
+    kubeApiserver: false

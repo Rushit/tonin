@@ -174,9 +174,11 @@ spec:
 
 ---
 # Source: telemetry/templates/networkpolicy.yaml
-# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, the platform contract's databases and
-# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# CiliumNetworkPolicy for the service's pods: ingress allowlist ([callers])
+# and egress (DNS, the otel-collector, [depends_on], datastores, [egress]).
+# mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# The migration Job has its own policy (migration-job.yaml), so it is
+# excluded here.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -191,20 +193,21 @@ spec:
   endpointSelector:
     matchLabels:
       service.identity: telemetry.telemetry-prd
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: NotIn, values: [migrate] }
   ingress:
+    # caller: cloudflared
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            "app.kubernetes.io/name": "cloudflared"
+      toPorts:
+        - ports:
+            - { port: "4318", protocol: TCP }
+    # caller: platform-api
     - fromEndpoints:
         - matchLabels:
             service.identity: platform-api.platform-prd
-      toPorts:
-        - ports:
-            - { port: "4317", protocol: TCP }
-            - { port: "8080", protocol: TCP }
-            - { port: "50052", protocol: TCP }
-    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
-    - fromEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: observability
-            app: otel-collector
       toPorts:
         - ports:
             - { port: "4317", protocol: TCP }
@@ -221,6 +224,12 @@ spec:
         - ports:
             - { port: "53", protocol: UDP }
             - { port: "53", protocol: TCP }
+          # toFQDNs learns IPs from DNS answers seen by Cilium's DNS proxy;
+          # this rule sends lookups through it (and allows any name).
+          rules:
+            dns:
+              - matchPattern: "*"
+    # The otel-collector is push-only: pods export to it on 4317.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: observability
@@ -228,12 +237,12 @@ spec:
       toPorts:
         - ports:
             - { port: "4317", protocol: TCP }
+    # [depends_on] identity
     - toEndpoints:
         - matchLabels:
             service.identity: identity.platform-prd
       toPorts:
         - ports:
-            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
     # [database] (platform contract)
     - toEndpoints:
@@ -256,3 +265,9 @@ spec:
       toPorts:
         - ports:
             - { port: "6379", protocol: TCP }
+    # [egress] s3.us-east-va.io.cloud.ovh.us
+    - toFQDNs:
+        - matchName: "s3.us-east-va.io.cloud.ovh.us"
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }

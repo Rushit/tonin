@@ -4,8 +4,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use include_dir::{Dir, include_dir};
+use std::collections::BTreeMap;
 use tera::Tera;
-use tonin_plugin::{DatastoreEnv, McpMode, MigrationMode, Plan, SecuritySection, ServiceKind};
+
+use serde::Serialize;
+use tonin_plugin::{
+    Caller, CallerSource, DatastoreEnv, DependencyRef, EgressSpec, McpMode, MigrationMode, Plan,
+    SecuritySection, ServiceKind,
+};
 
 static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
 
@@ -261,9 +267,12 @@ fn build_context(plan: &Plan) -> tera::Context {
         .unwrap_or_default();
     ctx.insert("migrations_command", &migrations_command);
 
-    // ---- CiliumNetworkPolicy allowlist (callers) + egress (depends_on).
-    ctx.insert("callers", &plan.callers);
-    ctx.insert("depends_on", &plan.depends_on);
+    // ---- CiliumNetworkPolicy: ingress ([callers]) and egress
+    //      ([depends_on], [egress]); datastore egress comes from `datastores`.
+    ctx.insert(
+        "network_policy_block",
+        &network_policy_block(&NetworkPolicyValues::for_plan(plan)),
+    );
 
     ctx.insert("env_name", &plan.selected_env);
 
@@ -297,8 +306,17 @@ fn base_context(plan: &Plan) -> tera::Context {
     ctx.insert("secret_keys", &Vec::<String>::new());
     ctx.insert("env_vars", &Vec::<(String, String)>::new());
     ctx.insert("migrations_mode", MigrationMode::None.as_str());
-    ctx.insert("callers", &Vec::<tonin_plugin::ServiceRef>::new());
-    ctx.insert("depends_on", &Vec::<tonin_plugin::DependencyRef>::new());
+    ctx.insert(
+        "network_policy_block",
+        &network_policy_block(&NetworkPolicyValues {
+            enabled: false,
+            port: plan.port,
+            mcp: false,
+            callers: Vec::new(),
+            depends_on: Vec::new(),
+            egress: EgressSpec::default(),
+        }),
+    );
     ctx.insert("env_name", "");
     ctx
 }
@@ -313,6 +331,102 @@ fn datastores_block(datastores: &[DatastoreEnv]) -> String {
     let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
     let body: Vec<String> = yaml.lines().map(|l| format!("  {l}")).collect();
     format!("datastores:\n{}", body.join("\n"))
+}
+
+/// The `networkPolicy:` values key, read by `networkpolicy.yaml`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NetworkPolicyValues {
+    enabled: bool,
+    /// Main service port (part of every caller's default port set).
+    port: u32,
+    /// MCP port in the default port set.
+    mcp: bool,
+    callers: Vec<CallerValues>,
+    depends_on: Vec<DependencyValues>,
+    egress: EgressSpec,
+}
+
+/// One ingress rule. A service caller is matched by
+/// `service.identity: <name>.<namespace>`; a caller with `labels` by those
+/// pod labels (in `namespace`, or the release namespace when absent).
+/// Empty `ports` means the default set (main + HTTP + MCP port).
+#[derive(Serialize)]
+struct CallerValues {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    labels: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ports: Vec<u32>,
+}
+
+impl From<&Caller> for CallerValues {
+    fn from(c: &Caller) -> Self {
+        match &c.source {
+            CallerSource::Service(s) => Self {
+                name: s.name.clone(),
+                namespace: Some(s.namespace.clone()),
+                labels: BTreeMap::new(),
+                ports: c.ports.clone(),
+            },
+            CallerSource::Pods { namespace, labels } => Self {
+                name: c.name.clone(),
+                namespace: namespace.clone(),
+                labels: labels.clone(),
+                ports: c.ports.clone(),
+            },
+        }
+    }
+}
+
+/// One egress rule to another tonin service (`service.identity`).
+#[derive(Serialize)]
+struct DependencyValues {
+    name: String,
+    namespace: String,
+    ports: Vec<u32>,
+}
+
+impl From<&DependencyRef> for DependencyValues {
+    fn from(d: &DependencyRef) -> Self {
+        Self {
+            name: d.name.clone(),
+            namespace: d.namespace.clone(),
+            ports: d.ports.clone(),
+        }
+    }
+}
+
+impl NetworkPolicyValues {
+    fn for_plan(plan: &Plan) -> Self {
+        Self {
+            enabled: plan.mesh.as_str() == "cilium",
+            port: plan.port,
+            mcp: plan.mcp_mode != McpMode::None,
+            callers: plan.callers.iter().map(CallerValues::from).collect(),
+            depends_on: plan.depends_on.iter().map(DependencyValues::from).collect(),
+            egress: plan.egress.clone(),
+        }
+    }
+}
+
+/// The `networkPolicy:` values key as YAML.
+fn network_policy_block(values: &NetworkPolicyValues) -> String {
+    #[derive(Serialize)]
+    struct Wrapper<'a> {
+        #[serde(rename = "networkPolicy")]
+        network_policy: &'a NetworkPolicyValues,
+    }
+    let yaml = serde_yaml::to_string(&Wrapper {
+        network_policy: values,
+    })
+    .unwrap_or_default();
+    yaml.strip_prefix("---\n")
+        .unwrap_or(&yaml)
+        .trim_end()
+        .to_string()
 }
 
 fn render_tmpl(tmpl_name: &str, ctx: &tera::Context, out_path: &Path) -> Result<()> {
@@ -1292,26 +1406,26 @@ audit    = { namespace = "security-{env}", envs = ["prod"] }
         // prod: {env} → prod, per-env override wins, prod-only dep present.
         let prod = read(&out.join("values-prod.yaml"));
         assert!(
-            prod.contains("- name: identity\n      namespace: platform-prod"),
+            prod.contains("- name: identity\n    namespace: platform-prod"),
             "{prod}"
         );
         assert!(
-            prod.contains("- name: billing\n      namespace: billing-shared"),
+            prod.contains("- name: billing\n    namespace: billing-shared"),
             "{prod}"
         );
         assert!(
-            prod.contains("- name: audit\n      namespace: security-prod"),
+            prod.contains("- name: audit\n    namespace: security-prod"),
             "{prod}"
         );
 
         // dev: default namespace (not the prod override), prod-only dep absent.
         let dev = read(&out.join("values-dev.yaml"));
         assert!(
-            dev.contains("- name: identity\n      namespace: platform-dev"),
+            dev.contains("- name: identity\n    namespace: platform-dev"),
             "{dev}"
         );
         assert!(
-            dev.contains("- name: billing\n      namespace: billing-dev"),
+            dev.contains("- name: billing\n    namespace: billing-dev"),
             "{dev}"
         );
         assert!(
@@ -1432,20 +1546,22 @@ zradar-platform = { namespace = "zradar-{env}", port = 4317 }
         let prod = read(&out.join("values-prod.yaml"));
         // Bare-string form keeps the historical 50051 default.
         assert!(
-            prod.contains("- name: identity\n      namespace: zvectorlabs-prod\n      port: 50051"),
+            prod.contains(
+                "- name: identity\n    namespace: zvectorlabs-prod\n    ports:\n    - 50051"
+            ),
             "{prod}"
         );
         // Table form carries its declared port.
         assert!(
             prod.contains(
-                "- name: zradar-platform\n      namespace: zradar-prod\n      port: 4317"
+                "- name: zradar-platform\n    namespace: zradar-prod\n    ports:\n    - 4317"
             ),
             "{prod}"
         );
 
         let policy = read(&out.join("templates").join("networkpolicy.yaml"));
         assert!(
-            policy.contains(r#"port: "{{ .port | default 50051 }}""#),
+            policy.contains(r#"(.ports | default (list (.port | default 50051)))"#),
             "egress uses the per-dependency port: {policy}"
         );
         assert!(

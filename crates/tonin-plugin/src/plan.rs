@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::network::{self, Caller, EgressSpec};
 use crate::stateful::{
-    self, CacheSpec, ConfigSpec, DatabaseSpec, EmittedEnv, MigrationsSpec, RawCache, RawCallers,
+    self, CacheSpec, ConfigSpec, DatabaseSpec, EmittedEnv, MigrationsSpec, RawCache,
     RawConfigBlock, RawDatabase, RawMigrations, RawSecrets, SecretsSpec,
 };
 
@@ -94,27 +95,27 @@ impl ServiceRef {
 /// ports were declarable, so bare-string dependencies render identically.
 pub const DEFAULT_DEPENDENCY_PORT: u32 = 50051;
 
-fn default_dependency_port() -> u32 {
-    DEFAULT_DEPENDENCY_PORT
+fn default_dependency_ports() -> Vec<u32> {
+    vec![DEFAULT_DEPENDENCY_PORT]
 }
 
 /// One resolved `[depends_on]` entry: the downstream service, the namespace it
-/// lives in for the selected environment, and the port egress is allowed on.
+/// lives in for the selected environment, and the ports egress is allowed on.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DependencyRef {
     pub name: String,
     pub namespace: String,
-    /// Dependency's listen port (`port` in the table form). Defaults to
-    /// [`DEFAULT_DEPENDENCY_PORT`] so the bare-string shorthand keeps
-    /// rendering today's egress rule.
-    #[serde(default = "default_dependency_port")]
-    pub port: u32,
+    /// Dependency's listen ports (`port` or `ports` in the table form), never
+    /// empty. Defaults to [`DEFAULT_DEPENDENCY_PORT`] so the bare-string
+    /// shorthand keeps rendering today's egress rule.
+    #[serde(default = "default_dependency_ports")]
+    pub ports: Vec<u32>,
 }
 
 /// One `[depends_on]` entry parsed from TOML, before environment resolution.
 ///
 /// Both the shorthand (`name = "<ns>"`) and the table form
-/// (`name = { namespace = "<ns>", port = <p>, <env> = "<ns>", envs = [..] }`)
+/// (`name = { namespace = "<ns>", port = <p> | ports = [..], <env> = "<ns>", envs = [..] }`)
 /// land here.
 struct DepSpec {
     /// Default namespace pattern (may contain `{env}`), if declared.
@@ -123,8 +124,8 @@ struct DepSpec {
     env_overrides: BTreeMap<String, String>,
     /// Restrict the dependency to these envs; `None` ⇒ every env.
     envs: Option<Vec<String>>,
-    /// Declared egress port; `None` ⇒ [`DEFAULT_DEPENDENCY_PORT`].
-    port: Option<u32>,
+    /// Declared egress ports (`port` or `ports`); `None` ⇒ [`DEFAULT_DEPENDENCY_PORT`].
+    ports: Option<Vec<u32>>,
 }
 
 /// Substitute the `{env}` placeholder in a namespace pattern.
@@ -134,7 +135,7 @@ pub(crate) fn apply_env(pattern: &str, env: &str) -> String {
 
 /// Reject a namespace that still carries an unresolved `{...}` placeholder.
 /// `{env}` is the only supported token, so anything left over is a typo.
-fn ensure_resolved(context: &str, value: &str) -> Result<(), Error> {
+pub(crate) fn ensure_resolved(context: &str, value: &str) -> Result<(), Error> {
     if value.contains('{') || value.contains('}') {
         return Err(Error::UnresolvedNamespace {
             context: context.to_string(),
@@ -155,13 +156,13 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
             namespace: Some(s),
             env_overrides: BTreeMap::new(),
             envs: None,
-            port: None,
+            ports: None,
         }),
         toml::Value::Table(table) => {
             let mut namespace = None;
             let mut envs = None;
             let mut env_overrides = BTreeMap::new();
-            let mut port = None;
+            let mut ports: Option<Vec<u32>> = None;
             for (key, val) in table {
                 match key.as_str() {
                     "namespace" => {
@@ -178,7 +179,21 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
                         if !(1..=65535).contains(&p) {
                             return Err(invalid(format!("`port` {p} is outside 1-65535")));
                         }
-                        port = Some(p as u32);
+                        if ports.is_some() {
+                            return Err(invalid("give `port` or `ports`, not both".into()));
+                        }
+                        ports = Some(vec![p as u32]);
+                    }
+                    "ports" => {
+                        if ports.is_some() {
+                            return Err(invalid("give `port` or `ports`, not both".into()));
+                        }
+                        let list = network::parse_ports(&format!("depends_on.{name}"), &val)
+                            .map_err(|e| match e {
+                                Error::InvalidField { reason, .. } => invalid(reason),
+                                other => other,
+                            })?;
+                        ports = Some(list);
                     }
                     "envs" => {
                         let arr = val
@@ -209,7 +224,7 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
                 namespace,
                 env_overrides,
                 envs,
-                port,
+                ports,
             })
         }
         other => Err(invalid(format!(
@@ -264,7 +279,7 @@ fn resolve_depends_on(
         out.push(DependencyRef {
             name,
             namespace: resolved,
-            port: spec.port.unwrap_or(DEFAULT_DEPENDENCY_PORT),
+            ports: spec.ports.unwrap_or_else(default_dependency_ports),
         });
     }
     Ok(out)
@@ -386,7 +401,7 @@ struct RawConfig {
     #[serde(default)]
     autoscale: Option<RawAutoscale>,
     // String shorthand (`name = "<ns>"`) or table form
-    // (`name = { namespace = "<ns>", port = <p>, <env> = "<ns>", envs = [..] }`).
+    // (`name = { namespace = "<ns>", port = <p> | ports = [..], <env> = "<ns>", envs = [..] }`).
     // Parsed as raw values and interpreted by `resolve_depends_on`.
     #[serde(default)]
     depends_on: BTreeMap<String, toml::Value>,
@@ -394,8 +409,14 @@ struct RawConfig {
     // `[env.<env>]` per-env override tables. Interpreted by `resolve_env_vars`.
     #[serde(default)]
     env: BTreeMap<String, toml::Value>,
+    // Namespace shorthand, caller tables and `[callers.<env>]` overlays;
+    // interpreted by `network::resolve_callers`.
     #[serde(default)]
-    callers: RawCallers,
+    callers: BTreeMap<String, toml::Value>,
+    // FQDN / CIDR / kube-apiserver egress (+ `[egress.<env>]` overlays);
+    // interpreted by `network::resolve_egress`.
+    #[serde(default)]
+    egress: toml::map::Map<String, toml::Value>,
     #[serde(default)]
     database: Option<RawDatabase>,
     #[serde(default)]
@@ -684,7 +705,11 @@ pub struct Plan {
     pub image_registry: Option<String>,
     pub security: Option<SecuritySection>,
     pub depends_on: Vec<DependencyRef>,
-    pub callers: Vec<ServiceRef>,
+    /// `[callers]` resolved for `selected_env` (ingress allowlist). Workspace
+    /// loading adds service callers derived from other services' `[depends_on]`.
+    pub callers: Vec<Caller>,
+    /// `[egress]` resolved for `selected_env`: FQDNs, CIDRs, kube-apiserver.
+    pub egress: EgressSpec,
     pub dir: PathBuf,
     pub database: Option<DatabaseSpec>,
     pub named_databases: Vec<(String, DatabaseSpec)>,
@@ -727,7 +752,8 @@ impl Plan {
         let depends_on = resolve_depends_on(raw.depends_on, env)?;
         let env_vars = resolve_env_vars(&raw.env, env)?;
 
-        let explicit_callers = stateful::resolve_callers(&raw.callers, env);
+        let explicit_callers = network::resolve_callers(&raw.callers, env)?;
+        let egress = network::resolve_egress(&raw.egress, env)?;
 
         let deploy_overlay = raw.deploy.envs.get(env);
         let deploy_replicas = deploy_overlay
@@ -973,6 +999,7 @@ impl Plan {
             security,
             depends_on,
             callers: explicit_callers,
+            egress,
             dir,
             database,
             named_databases,
@@ -1017,18 +1044,21 @@ impl Plan {
             .collect();
         for plan in plans.iter_mut() {
             for (caller_name, caller_ns, deps) in &snapshot {
+                let derived = ServiceRef {
+                    name: caller_name.clone(),
+                    namespace: caller_ns.clone(),
+                };
+                // An explicit [callers] entry for the same service wins
+                // (it may carry its own ports).
                 if deps
                     .iter()
                     .any(|d| d.name == plan.name && d.namespace == plan.namespace)
+                    && !plan.callers.iter().any(|c| c.service() == Some(&derived))
                 {
-                    plan.callers.push(ServiceRef {
-                        name: caller_name.clone(),
-                        namespace: caller_ns.clone(),
-                    });
+                    plan.callers.push(Caller::from_service(derived));
                 }
             }
             plan.callers.sort();
-            plan.callers.dedup();
         }
 
         plans.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1322,7 +1352,11 @@ mod tests {
         .concat();
         let p = try_load_env(&body, "prod").unwrap();
         let d = p.depends_on.iter().find(|d| d.name == "identity").unwrap();
-        assert_eq!(d.port, DEFAULT_DEPENDENCY_PORT, "shorthand keeps 50051");
+        assert_eq!(
+            d.ports,
+            vec![DEFAULT_DEPENDENCY_PORT],
+            "shorthand keeps 50051"
+        );
     }
 
     #[test]
@@ -1339,10 +1373,10 @@ mod tests {
             .find(|d| d.name == "zradar-platform")
             .unwrap();
         assert_eq!(zr.namespace, "zradar-prod");
-        assert_eq!(zr.port, 4317);
+        assert_eq!(zr.ports, vec![4317]);
         let gw = p.depends_on.iter().find(|d| d.name == "gateway").unwrap();
         assert_eq!(gw.namespace, "edge", "per-env override still wins");
-        assert_eq!(gw.port, 7001, "port applies alongside env overrides");
+        assert_eq!(gw.ports, vec![7001], "port applies alongside env overrides");
     }
 
     #[test]
@@ -1353,7 +1387,111 @@ mod tests {
         ]
         .concat();
         let p = try_load_env(&body, "dev").unwrap();
-        assert_eq!(p.depends_on[0].port, DEFAULT_DEPENDENCY_PORT);
+        assert_eq!(p.depends_on[0].ports, vec![DEFAULT_DEPENDENCY_PORT]);
+    }
+
+    #[test]
+    fn depends_on_ports_list_is_used() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nzradar = { namespace = \"zradar-{env}\", ports = [8080, 8081, 8082] }\n",
+        ]
+        .concat();
+        let p = try_load_env(&body, "prd").unwrap();
+        assert_eq!(p.depends_on[0].ports, vec![8080, 8081, 8082]);
+    }
+
+    #[test]
+    fn depends_on_port_and_ports_together_is_error() {
+        for deps in [
+            "z = { namespace = \"d\", port = 1, ports = [2] }",
+            "z = { namespace = \"d\", ports = [2], port = 1 }",
+        ] {
+            let body = [
+                SVC,
+                "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\n",
+                deps,
+                "\n",
+            ]
+            .concat();
+            let err = try_load_env(&body, "dev").unwrap_err().to_string();
+            assert!(err.contains("not both"), "{err}");
+        }
+    }
+
+    #[test]
+    fn depends_on_bad_ports_list_is_error() {
+        for (deps, want) in [
+            ("z = { namespace = \"d\", ports = [] }", "must not be empty"),
+            ("z = { namespace = \"d\", ports = [0] }", "outside 1-65535"),
+            (
+                "z = { namespace = \"d\", ports = 8080 }",
+                "must be an array",
+            ),
+            (
+                "z = { namespace = \"d\", ports = [80, 80] }",
+                "listed twice",
+            ),
+        ] {
+            let body = [
+                SVC,
+                "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\n",
+                deps,
+                "\n",
+            ]
+            .concat();
+            let err = try_load_env(&body, "dev").unwrap_err().to_string();
+            assert!(
+                err.contains("depends_on.z") && err.contains(want),
+                "{deps}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_derived_callers_skip_explicit_and_keep_label_callers() {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("tonin-ws-test-{}-{n}", std::process::id()));
+        let write = |dir: &str, body: &str| {
+            let d = root.join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("tonin.toml"), body).unwrap();
+        };
+        let svc = |name: &str, extra: &str| {
+            format!(
+                "[service]\nname = \"{name}\"\nversion = \"0.1.0\"\n\
+                 [deploy]\nreplicas = 1\nnamespace = \"demo\"\n\
+                 [resources]\ncpu = \"100m\"\nmemory = \"128Mi\"\n{extra}"
+            )
+        };
+        write(
+            "api",
+            &svc(
+                "api",
+                "[callers]\nshell = { namespace = \"demo\", ports = [7001] }\n\
+                 cloudflared = { namespace = \"edge\", labels = { app = \"cf\" } }\n",
+            ),
+        );
+        write("shell", &svc("shell", "[depends_on]\napi = \"demo\"\n"));
+        write("worker", &svc("worker", "[depends_on]\napi = \"demo\"\n"));
+        let plans = Plan::load_workspace_with_env(&root, "dev").unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        let api = plans.iter().find(|p| p.name == "api").unwrap();
+        let names: Vec<&str> = api.callers.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["cloudflared", "shell", "worker"]);
+        let shell = api.callers.iter().find(|c| c.name == "shell").unwrap();
+        assert_eq!(
+            shell.ports,
+            vec![7001],
+            "explicit caller kept, not duplicated"
+        );
+        let services: Vec<&str> = api
+            .callers
+            .iter()
+            .filter_map(|c| c.service())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(services, vec!["shell", "worker"]);
     }
 
     #[test]
@@ -1758,10 +1896,11 @@ allowPrivilegeEscalation = false
                 .map(|d| DependencyRef {
                     name: d.to_string(),
                     namespace: "demo".to_string(),
-                    port: DEFAULT_DEPENDENCY_PORT,
+                    ports: vec![DEFAULT_DEPENDENCY_PORT],
                 })
                 .collect(),
             callers: Vec::new(),
+            egress: Default::default(),
             dir: std::path::PathBuf::from("."),
             database: None,
             named_databases: Vec::new(),

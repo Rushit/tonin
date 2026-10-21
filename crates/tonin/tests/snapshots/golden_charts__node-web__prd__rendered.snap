@@ -126,9 +126,11 @@ spec:
 
 ---
 # Source: web-shell/templates/networkpolicy.yaml
-# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, the platform contract's databases and
-# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# CiliumNetworkPolicy for the service's pods: ingress allowlist ([callers])
+# and egress (DNS, the otel-collector, [depends_on], datastores, [egress]).
+# mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# The migration Job has its own policy (migration-job.yaml), so it is
+# excluded here.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -143,15 +145,12 @@ spec:
   endpointSelector:
     matchLabels:
       service.identity: web-shell.platform-prd
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: NotIn, values: [migrate] }
   ingress:
-    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
-    - fromEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: observability
-            app: otel-collector
-      toPorts:
-        - ports:
-            - { port: "7002", protocol: TCP }
+    # No callers: an empty rule keeps ingress default-deny (an absent or
+    # empty `ingress` list would leave ingress unrestricted).
+    - {}
   egress:
     # DNS (kube-dns). Any egress rule makes this policy default-deny for the
     # pod, which would otherwise silently break service discovery.
@@ -163,6 +162,7 @@ spec:
         - ports:
             - { port: "53", protocol: UDP }
             - { port: "53", protocol: TCP }
+    # The otel-collector is push-only: pods export to it on 4317.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: observability
@@ -170,10 +170,10 @@ spec:
       toPorts:
         - ports:
             - { port: "4317", protocol: TCP }
+    # [depends_on] platform-api
     - toEndpoints:
         - matchLabels:
             service.identity: platform-api.platform-prd
       toPorts:
         - ports:
-            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "7001", protocol: TCP }
