@@ -5,7 +5,7 @@
 # Final image uses distroless/cc (dynamic glibc support, no shell, non-root).
 # Typical result: ~35 MB uncompressed.
 # --------------------------------------------------------------------------
-FROM rust:1.93-slim-bookworm AS builder
+FROM rust:1.93-slim-trixie AS builder
 
 # protobuf-compiler: required by etcd-client's build.rs (transitive dep).
 # binutils: provides 'strip' to shrink the dynamic binary.
@@ -60,10 +60,10 @@ RUN touch crates/tonin-proxy/src/main.rs && \
     strip target/proxy-release/tonin-proxy
 
 # --------------------------------------------------------------------------
-# Runtime — distroless/cc-debian12: dynamic glibc runtime with no shell or
+# Runtime — distroless/cc-debian13: dynamic glibc runtime with no shell or
 # package manager. Provides libgcc, glibc, and CA certificates.
 # --------------------------------------------------------------------------
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 
 COPY --from=builder /build/target/proxy-release/tonin-proxy /usr/local/bin/tonin-proxy
 

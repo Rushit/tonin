@@ -115,8 +115,8 @@ pub fn mcp_expose(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #[tool_handler]
         impl __ToninMcpServerHandler for #adapter_ident {
-            fn get_info(&self) -> ::rmcp::model::ServerInfo {
-                ::rmcp::model::ServerInfo::new(
+            fn get_info(&self) -> ::rmcp::model::ServerConfig {
+                ::rmcp::model::ServerConfig::new(
                     ::rmcp::model::ServerCapabilities::builder().enable_tools().build(),
                 )
                 .with_server_info(::rmcp::model::Implementation::from_build_env())
@@ -242,7 +242,7 @@ fn emit_adapter_tool(self_ty: &Type, spec: &GrpcMethodSpec) -> TokenStream2 {
                             ::std::option::Option::None,
                         ))?;
                     Ok(::rmcp::model::CallToolResult::success(vec![
-                        ::rmcp::model::Content::text(body_json),
+                        ::rmcp::model::ContentBlock::text(body_json),
                     ]))
                 }
                 Err(status) => Err(::rmcp::ErrorData::internal_error(
