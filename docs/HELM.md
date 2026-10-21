@@ -463,6 +463,32 @@ tonin platform status --env prod --json
 helm upgrade tonin-users helm/... --namespace prod
 ```
 
+## Generated service charts: values reference
+
+The per-service charts `tonin helm generate` writes keep environment-independent settings in
+`values.yaml` and everything an `[<section>.<env>]` overlay can change in `values-<env>.yaml`.
+Render with both (`-f values.yaml -f values-<env>.yaml`). The keys added in 0.15:
+
+| Key | File | From `tonin.toml` |
+| --- | --- | --- |
+| `workload.kind` | base | `[deploy] kind`: `Deployment` or `StatefulSet` (`templates/deployment.yaml` renders either) |
+| `workload.podManagementPolicy` | base | `[deploy] pod_management_policy` (StatefulSet) |
+| `workload.terminationGracePeriodSeconds` | env | `[deploy] termination_grace_period_seconds` (0 = Kubernetes default) |
+| `workload.strategy` | env | `[deploy.strategy]`; `strategy` on a Deployment, `updateStrategy` (with `partition`) on a StatefulSet |
+| `volumes` | base | `[[volumes]]`: `type` `empty-dir` (`emptyDir`) or `pvc` (`size`, `accessModes`, `storageClass`; StatefulSet `volumeClaimTemplates`) |
+| `extraPorts`, `extraServices` | base | `[[ports]]`: named container ports; `service` puts a port on Service `<name>-<service>` |
+| `service.health.livenessPath`, `readinessPath`, `startup` | base | `[service.health]` paths and `[service.health.startup]` |
+| `resources` | base | `[resources]` or `[resources.requests]` / `[resources.limits]` (CPU limit optional, `ephemeral-storage`) |
+| `command`, `args` | base | `[service] command` / `args`; Rust default `/usr/local/bin/<name>`, other languages the image's CMD |
+| `autoscaling.minReplicas` | env | `[autoscale] min_replicas` (HPA only for Deployments) |
+| `networkPolicy.callers[]`, `.dependsOn[].ports`, `.egress` | env | `[callers]`, `[depends_on]`, `[egress]` |
+| `imagePullSecrets`, `nodeSelector`, `tolerations`, `topologySpreadConstraints`, `pdb`, `serviceAccount`, `cronjobs` | env / base | `[deploy] image_pull_secrets`, `[placement]`, `[pdb]`, `[service_account]`, `[[cronjobs]]` |
+| `secrets.create` | env | `[secrets] create` / `[secrets.<env>] create` |
+
+A StatefulSet chart also renders the headless Service `<name>-headless`. Field-by-field
+`tonin.toml` documentation: [12-kubernetes-deploy.md](12-kubernetes-deploy.md); upgrading from
+0.14: [MIGRATION-0.15.md](MIGRATION-0.15.md).
+
 ## Generated service charts: pods
 
 Every pod a generated chart renders (Deployment, migration Job, CronJobs)

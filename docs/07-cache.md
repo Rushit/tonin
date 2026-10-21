@@ -63,7 +63,7 @@ Every field can be overridden on `[cache]` and per environment in `[cache.<env>]
 
 | Field | Default | Meaning |
 |---|---|---|
-| `engine` | (required) | `redis`, or `none` (no cache in this env) |
+| `engine` | (required) | `redis`, or `none` (no cache in this env); any other value is an error |
 | `env` | `REDIS_URL` | env var the URL lands in |
 | `secret` | `<svc>-cache` | Secret holding the URL |
 | `key` | `uri` | key of the URL in `secret` |

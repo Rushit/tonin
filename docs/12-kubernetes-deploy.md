@@ -323,6 +323,33 @@ language runs the image as built. `language = "node"` also means no tonin SDK in
 MCP sidecar and no outbound proxy sidecar, even with `[depends_on]` (use `"typescript"` for a
 tonin TypeScript service, which gets both).
 
+## Strict schema
+
+Since 0.15 every key in `tonin.toml` must be known: a misspelt key fails the load instead of
+being ignored. The error names the line, the key, the table and the keys allowed there:
+
+```text
+tonin.toml: line 7, column 1: unknown key `deploy.replica` in [deploy]; allowed keys:
+replicas, namespace, mesh, mcp_sidecar, expose, kind, pod_management_policy,
+termination_grace_period_seconds, strategy, image_pull_secrets, [deploy.<env>] overlays
+```
+
+- Sections that take per-environment overlays (`[deploy]`, `[autoscale]`, `[database]`,
+  `[cache]`, `[migrations]`, `[secrets]`, `[placement]`, `[pdb]`, `[egress]`, `[env]`,
+  `[callers]`) accept any other **table** as an `[<section>.<env>]` overlay. Its keys are
+  checked against the overlay's own list, and its name must look like an environment
+  (lowercase letters, digits, `-`).
+- `tonin helm generate` warns about overlays naming an environment it is not rendering
+  (`[deploy.prod]` when you generate `--env dev --env prd`): such an overlay never applies.
+- Values are type-checked as before (`replicas = "2"` fails), and enumerated values are
+  checked too: `[database] engine` must be one of `postgres`, `mysql`, `sqlite`, `clickhouse`,
+  `none`; `[cache] engine` one of `redis`, `none` (0.14 silently treated an unknown engine as
+  `none`).
+- Free-form tables stay free-form: `[security.pod]` / `[security.container]`,
+  `labels`, `node_selector`, `[secrets] map` and `[[cronjobs]] env`.
+- `[storage] kind` (written by `tonin new --with-storage`) is accepted; the chart does not
+  read it.
+
 ## Commands
 
 ```bash
@@ -664,7 +691,7 @@ helm upgrade --install <service> <service dir>/chart \
   is only set when the lock image has no digest.
 - A service is skipped when its release already runs the lock image (compared
   by image, not chart version); `--converge` upgrades every selected service.
-- `--affected` uses the same computation as `tonin affected --base <ref>`.
+- `--affected` uses the same computation as `tonin affected --env <ENV> --base <ref>`.
 
 ## How it fits together
 

@@ -69,7 +69,7 @@ Every field can be set on `[database]` and overridden per environment in `[datab
 
 | Field | Default | Meaning |
 |---|---|---|
-| `engine` | (required) | `postgres`, `mysql`, `sqlite`, `clickhouse`, or `none` (no database in this env) |
+| `engine` | (required) | `postgres`, `mysql`, `sqlite`, `clickhouse`, or `none` (no database in this env); any other value is an error |
 | `env` | `DATABASE_URL` | env var the URL lands in |
 | `cluster` | `<svc>-pg` | CNPG cluster name; the defaults below derive from it (Postgres only) |
 | `secret` | `<cluster>-app` | Secret holding the URL |

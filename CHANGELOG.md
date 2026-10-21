@@ -43,7 +43,30 @@ chart.
   `DatabaseSpec`/`CacheSpec` are reshaped; `EmittedEnv` holds `datastores` and `from_secret`;
   `MigrationRunOn` is replaced by `MigrationMode`; new
   `Error::{RemovedField, InvalidField, DuplicateEnvVar}`.
-<!-- T6 (strict schema) and any other breaking change from feat/0.15-charts: add it here. -->
+* **Strict `tonin.toml` schema.** Every unknown key is an error naming its line, the key, the
+  table and the allowed keys (0.14 silently ignored typos). Overlay tables
+  (`[<section>.<env>]`) are checked against the section's overlay keys and must be named like
+  an environment. Unknown `[database]`/`[cache]` engines are rejected (0.14 treated them as
+  `none`). `tonin helm generate` warns about overlays for environments it is not rendering.
+* **`[autoscale] min_replicas` is honoured** (0.14 ignored it and used `[deploy] replicas`);
+  `[autoscale]` on a StatefulSet, `pvc` volumes on a Deployment and malformed resource
+  quantities are rejected.
+* **Network policy:** the otel-collector no longer gets ingress (it is push-only; egress to it
+  stays); a service with no `[callers]` gets a default-deny ingress rule; the service policy no
+  longer selects the migration Job's pods (they keep their hook policy). Non-service callers
+  such as cloudflared must be declared as label callers.
+* **Pods run as the chart's own ServiceAccount** `<svc>` with
+  `automountServiceAccountToken: false` (set `[service_account] automount_token = true` for API
+  access); the migration hook Job runs as a hook-scoped `<svc>-migrate` ServiceAccount.
+  Services with more than one replica get a hostname topology spread by default.
+* **Chart values:** new `workload`, `volumes`, `extraPorts`, `extraServices`, `args`,
+  `service.health.{livenessPath,readinessPath,startup}`, `serviceAccount`, `imagePullSecrets`,
+  `nodeSelector`, `tolerations`, `topologySpreadConstraints`, `pdb`, `cronjobs`;
+  `networkPolicy.dependsOn[].port` became `ports`, callers carry `labels`/`ports`, plus
+  `networkPolicy.egress`.
+* **`tonin-plugin` public API:** `DependencyRef.port` is `ports: Vec<u32>`; `Plan.callers` is
+  `Vec<Caller>`; `Plan` gained `egress`, `workload` and `pod`; new `Error::Schema`.
+* **`RECOMMENDED_CLI_MIN` is 0.15.0.**
 
 ### Features
 
@@ -62,8 +85,32 @@ chart.
   `helm check` reports them as drift ([#125](https://github.com/Rushit/tonin/pull/125))
 * **deploy:** `--affected --base <ref>` works, `--service <name>` is a repeatable filter,
   `--dry-run` prints the exact helm argv ([#125](https://github.com/Rushit/tonin/pull/125))
-<!-- T3 (workloads, storage), T4 (network policy), T5 (pod hygiene), T6 (strict schema,
-     RECOMMENDED_CLI_MIN 0.15.0): add their entries here when feat/0.15-charts merges. -->
+* **helm:** `[deploy] kind = "statefulset"` with a headless Service, `volumeClaimTemplates`
+  (default StorageClass), `pod_management_policy` and a staged rollout (`partition`);
+  `[deploy.strategy]` and `termination_grace_period_seconds`, per env ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[[volumes]]`: `empty-dir` (`size_limit`, `medium`) and `pvc` (StatefulSet),
+  mounted in the server, the migration initContainer, and (empty-dir) the Job and CronJobs;
+  `ephemeral_storage` requests/limits ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[[ports]]`: extra named ports on the main Service or extra `<svc>-<suffix>`
+  Services ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** separate liveness/readiness paths, `[service.health.startup]`;
+  `[resources.requests]` / `[resources.limits]` with an optional CPU limit ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[service] command` / `args`; `language = "node"` runs the image CMD with no MCP or
+  outbound-proxy sidecar; `[autoscale.<env>]` overlays, HPA only for Deployments ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[callers]` by service or by namespace + pod labels (e.g. cloudflared), each with
+  its own port list; non-service callers are skipped by `tonin affected` ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[depends_on]` port lists; `[egress]` (per env) with `fqdns` (`toFQDNs`, plus the
+  DNS L7 rule Cilium needs), `cidrs` (`toCIDRSet` with `except`) and `kube_apiserver` ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[deploy] image_pull_secrets` on every pod; chart-owned ServiceAccount with
+  optional projected, audience-bound tokens (`[service_account] tokens`) ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[placement]` (`node_selector`, `tolerations`, `topology_spread`) and `[pdb]` per
+  env; securityContext on every pod tonin renders; `[secrets.<env>] create` ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[[cronjobs]]` (schedule, command/args, concurrency policy, history limits,
+  deadlines) inheriting image, env, secrets, datastores, security, ServiceAccount, pull
+  secrets, placement and policy labels ([#131](https://github.com/Rushit/tonin/pull/131))
+* **schema:** strict `tonin.toml` validation with line numbers and allowed keys; overlays for
+  environments not being generated are reported; the `tonin new` scaffolds and every example
+  pass it ([#131](https://github.com/Rushit/tonin/pull/131))
 
 ### Bug fixes
 
@@ -84,7 +131,8 @@ chart.
 
 * Golden `helm template` snapshots for four fixture services and every env, validated with
   `kubeconform -strict` against Kubernetes 1.34 (`just snapshots` re-records them)
-  ([#123](https://github.com/Rushit/tonin/pull/123))
+  ([#123](https://github.com/Rushit/tonin/pull/123)); fixtures for a StatefulSet with storage
+  and extra Services and for a plain Node.js app added with 0.15
 
 ### Dependencies
 
