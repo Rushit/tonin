@@ -24,6 +24,9 @@ pub(crate) enum Shape {
     /// An array of tables with known keys, as `[[volumes]]` or as an inline
     /// array of inline tables (`fqdns = [{ name = "…" }]`).
     Array(&'static TableSchema),
+    /// `true` / `false`, or an [`Shape::Array`] of this schema
+    /// (`[placement] topology_spread`).
+    FlagOrArray(&'static TableSchema),
     /// `[callers]`: entries are a namespace string, a caller table
     /// (`namespace`, `labels`, `service`, `ports`), or an env overlay (a
     /// table with none of those keys) holding entries of the first two forms.
@@ -47,6 +50,11 @@ pub(crate) struct TableSchema {
     pub open_values: bool,
     /// Those other plain keys are environment names (`prd = "ns"`).
     pub open_envs: bool,
+    /// Keys may also be written in camelCase (`toleration_seconds` or
+    /// `tolerationSeconds`), as Kubernetes objects passed through are.
+    pub camel: bool,
+    /// Keys every table of this schema must set (checked for array entries).
+    pub required: &'static [&'static str],
 }
 
 /// An environment named by an overlay table or override key.
@@ -123,6 +131,9 @@ impl Walker<'_> {
         let mut allowed: Vec<String> = schema
             .map(|s| s.fields.iter().map(|(k, _)| k.to_string()).collect())
             .unwrap_or_default();
+        if schema.is_some_and(|s| s.camel) {
+            allowed.push("(or their camelCase forms)".into());
+        }
         if let Some(s) = schema
             && s.overlay.is_some()
         {
@@ -149,7 +160,7 @@ impl Walker<'_> {
         for (key, item) in t.iter() {
             let key_span = t.key(key).and_then(|k| k.span());
             let full = join(path, key);
-            if let Some((_, shape)) = schema.fields.iter().find(|(k, _)| *k == key) {
+            if let Some((_, shape)) = schema.field(key) {
                 self.shape(item, *shape, &full, key_span)?;
                 continue;
             }
@@ -175,6 +186,29 @@ impl Walker<'_> {
                 _ => {
                     return Err(self.error(key_span, full, table, "unknown key", Some(schema)));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Every key of `schema.required` is set in `t` (at `span`).
+    fn required(
+        &self,
+        t: &dyn TableLike,
+        schema: &TableSchema,
+        path: &str,
+        table: &str,
+        span: Option<Range<usize>>,
+    ) -> Result<(), SchemaError> {
+        for r in schema.required {
+            if !t.iter().any(|(k, _)| schema.matches(r, k)) {
+                return Err(self.error(
+                    span,
+                    join(path, r),
+                    table,
+                    "missing required key",
+                    Some(schema),
+                ));
             }
         }
         Ok(())
@@ -233,10 +267,22 @@ impl Walker<'_> {
                     .ok_or_else(|| expect_table("a table"))?;
                 self.table(t, schema, path, &format!("[{path}]"))
             }
+            Shape::FlagOrArray(schema) => {
+                if item.as_value().is_some_and(|v| v.as_bool().is_some()) {
+                    return Ok(());
+                }
+                if item.as_array_of_tables().is_none() && item.as_array().is_none() {
+                    return Err(expect_table("true, false or an array of tables"));
+                }
+                self.shape(item, Shape::Array(schema), path, key_span)
+            }
             Shape::Array(schema) => {
                 if let Some(arr) = item.as_array_of_tables() {
                     for (i, t) in arr.iter().enumerate() {
-                        self.table(t, schema, &format!("{path}[{i}]"), &format!("[[{path}]]"))?;
+                        let at = format!("{path}[{i}]");
+                        let table = format!("[[{path}]]");
+                        self.table(t, schema, &at, &table)?;
+                        self.required(t, schema, &at, &table, t.span())?;
                     }
                     return Ok(());
                 }
@@ -255,6 +301,7 @@ impl Walker<'_> {
                     })?;
                     let at = format!("{path}[{i}]");
                     self.table(t, schema, &at, &at)?;
+                    self.required(t, schema, &at, &at, v.span())?;
                 }
                 Ok(())
             }
@@ -320,6 +367,34 @@ impl Walker<'_> {
     }
 }
 
+impl TableSchema {
+    /// Whether `key` names `field` (also in camelCase for a `camel` schema).
+    fn matches(&self, field: &str, key: &str) -> bool {
+        field == key || (self.camel && camel_case(field) == key)
+    }
+
+    fn field(&self, key: &str) -> Option<&(&'static str, Shape)> {
+        self.fields.iter().find(|(f, _)| self.matches(f, key))
+    }
+}
+
+/// `snake_case` → `camelCase`.
+fn camel_case(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    let mut upper = false;
+    for c in key.chars() {
+        if c == '_' {
+            upper = true;
+        } else if upper {
+            out.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn join(path: &str, key: &str) -> String {
     if path.is_empty() {
         key.to_string()
@@ -366,6 +441,8 @@ const fn table(fields: &'static [(&'static str, Shape)]) -> TableSchema {
         overlay: None,
         open_values: false,
         open_envs: false,
+        camel: false,
+        required: &[],
     }
 }
 
@@ -378,6 +455,8 @@ const fn with_overlay(
         overlay: Some(overlay),
         open_values: false,
         open_envs: false,
+        camel: false,
+        required: &[],
     }
 }
 
@@ -585,12 +664,16 @@ static ENV_OVERLAY: TableSchema = TableSchema {
     overlay: None,
     open_values: true,
     open_envs: false,
+    camel: false,
+    required: &[],
 };
 static ENV: TableSchema = TableSchema {
     fields: &[],
     overlay: Some(&ENV_OVERLAY),
     open_values: true,
     open_envs: false,
+    camel: false,
+    required: &[],
 };
 
 /// A `[depends_on]` entry in table form; other plain keys are per-env
@@ -605,6 +688,8 @@ static DEPENDENCY: TableSchema = TableSchema {
     overlay: None,
     open_values: true,
     open_envs: true,
+    camel: false,
+    required: &[],
 };
 
 /// A caller table in `[callers]` (or a `[callers.<env>]` overlay).
@@ -633,12 +718,48 @@ const EGRESS_FIELDS: &[(&str, Shape)] = &[
 static EGRESS_ENV: TableSchema = table(EGRESS_FIELDS);
 static EGRESS: TableSchema = with_overlay(EGRESS_FIELDS, &EGRESS_ENV);
 
-/// Tolerations and spread constraints are checked by the placement resolver
-/// (they accept snake_case and camelCase Kubernetes keys).
+/// A Kubernetes object passed through: snake_case or camelCase keys.
+const fn k8s_object(
+    fields: &'static [(&'static str, Shape)],
+    required: &'static [&'static str],
+) -> TableSchema {
+    TableSchema {
+        fields,
+        overlay: None,
+        open_values: false,
+        open_envs: false,
+        camel: true,
+        required,
+    }
+}
+
+static TOLERATION: TableSchema = k8s_object(
+    &[
+        ("key", Shape::Value),
+        ("operator", Shape::Value),
+        ("value", Shape::Value),
+        ("effect", Shape::Value),
+        ("toleration_seconds", Shape::Value),
+    ],
+    &[],
+);
+static TOPOLOGY_SPREAD: TableSchema = k8s_object(
+    &[
+        ("max_skew", Shape::Value),
+        ("topology_key", Shape::Value),
+        ("when_unsatisfiable", Shape::Value),
+        ("label_selector", Shape::Free),
+        ("min_domains", Shape::Value),
+        ("node_affinity_policy", Shape::Value),
+        ("node_taints_policy", Shape::Value),
+        ("match_label_keys", Shape::Value),
+    ],
+    &["max_skew", "topology_key", "when_unsatisfiable"],
+);
 const PLACEMENT_FIELDS: &[(&str, Shape)] = &[
     ("node_selector", Shape::Free),
-    ("tolerations", Shape::Value),
-    ("topology_spread", Shape::Value),
+    ("tolerations", Shape::Array(&TOLERATION)),
+    ("topology_spread", Shape::FlagOrArray(&TOPOLOGY_SPREAD)),
 ];
 static PLACEMENT_ENV: TableSchema = table(PLACEMENT_FIELDS);
 static PLACEMENT: TableSchema = with_overlay(PLACEMENT_FIELDS, &PLACEMENT_ENV);
@@ -721,18 +842,24 @@ mod tests {
         overlay: None,
         open_values: false,
         open_envs: false,
+        camel: false,
+        required: &[],
     };
     static OVERLAY: TableSchema = TableSchema {
         fields: &[("n", Shape::Value)],
         overlay: None,
         open_values: false,
         open_envs: false,
+        camel: false,
+        required: &[],
     };
     static SECTION: TableSchema = TableSchema {
         fields: &[("n", Shape::Value), ("inner", Shape::Table(&INNER))],
         overlay: Some(&OVERLAY),
         open_values: false,
         open_envs: false,
+        camel: false,
+        required: &[],
     };
     static ROOT: TableSchema = TableSchema {
         fields: &[
@@ -744,6 +871,8 @@ mod tests {
         overlay: None,
         open_values: false,
         open_envs: false,
+        camel: false,
+        required: &[],
     };
 
     fn check(src: &str) -> Result<(), SchemaError> {
@@ -881,5 +1010,48 @@ memory = "1Gi"
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn placement_lists_report_line_key_and_allowed_keys() {
+        let full = |src: &str| validate(src, &TONIN_TOML).map(|_| ());
+        // snake_case and camelCase keys, inline and [[...]] forms, flags.
+        full(
+            "[placement]\ntolerations = [{ key = \"gpu\", operator = \"Exists\", \
+             toleration_seconds = 30 }, { key = \"x\", tolerationSeconds = 5 }]\n\
+             topology_spread = true\n\n[placement.prd]\n\
+             [[placement.prd.topology_spread]]\nmax_skew = 1\ntopologyKey = \"zone\"\n\
+             when_unsatisfiable = \"DoNotSchedule\"\nlabel_selector = { match_labels = { a = \"b\" } }\n",
+        )
+        .unwrap();
+
+        let err =
+            full("[placement]\ntolerations = [\n  { key = \"gpu\", efect = \"NoSchedule\" },\n]\n")
+                .unwrap_err();
+        assert_eq!(err.line, 3, "{err}");
+        assert_eq!(err.key, "placement.tolerations[0].efect");
+        assert!(err.allowed.contains(&"effect".to_string()), "{err}");
+        assert!(
+            err.to_string().contains("allowed keys: key, operator"),
+            "{err}"
+        );
+
+        let err = full(
+            "[placement.prd]\n\n[[placement.prd.topology_spread]]\nmax_skew = 1\n\
+             topology_key = \"zone\"\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.line, 3, "{err}");
+        assert_eq!(
+            err.key,
+            "placement.prd.topology_spread[0].when_unsatisfiable"
+        );
+        assert_eq!(err.reason, "missing required key");
+
+        let err = full("[placement]\ntopology_spread = \"yes\"\n").unwrap_err();
+        assert_eq!(
+            (err.line, err.key.as_str()),
+            (2, "placement.topology_spread")
+        );
     }
 }

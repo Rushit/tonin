@@ -347,6 +347,10 @@ termination_grace_period_seconds, strategy, image_pull_secrets, [deploy.<env>] o
   `none`).
 - Free-form tables stay free-form: `[security.pod]` / `[security.container]`,
   `labels`, `node_selector`, `[secrets] map` and `[[cronjobs]] env`.
+- `[placement] tolerations` and `topology_spread` entries are checked the same way (since
+  0.16, with the line of the entry): their keys may be `snake_case` or `camelCase`, and a
+  spread constraint without `max_skew`, `topology_key` or `when_unsatisfiable` names the
+  missing key.
 - `[storage] kind` (written by `tonin new --with-storage`) is accepted; the chart does not
   read it.
 
@@ -641,8 +645,8 @@ envs                      = ["prd"]           # default: every environment
   network policy at `-5` and the Job at `0`), deleted with the Job, and never
   mounts an API token. The service's identity is never shared with the Job.
 - **Placement**: each field of `[placement.<env>]` replaces the base field.
-  Tolerations and spread constraints are checked for unknown keys
-  (`snake_case` or `camelCase`).
+  Tolerations and spread constraints are checked by the strict schema (see
+  above; `snake_case` or `camelCase` keys).
 - **Topology spread** is on by default: `maxSkew: 1` over
   `kubernetes.io/hostname`, `ScheduleAnyway`, selecting the service's pods.
   Constraints without a `label_selector` get the service's selector labels.
