@@ -2,8 +2,10 @@
 source: crates/tonin/tests/golden_charts.rs
 expression: read(&chart.join(file))
 ---
-# Base values — environment-independent defaults.
-# Override per-environment with values-<env>.yaml.
+# Base values — environment-independent settings only.
+# Keys that differ per environment (replicas, autoscaling, mesh, MCP, ingress,
+# env, stateful deps, secret keys, network policy) hold neutral defaults here;
+# values-<env>.yaml sets them. Deploy with both: -f values.yaml -f values-<env>.yaml.
 
 replicaCount: 1
 
@@ -37,8 +39,8 @@ service:
 #   none       → disabled (HTTP/web services have no gRPC surface).
 # Override: [deploy] mcp_sidecar = false forces mode to none.
 mcp:
-  enabled: true
-  mode: in-process
+  enabled: false
+  mode: none
 
 # Outbound proxy sidecar. Auto-injected when language != rust and depends_on is
 # non-empty. Handles singleflight coalescing, TTL cache, retry, and circuit breaking
@@ -57,9 +59,9 @@ resources:
     memory: "128Mi"
 
 autoscaling:
-  enabled: true
+  enabled: false
   minReplicas: 1
-  maxReplicas: 8
+  maxReplicas: 1
 
 
 podSecurityContext:
@@ -83,7 +85,7 @@ ingress:
   enabled: false
   host: ""
 
-mesh: "cilium"
+mesh: "none"
 
 observability:
   otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
@@ -101,8 +103,7 @@ env: {}
 
 # Pod annotations. Mesh-derived entries (e.g. cilium transparent encryption) are
 # generated here; add your own at deploy time via --set podAnnotations.key=value.
-podAnnotations:
-  io.cilium/encryption: "enabled"
+podAnnotations: {}
 
 # Escape hatches — empty by design so `tonin helm generate` never clobbers them.
 # Supply at DEPLOY time, not by hand-editing this file:
@@ -115,28 +116,26 @@ extraManifests: []
 
 # Resolved stateful env (DATABASE_URL, REDIS_URL, …) injected verbatim.
 # Populated from tonin.toml [database]/[cache]; overridden per-env.
-statefulEnv:
-  DATABASE_URL: "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
-  REDIS_URL: "redis://redis.shared-dev.svc.cluster.local:6379"
+statefulEnv: {}
 
 # Stateful dependencies — rendered when tonin.toml declares [database]/[cache].
 # `shared: true` points at an external instance and renders NO StatefulSet.
 database:
-  enabled: true
-  shared: true
-  engine: "postgres"
-  name: "identity-db"
-  namespace: "platform-dev"
+  enabled: false
+  shared: false
+  engine: "none"
+  name: ""
+  namespace: ""
   port: 5432
-  image: "postgres:18"
+  image: ""
   storage: "2Gi"
 
 cache:
-  enabled: true
-  shared: true
-  engine: "redis"
-  name: "identity-cache"
-  namespace: "platform-dev"
+  enabled: false
+  shared: false
+  engine: "none"
+  name: ""
+  namespace: ""
   port: 6379
   storage: "1Gi"
 
@@ -147,8 +146,7 @@ cache:
 # <release>-secrets (e.g. created by ExternalSecrets / Vault / kubectl).
 secrets:
   create: true
-  keys:
-    - JWT_SECRET
+  keys: []
   values: {}
 
 # DB migrations.
@@ -170,15 +168,8 @@ migrations:
 
 # CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.
 networkPolicy:
-  enabled: true
+  enabled: false
   port: 50051
-  mcp: true
-  callers:
-    - name: api-gateway
-      namespace: platform-dev
-    - name: telemetry
-      namespace: telemetry-dev
-  dependsOn:
-    - name: audit-log
-      namespace: platform-dev
-      port: 50051
+  mcp: false
+  callers: []
+  dependsOn: []

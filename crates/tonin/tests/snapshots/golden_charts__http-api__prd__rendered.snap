@@ -92,8 +92,6 @@ spec:
               value: "http://identity.platform-prd.svc.cluster.local:50051"
             - name: PLATFORM_REDIS_URL
               value: "redis://redis.shared-prd.svc.cluster.local:6379"
-            - name: PLATFORM_SERVER_ALLOWED_ORIGINS
-              value: "http://localhost:7002"
             - name: PLATFORM_SERVER_PORT
               value: "7001"
             - name: TELEMETRY_URL

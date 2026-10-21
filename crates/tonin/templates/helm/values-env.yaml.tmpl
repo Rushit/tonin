@@ -10,11 +10,25 @@ autoscaling:
   enabled: {% if has_autoscale %}true{% else %}false{% endif %}
   minReplicas: {{ replicas }}
   maxReplicas: {{ max_replicas }}
-{% if expose %}
+
+mesh: "{{ mesh }}"
+
+mcp:
+  enabled: {% if mcp_enabled %}true{% else %}false{% endif %}
+  mode: {{ mcp_mode }}
+
+outboundProxy:
+  enabled: {% if needs_proxy %}true{% else %}false{% endif %}
+
 ingress:
-  enabled: true
-  host: "{{ expose }}"
-{% endif %}
+  enabled: {% if expose %}true{% else %}false{% endif %}
+  host: "{{ expose | default(value="") }}"
+
+podAnnotations:{% if pod_annotations | length == 0 %} {}{% endif %}
+{%- for kv in pod_annotations %}
+  {{ kv.0 }}: "{{ kv.1 }}"
+{%- endfor %}
+
 # Stateful env resolves per-env (e.g. dev points at a shared instance URL).
 statefulEnv:{% if stateful_env_literals | length == 0 %} {}{% endif %}
 {%- for kv in stateful_env_literals %}
