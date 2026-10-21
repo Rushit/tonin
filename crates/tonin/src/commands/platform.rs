@@ -112,7 +112,7 @@ fn run_deploy(
     json: bool,
     dry_run: bool,
 ) -> Result<()> {
-    let root = workspace.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(workspace)?;
 
     // Load plans to find service and its wave
     let plans = Plan::load_workspace_with_env(&root, env)?;
@@ -164,7 +164,7 @@ fn run_deploy(
 }
 
 fn run_status(env: &str, workspace: Option<PathBuf>, json: bool) -> Result<()> {
-    let root = workspace.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(workspace)?;
 
     let orchestrator = CliOrchestrator::new(&root);
     let statuses = orchestrator.get_running_services(env)?;
@@ -193,7 +193,7 @@ fn run_status(env: &str, workspace: Option<PathBuf>, json: bool) -> Result<()> {
 }
 
 fn run_rollback(service: &str, env: &str, workspace: Option<PathBuf>) -> Result<()> {
-    let root = workspace.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(workspace)?;
 
     let orchestrator = CliOrchestrator::new(&root);
     orchestrator.rollback_service(service, env)?;

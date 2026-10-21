@@ -76,10 +76,7 @@ pub enum ObserveCmd {
 }
 
 pub fn run(args: ObserveArgs) -> Result<()> {
-    let root = args
-        .workspace
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(args.workspace.clone())?;
 
     // Choose backend based on --dry-run and environment
     let backend: Box<dyn ObserveBackend> = if args.dry_run {

@@ -72,9 +72,7 @@ pub fn run(args: ReleaseArgs) -> Result<()> {
 
     let git_sha_ref = args.git_sha.clone().unwrap_or_else(|| "HEAD".to_string());
 
-    let root = args
-        .workspace
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(args.workspace)?;
     let store = GitLockStore::new(&root);
 
     let mut lock = store.read(&args.env).unwrap_or_else(|_| EnvLock {
