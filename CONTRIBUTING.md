@@ -70,6 +70,22 @@ The most common ones during development are `just build`, `just test`,
 `just fmt`, and `just lint`; see the [justfile](justfile) for the full set
 including the publish-side recipes.
 
+## Releases
+
+Releases are cut by [`auto-release.yml`](.github/workflows/auto-release.yml) when a commit
+lands on `main`. It reads the Conventional Commit subjects since the last `v*` tag
+(`feat!`/`BREAKING CHANGE` → minor while < 1.0, `feat` → minor, any other type → patch),
+adds that bump to `VERSION`, commits `chore: release vX.Y.Z [skip ci]`, tags it, creates the
+GitHub Release and dispatches `release.yml` to publish crates, binaries and the proxy image.
+
+- **Never bump `VERSION` or the Cargo versions in a PR.** The new version is computed from
+  `VERSION`, so a pre-bumped `VERSION` is bumped again (0.15.0 would ship as 0.16.0).
+- Breaking or larger releases are collected on the `next` branch and merged to `main` in one
+  PR, so auto-release runs once.
+- For release notes, add a `## [X.Y.Z](compare link)` section at the top of
+  [CHANGELOG.md](CHANGELOG.md) before the release PR merges. auto-release puts that section
+  above GitHub's generated notes on the release.
+
 ## What kinds of changes are welcome
 
 - Bug fixes — anywhere. PR with a regression test.
