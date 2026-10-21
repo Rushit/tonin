@@ -3,6 +3,20 @@ source: crates/tonin/tests/golden_charts.rs
 expression: rendered
 ---
 ---
+# Source: telemetry/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: telemetry
+  namespace: telemetry-dev
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+automountServiceAccountToken: false
+
+---
 # Source: telemetry/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -51,6 +65,8 @@ spec:
         app: telemetry
         service.identity: telemetry.telemetry-dev
     spec:
+      serviceAccountName: telemetry
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 65532
         runAsGroup: 65532

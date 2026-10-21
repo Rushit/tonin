@@ -38,8 +38,9 @@ path = "/api/health"
 port = 7002
 
 [deploy]
-namespace   = "platform-{env}"
-replicas    = 1
+namespace          = "platform-{env}"
+replicas           = 1
+image_pull_secrets = ["ghcr-read"]
 
 [deploy.prd]
 replicas = 2

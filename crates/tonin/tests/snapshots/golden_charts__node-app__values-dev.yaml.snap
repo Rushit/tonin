@@ -41,10 +41,24 @@ env:
 datastores: []
 
 secrets:
+  create: true
   keys: []
 
 migrations:
   mode: none
+
+# Pull secrets, placement, disruption budget and CronJobs for dev.
+imagePullSecrets:
+- name: ghcr-read
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints:
+- maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+podDisruptionBudget:
+  enabled: false
+cronjobs: []
 
 networkPolicy:
   enabled: true
@@ -52,6 +66,11 @@ networkPolicy:
   mcp: false
   callers: []
   dependsOn:
-    - name: platform-api
-      namespace: platform-dev
-      port: 7001
+  - name: platform-api
+    namespace: platform-dev
+    ports:
+    - 7001
+  egress:
+    fqdns: []
+    cidrs: []
+    kubeApiserver: false

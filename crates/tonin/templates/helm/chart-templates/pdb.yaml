@@ -1,0 +1,25 @@
+{{- /*
+PodDisruptionBudget for the service's own pods ([pdb]). Skipped with a single
+replica: a budget there either blocks every node drain or allows nothing.
+unhealthyPodEvictionPolicy=AlwaysAllow lets drains evict pods that are not
+Ready anyway, so a crash-looping pod never blocks node maintenance.
+*/}}
+{{- if and .Values.podDisruptionBudget.enabled (gt (int (include "service.minReplicas" .)) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "service.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  {{- if hasKey .Values.podDisruptionBudget "minAvailable" }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable | default 1 }}
+  {{- end }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+{{- end }}

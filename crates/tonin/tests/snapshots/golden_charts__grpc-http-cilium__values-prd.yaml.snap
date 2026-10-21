@@ -73,6 +73,7 @@ datastores:
         app.kubernetes.io/name: telemetry-cache
 
 secrets:
+  create: true
   keys:
     - TELEMETRY_SERVICE_TOKEN
     - AWS_ACCESS_KEY_ID
@@ -80,6 +81,25 @@ secrets:
 
 migrations:
   mode: none
+
+# Pull secrets, placement, disruption budget and CronJobs for prd.
+imagePullSecrets: []
+nodeSelector:
+  zvl.io/role: db
+tolerations:
+- effect: NoSchedule
+  key: zvl.io/db
+  operator: Equal
+  value: telemetry
+topologySpreadConstraints:
+- maxSkew: 1
+  minDomains: 2
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: DoNotSchedule
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+cronjobs: []
 
 networkPolicy:
   enabled: true

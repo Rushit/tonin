@@ -463,6 +463,22 @@ tonin platform status --env prod --json
 helm upgrade tonin-users helm/... --namespace prod
 ```
 
+## Generated service charts: pods
+
+Every pod a generated chart renders (Deployment, migration Job, CronJobs)
+takes its ServiceAccount, `imagePullSecrets`, pod `securityContext`,
+`nodeSelector` and `tolerations` from the `service.podSpecCommon` helper in
+`_helpers.tpl`; the service's own pods also get `topologySpreadConstraints`.
+The values come from `[deploy] image_pull_secrets`, `[placement]`, `[pdb]`,
+`[service_account]` and `[[cronjobs]]` in `tonin.toml`; see
+[12-kubernetes-deploy.md](12-kubernetes-deploy.md#pods-pull-secrets-serviceaccount-placement-disruption-cronjobs).
+Custom templates that add a pod spec should include the same helper:
+
+```yaml
+    spec:
+      {{- include "service.podSpecCommon" (dict "root" . "component" "server") | nindent 6 }}
+```
+
 ## Generated service charts: databases, caches and migrations
 
 The per-service charts `tonin helm generate` writes (see

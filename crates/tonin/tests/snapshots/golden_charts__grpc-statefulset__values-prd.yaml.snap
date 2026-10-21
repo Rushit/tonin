@@ -55,20 +55,63 @@ datastores:
         cnpg.io/cluster: tracestore-pg
 
 secrets:
+  create: true
   keys:
     - TRACESTORE_SERVICE_TOKEN
 
 migrations:
   mode: none
 
+# Pull secrets, placement, disruption budget and CronJobs for prd.
+imagePullSecrets:
+- name: ghcr-read
+nodeSelector:
+  zvl.io/role: app
+tolerations: []
+topologySpreadConstraints:
+- maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+cronjobs:
+- name: compact
+  schedule: 30 3 * * *
+  args:
+  - compact
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  backoffLimit: 3
+  suspend: false
+
 networkPolicy:
   enabled: true
   port: 4317
   mcp: true
   callers:
-    - name: platform-api
-      namespace: platform-prd
+  - name: cloudflared
+    namespace: edge
+    labels:
+      app.kubernetes.io/name: cloudflared
+    ports:
+    - 4318
+  - name: platform-api
+    namespace: platform-prd
+    ports:
+    - 8080
+    - 8081
+    - 8082
   dependsOn:
-    - name: identity
-      namespace: platform-prd
-      port: 50051
+  - name: identity
+    namespace: platform-prd
+    ports:
+    - 50051
+  egress:
+    fqdns:
+    - name: s3.example.invalid
+      ports:
+      - 443
+    cidrs: []
+    kubeApiserver: false

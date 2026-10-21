@@ -5,6 +5,8 @@
 # -internal for the query/admin gRPC ports), separate liveness/readiness paths
 # and a startup probe on the HTTP port, a staged rollout (partition) in prd,
 # and the CPU limit left out. Callers reach the extra ports by port list.
+# Pod hygiene: pull secret, prd placement, PDB, a projected SA token and a
+# CronJob alongside the StatefulSet.
 schema = "v1"
 
 [image]
@@ -53,11 +55,22 @@ replicas                         = 2
 mesh                             = "cilium"
 termination_grace_period_seconds = 60
 
+image_pull_secrets               = ["ghcr-read"]
+
 [deploy.dev]
 replicas = 1
 
 [deploy.prd.strategy]
 partition = 1
+
+# Pinned to the app nodes in prd; a PDB keeps one of the two pods up.
+[placement.prd]
+node_selector = { "zvl.io/role" = "app" }
+
+[pdb]
+
+[service_account]
+tokens = [{ audience = "identity" }]
 
 [resources.requests]
 cpu               = "200m"
@@ -125,3 +138,9 @@ fqdns = [{ name = "s3.example.invalid", ports = [443] }]
 
 [depends_on]
 identity = "platform-{env}"
+
+# Runs with the service image, env, datastores and the empty-dir volumes.
+[[cronjobs]]
+name     = "compact"
+schedule = "30 3 * * *"
+args     = ["compact"]

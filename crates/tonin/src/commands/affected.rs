@@ -512,6 +512,7 @@ mod tests {
             client: ClientSpec::default(),
             workload: Default::default(),
             path_rules,
+            pod: Default::default(),
         }
     }
 

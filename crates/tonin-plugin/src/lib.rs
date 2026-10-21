@@ -31,6 +31,7 @@ pub mod network;
 pub mod observe_backend;
 pub mod plan;
 pub mod platform;
+pub mod pod;
 pub mod run_backend;
 pub(crate) mod stateful;
 pub mod workload;
@@ -60,6 +61,12 @@ pub use stateful::{
 pub use workload::{
     AutoscaleSpec, PortSpec, ProbesSpec, ResourcesSpec, StartupProbeSpec, StrategySpec,
     VolumeSource, VolumeSpec, WorkloadKind, WorkloadSpec,
+};
+
+// Pod hygiene: pull secrets, placement, PDB, ServiceAccount, CronJobs
+pub use pod::{
+    CpuMemory, CronJobSpec, CronResources, IntOrPercent, PdbSpec, PlacementSpec, PodSettings,
+    SaToken, ServiceAccountSpec, TokenSource, TokenVolume,
 };
 
 // Lock store types

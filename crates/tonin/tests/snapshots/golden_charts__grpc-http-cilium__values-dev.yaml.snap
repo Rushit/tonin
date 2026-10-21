@@ -63,6 +63,7 @@ datastores:
         app.kubernetes.io/name: telemetry-cache
 
 secrets:
+  create: true
   keys:
     - TELEMETRY_SERVICE_TOKEN
     - AWS_ACCESS_KEY_ID
@@ -70,6 +71,15 @@ secrets:
 
 migrations:
   mode: none
+
+# Pull secrets, placement, disruption budget and CronJobs for dev.
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints: []
+podDisruptionBudget:
+  enabled: false
+cronjobs: []
 
 networkPolicy:
   enabled: true

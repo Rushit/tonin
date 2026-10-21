@@ -3,6 +3,39 @@ source: crates/tonin/tests/golden_charts.rs
 expression: rendered
 ---
 ---
+# Source: identity/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: identity
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  minAvailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: identity
+
+---
+# Source: identity/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: identity
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+automountServiceAccountToken: false
+
+---
 # Source: identity/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -48,11 +81,24 @@ spec:
         app: identity
         service.identity: identity.platform-prd
     spec:
+      serviceAccountName: identity
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-read
       securityContext:
         fsGroup: 65532
         runAsGroup: 65532
         runAsNonRoot: true
         runAsUser: 65532
+      nodeSelector:
+        zvl.io/role: app
+      topologySpreadConstraints:
+        - labelSelector:
+            matchLabels:
+              app: identity
+          maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
       # DB migrations run to completion before the server starts. For the
       # pre-upgrade Job alternative, set migrations.mode=job (see migration-job.yaml).
       initContainers:
@@ -163,6 +209,12 @@ spec:
             - name: pg-ca
               mountPath: /etc/pg-ca
               readOnly: true
+            - name: sa-token-0
+              mountPath: /etc/vault
+              readOnly: true
+            - name: sa-token-1
+              mountPath: /var/run/secrets/tokens
+              readOnly: true
       volumes:
         - name: pg-ca
           secret:
@@ -170,6 +222,20 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+        - name: sa-token-0
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: "vault"
+                  expirationSeconds: 7200
+                  path: "token"
+        - name: sa-token-1
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: "audit-log"
+                  expirationSeconds: 3600
+                  path: "audit-log"
 
 ---
 # Source: identity/templates/hpa.yaml
@@ -197,6 +263,215 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
+
+---
+# Source: identity/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: identity-purge-expired
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+    app.kubernetes.io/component: purge-expired
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  suspend: false
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: identity
+            app.kubernetes.io/component: purge-expired
+            service.identity: identity.platform-prd
+        spec:
+          restartPolicy: Never
+          serviceAccountName: identity
+          automountServiceAccountToken: false
+          imagePullSecrets:
+            - name: ghcr-read
+          securityContext:
+            fsGroup: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          nodeSelector:
+            zvl.io/role: app
+          containers:
+            - name: purge-expired
+              image: "ghcr.io/example/identity@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                readOnlyRootFilesystem: true
+                seccompProfile:
+                  type: RuntimeDefault
+              command:
+                - /usr/local/bin/identity-purge-expired
+              env:
+                - name: OTEL_SERVICE_NAME
+                  value: "identity-purge-expired"
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: "http://otel-collector.observability.svc.cluster.local:4317"
+                - name: OTEL_RESOURCE_ATTRIBUTES
+                  value: "service.namespace=platform-prd,service.version=0.3.7"
+                - name: RUST_LOG
+                  value: "info"
+                # Secret-sourced vars first: datastore URLs may compose from
+                # them with $(VAR), and so may the plain env that follows.
+                - name: JWT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-secrets
+                      key: JWT_SECRET
+                - name: TONIN_PG_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-pg-app
+                      key: uri
+                - name: DATABASE_URL
+                  value: "$(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt"
+                - name: REDIS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-cache
+                      key: uri
+              resources:
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+              volumeMounts:
+                - name: pg-ca
+                  mountPath: /etc/pg-ca
+                  readOnly: true
+          volumes:
+            - name: pg-ca
+              secret:
+                secretName: identity-pg-ca
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+
+---
+# Source: identity/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: identity-close-impersonation
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+    app.kubernetes.io/component: close-impersonation
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  suspend: false
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: identity
+            app.kubernetes.io/component: close-impersonation
+            service.identity: identity.platform-prd
+        spec:
+          restartPolicy: Never
+          serviceAccountName: identity
+          automountServiceAccountToken: false
+          imagePullSecrets:
+            - name: ghcr-read
+          securityContext:
+            fsGroup: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          nodeSelector:
+            zvl.io/role: app
+          containers:
+            - name: close-impersonation
+              image: "ghcr.io/example/identity@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                readOnlyRootFilesystem: true
+                seccompProfile:
+                  type: RuntimeDefault
+              command:
+                - /usr/local/bin/identity
+              args:
+                - close-impersonation
+              env:
+                - name: OTEL_SERVICE_NAME
+                  value: "identity-close-impersonation"
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: "http://otel-collector.observability.svc.cluster.local:4317"
+                - name: OTEL_RESOURCE_ATTRIBUTES
+                  value: "service.namespace=platform-prd,service.version=0.3.7"
+                - name: RUST_LOG
+                  value: "info"
+                # Secret-sourced vars first: datastore URLs may compose from
+                # them with $(VAR), and so may the plain env that follows.
+                - name: JWT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-secrets
+                      key: JWT_SECRET
+                - name: TONIN_PG_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-pg-app
+                      key: uri
+                - name: DATABASE_URL
+                  value: "$(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt"
+                - name: REDIS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-cache
+                      key: uri
+                - name: RUST_LOG_FORMAT
+                  value: "json"
+              resources:
+                limits:
+                  cpu: 50m
+                  memory: 64Mi
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+              volumeMounts:
+                - name: pg-ca
+                  mountPath: /etc/pg-ca
+                  readOnly: true
+          volumes:
+            - name: pg-ca
+              secret:
+                secretName: identity-pg-ca
+                items:
+                  - key: ca.crt
+                    path: ca.crt
 
 ---
 # Source: identity/templates/networkpolicy.yaml
@@ -279,6 +554,39 @@ spec:
         - ports:
             - { port: "6379", protocol: TCP }
 ---
+# Source: identity/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: identity
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  minAvailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: identity
+
+---
+# Source: identity/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: identity
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+automountServiceAccountToken: false
+
+---
 # Source: identity/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -324,11 +632,24 @@ spec:
         app: identity
         service.identity: identity.platform-prd
     spec:
+      serviceAccountName: identity
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-read
       securityContext:
         fsGroup: 65532
         runAsGroup: 65532
         runAsNonRoot: true
         runAsUser: 65532
+      nodeSelector:
+        zvl.io/role: app
+      topologySpreadConstraints:
+        - labelSelector:
+            matchLabels:
+              app: identity
+          maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
       containers:
         - name: server
           image: "ghcr.io/example/identity@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -398,6 +719,12 @@ spec:
             - name: pg-ca
               mountPath: /etc/pg-ca
               readOnly: true
+            - name: sa-token-0
+              mountPath: /etc/vault
+              readOnly: true
+            - name: sa-token-1
+              mountPath: /var/run/secrets/tokens
+              readOnly: true
       volumes:
         - name: pg-ca
           secret:
@@ -405,6 +732,20 @@ spec:
             items:
               - key: ca.crt
                 path: ca.crt
+        - name: sa-token-0
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: "vault"
+                  expirationSeconds: 7200
+                  path: "token"
+        - name: sa-token-1
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: "audit-log"
+                  expirationSeconds: 3600
+                  path: "audit-log"
 
 ---
 # Source: identity/templates/hpa.yaml
@@ -432,6 +773,215 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
+
+---
+# Source: identity/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: identity-purge-expired
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+    app.kubernetes.io/component: purge-expired
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  suspend: false
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: identity
+            app.kubernetes.io/component: purge-expired
+            service.identity: identity.platform-prd
+        spec:
+          restartPolicy: Never
+          serviceAccountName: identity
+          automountServiceAccountToken: false
+          imagePullSecrets:
+            - name: ghcr-read
+          securityContext:
+            fsGroup: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          nodeSelector:
+            zvl.io/role: app
+          containers:
+            - name: purge-expired
+              image: "ghcr.io/example/identity@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                readOnlyRootFilesystem: true
+                seccompProfile:
+                  type: RuntimeDefault
+              command:
+                - /usr/local/bin/identity-purge-expired
+              env:
+                - name: OTEL_SERVICE_NAME
+                  value: "identity-purge-expired"
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: "http://otel-collector.observability.svc.cluster.local:4317"
+                - name: OTEL_RESOURCE_ATTRIBUTES
+                  value: "service.namespace=platform-prd,service.version=0.3.7"
+                - name: RUST_LOG
+                  value: "info"
+                # Secret-sourced vars first: datastore URLs may compose from
+                # them with $(VAR), and so may the plain env that follows.
+                - name: JWT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-secrets
+                      key: JWT_SECRET
+                - name: TONIN_PG_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-pg-app
+                      key: uri
+                - name: DATABASE_URL
+                  value: "$(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt"
+                - name: REDIS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-cache
+                      key: uri
+              resources:
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+              volumeMounts:
+                - name: pg-ca
+                  mountPath: /etc/pg-ca
+                  readOnly: true
+          volumes:
+            - name: pg-ca
+              secret:
+                secretName: identity-pg-ca
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+
+---
+# Source: identity/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: identity-close-impersonation
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+    app.kubernetes.io/component: close-impersonation
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  suspend: false
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: identity
+            app.kubernetes.io/component: close-impersonation
+            service.identity: identity.platform-prd
+        spec:
+          restartPolicy: Never
+          serviceAccountName: identity
+          automountServiceAccountToken: false
+          imagePullSecrets:
+            - name: ghcr-read
+          securityContext:
+            fsGroup: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          nodeSelector:
+            zvl.io/role: app
+          containers:
+            - name: close-impersonation
+              image: "ghcr.io/example/identity@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                readOnlyRootFilesystem: true
+                seccompProfile:
+                  type: RuntimeDefault
+              command:
+                - /usr/local/bin/identity
+              args:
+                - close-impersonation
+              env:
+                - name: OTEL_SERVICE_NAME
+                  value: "identity-close-impersonation"
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: "http://otel-collector.observability.svc.cluster.local:4317"
+                - name: OTEL_RESOURCE_ATTRIBUTES
+                  value: "service.namespace=platform-prd,service.version=0.3.7"
+                - name: RUST_LOG
+                  value: "info"
+                # Secret-sourced vars first: datastore URLs may compose from
+                # them with $(VAR), and so may the plain env that follows.
+                - name: JWT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-secrets
+                      key: JWT_SECRET
+                - name: TONIN_PG_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-pg-app
+                      key: uri
+                - name: DATABASE_URL
+                  value: "$(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt"
+                - name: REDIS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: identity-cache
+                      key: uri
+                - name: RUST_LOG_FORMAT
+                  value: "json"
+              resources:
+                limits:
+                  cpu: 50m
+                  memory: 64Mi
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+              volumeMounts:
+                - name: pg-ca
+                  mountPath: /etc/pg-ca
+                  readOnly: true
+          volumes:
+            - name: pg-ca
+              secret:
+                secretName: identity-pg-ca
+                items:
+                  - key: ca.crt
+                    path: ca.crt
 
 ---
 # Source: identity/templates/networkpolicy.yaml
@@ -514,6 +1064,25 @@ spec:
         - ports:
             - { port: "6379", protocol: TCP }
 ---
+# Source: identity/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: identity-migrate
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+automountServiceAccountToken: false
+
+---
 # Source: identity/templates/migration-job.yaml
 apiVersion: batch/v1
 kind: Job
@@ -541,11 +1110,17 @@ spec:
         service.identity: identity.platform-prd
     spec:
       restartPolicy: Never
+      serviceAccountName: identity-migrate
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-read
       securityContext:
         fsGroup: 65532
         runAsGroup: 65532
         runAsNonRoot: true
         runAsUser: 65532
+      nodeSelector:
+        zvl.io/role: app
       containers:
         - name: migrate
           image: "ghcr.io/example/identity@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

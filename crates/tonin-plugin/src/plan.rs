@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::network::{self, Caller, EgressSpec};
+use crate::pod::{self, PodSettings, RawCronJob, RawPdb, RawPlacement, RawServiceAccount};
 use crate::stateful::{
     self, CacheSpec, ConfigSpec, DatabaseSpec, EmittedEnv, MigrationsSpec, RawCache,
     RawConfigBlock, RawDatabase, RawMigrations, RawSecrets, SecretsSpec,
@@ -447,6 +448,14 @@ struct RawConfig {
     volumes: Vec<RawVolume>,
     #[serde(default)]
     ports: Vec<RawPort>,
+    #[serde(default)]
+    placement: Option<RawPlacement>,
+    #[serde(default)]
+    pdb: Option<RawPdb>,
+    #[serde(default)]
+    service_account: Option<RawServiceAccount>,
+    #[serde(default)]
+    cronjobs: Vec<RawCronJob>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -528,6 +537,9 @@ struct RawDeploy {
     termination_grace_period_seconds: Option<u32>,
     #[serde(default)]
     strategy: Option<RawStrategy>,
+    /// Secret names for `imagePullSecrets` on every pod.
+    #[serde(default)]
+    image_pull_secrets: Option<Vec<String>>,
     #[serde(default, flatten)]
     envs: std::collections::BTreeMap<String, RawDeployEnv>,
 }
@@ -548,6 +560,7 @@ struct RawDeployEnv {
     termination_grace_period_seconds: Option<u32>,
     #[serde(default)]
     strategy: Option<RawStrategy>,
+    image_pull_secrets: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -755,6 +768,9 @@ pub struct Plan {
     /// Workload kind, update strategy, volumes, extra ports, probes,
     /// resources, command and autoscaling, resolved for `selected_env`.
     pub workload: WorkloadSpec,
+    /// Pull secrets, placement, PDB, ServiceAccount and CronJobs, resolved
+    /// for `selected_env`.
+    pub pod: PodSettings,
 }
 
 /// Facts about the service [`resolve_workload`] validates against.
@@ -848,7 +864,7 @@ fn resolve_workload(
                 if set.is_some() {
                     return Err(Error::InvalidField {
                         field: format!("[service.health].{field}"),
-                        reason: "this service is probed over gRPC (no HTTP surface); add                                  [service.http] to probe an HTTP path"
+                        reason: "this service is probed over gRPC (no HTTP surface); add [service.http] to probe an HTTP path"
                             .into(),
                     });
                 }
@@ -974,6 +990,20 @@ impl Plan {
         let deploy_expose = deploy_overlay
             .and_then(|o| o.expose.clone())
             .or_else(|| raw.deploy.expose.clone());
+        pod::validate_pull_secrets(
+            "[deploy]",
+            raw.deploy.image_pull_secrets.as_deref().unwrap_or_default(),
+        )?;
+        for (e, o) in &raw.deploy.envs {
+            pod::validate_pull_secrets(
+                &format!("[deploy.{e}]"),
+                o.image_pull_secrets.as_deref().unwrap_or_default(),
+            )?;
+        }
+        let image_pull_secrets = deploy_overlay
+            .and_then(|o| o.image_pull_secrets.clone())
+            .or_else(|| raw.deploy.image_pull_secrets.clone())
+            .unwrap_or_default();
 
         let dir = toml_path
             .parent()
@@ -1098,7 +1128,10 @@ impl Plan {
                 named_caches.push((name.clone(), spec));
             }
         }
-        let secrets = raw.secrets.as_ref().map(stateful::resolve_secrets);
+        let secrets = raw
+            .secrets
+            .as_ref()
+            .map(|s| stateful::resolve_secrets(s, env));
         let migrations = raw
             .migrations
             .as_ref()
@@ -1205,6 +1238,25 @@ impl Plan {
             .cloned()
             .unwrap_or_default();
 
+        let cronjobs = pod::resolve_cronjobs(&raw.cronjobs, &raw.service.name, env)?;
+        for job in &cronjobs {
+            for key in job.env.keys() {
+                if let Some((_, origin)) = declared.iter().find(|(k, _)| k == key) {
+                    return Err(Error::InvalidField {
+                        field: format!("[[cronjobs]] {}.env.{key}", job.name),
+                        reason: format!("collides with the {origin} env var tonin already emits"),
+                    });
+                }
+            }
+        }
+        let pod = PodSettings {
+            image_pull_secrets,
+            placement: pod::resolve_placement(raw.placement.as_ref(), env)?,
+            pdb: pod::resolve_pdb(raw.pdb.as_ref(), env, deploy_replicas)?,
+            service_account: pod::resolve_service_account(raw.service_account.as_ref())?,
+            cronjobs,
+        };
+
         Ok(Plan {
             name: raw.service.name,
             version: raw.service.version,
@@ -1253,6 +1305,7 @@ impl Plan {
                     build_order: r.build_order,
                 })
                 .collect(),
+            pod,
         })
     }
 
@@ -2252,6 +2305,7 @@ allowPrivilegeEscalation = false
             client: ClientSpec::default(),
             workload: Default::default(),
             path_rules: Vec::new(),
+            pod: Default::default(),
         }
     }
 

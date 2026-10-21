@@ -3,6 +3,39 @@ source: crates/tonin/tests/golden_charts.rs
 expression: rendered
 ---
 ---
+# Source: tracestore/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tracestore
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: tracestore
+
+---
+# Source: tracestore/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tracestore
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+automountServiceAccountToken: false
+
+---
 # Source: tracestore/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -135,11 +168,24 @@ spec:
         app: tracestore
         service.identity: tracestore.tracestore-prd
     spec:
+      serviceAccountName: tracestore
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-read
       securityContext:
         fsGroup: 65532
         runAsGroup: 65532
         runAsNonRoot: true
         runAsUser: 65532
+      nodeSelector:
+        zvl.io/role: app
+      topologySpreadConstraints:
+        - labelSelector:
+            matchLabels:
+              app: tracestore
+          maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
       terminationGracePeriodSeconds: 60
       containers:
         - name: server
@@ -230,6 +276,9 @@ spec:
               mountPath: /home/nonroot/data/parquet-cache
             - name: tmp
               mountPath: /tmp
+            - name: sa-token-0
+              mountPath: /var/run/secrets/tokens
+              readOnly: true
       volumes:
         - name: parquet-cache
           emptyDir:
@@ -237,6 +286,13 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        - name: sa-token-0
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: "identity"
+                  expirationSeconds: 3600
+                  path: "identity"
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -250,10 +306,115 @@ spec:
             storage: 8Gi
 
 ---
+# Source: tracestore/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tracestore-compact
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+    app.kubernetes.io/component: compact
+spec:
+  schedule: "30 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  suspend: false
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: tracestore
+            app.kubernetes.io/component: compact
+            service.identity: tracestore.tracestore-prd
+        spec:
+          restartPolicy: Never
+          serviceAccountName: tracestore
+          automountServiceAccountToken: false
+          imagePullSecrets:
+            - name: ghcr-read
+          securityContext:
+            fsGroup: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          nodeSelector:
+            zvl.io/role: app
+          containers:
+            - name: compact
+              image: "ghcr.io/example/tracestore:0.2.3"
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                readOnlyRootFilesystem: true
+                seccompProfile:
+                  type: RuntimeDefault
+              command:
+                - /usr/local/bin/tracestore
+              args:
+                - compact
+              env:
+                - name: OTEL_SERVICE_NAME
+                  value: "tracestore-compact"
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: "http://otel-collector.observability.svc.cluster.local:4317"
+                - name: OTEL_RESOURCE_ATTRIBUTES
+                  value: "service.namespace=tracestore-prd,service.version=0.2.3"
+                - name: RUST_LOG
+                  value: "info"
+                # Secret-sourced vars first: datastore URLs may compose from
+                # them with $(VAR), and so may the plain env that follows.
+                - name: TRACESTORE_SERVICE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: tracestore-secrets
+                      key: TRACESTORE_SERVICE_TOKEN
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: tracestore-pg-app
+                      key: uri
+                - name: IDENTITY_GRPC_URL
+                  value: "http://identity.platform-prd.svc.cluster.local:50051"
+                - name: TRACESTORE_DATA_DIR
+                  value: "/home/nonroot/data"
+              resources:
+                limits:
+                  ephemeral-storage: 4Gi
+                  memory: 1Gi
+                requests:
+                  cpu: 200m
+                  ephemeral-storage: 2Gi
+                  memory: 1Gi
+              volumeMounts:
+                - name: parquet-cache
+                  mountPath: /home/nonroot/data/parquet-cache
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: parquet-cache
+              emptyDir:
+                sizeLimit: 2Gi
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi
+
+---
 # Source: tracestore/templates/networkpolicy.yaml
-# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, the platform contract's databases and
-# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# CiliumNetworkPolicy for the service's pods: ingress allowlist ([callers])
+# and egress (DNS, the otel-collector, [depends_on], datastores, [egress]).
+# mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# The migration Job has its own policy (migration-job.yaml), so it is
+# excluded here.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -268,25 +429,26 @@ spec:
   endpointSelector:
     matchLabels:
       service.identity: tracestore.tracestore-prd
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: NotIn, values: [migrate] }
   ingress:
+    # caller: cloudflared
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            "app.kubernetes.io/name": "cloudflared"
+      toPorts:
+        - ports:
+            - { port: "4318", protocol: TCP }
+    # caller: platform-api
     - fromEndpoints:
         - matchLabels:
             service.identity: platform-api.platform-prd
       toPorts:
         - ports:
-            - { port: "4317", protocol: TCP }
             - { port: "8080", protocol: TCP }
-            - { port: "50052", protocol: TCP }
-    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
-    - fromEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: observability
-            app: otel-collector
-      toPorts:
-        - ports:
-            - { port: "4317", protocol: TCP }
-            - { port: "8080", protocol: TCP }
-            - { port: "50052", protocol: TCP }
+            - { port: "8081", protocol: TCP }
+            - { port: "8082", protocol: TCP }
   egress:
     # DNS (kube-dns). Any egress rule makes this policy default-deny for the
     # pod, which would otherwise silently break service discovery.
@@ -298,6 +460,12 @@ spec:
         - ports:
             - { port: "53", protocol: UDP }
             - { port: "53", protocol: TCP }
+          # toFQDNs learns IPs from DNS answers seen by Cilium's DNS proxy;
+          # this rule sends lookups through it (and allows any name).
+          rules:
+            dns:
+              - matchPattern: "*"
+    # The otel-collector is push-only: pods export to it on 4317.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: observability
@@ -305,12 +473,12 @@ spec:
       toPorts:
         - ports:
             - { port: "4317", protocol: TCP }
+    # [depends_on] identity
     - toEndpoints:
         - matchLabels:
             service.identity: identity.platform-prd
       toPorts:
         - ports:
-            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
     # [database] (platform contract)
     - toEndpoints:
@@ -319,3 +487,9 @@ spec:
       toPorts:
         - ports:
             - { port: "5432", protocol: TCP }
+    # [egress] s3.example.invalid
+    - toFQDNs:
+        - matchName: "s3.example.invalid"
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }

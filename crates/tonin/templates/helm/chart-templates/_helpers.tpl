@@ -172,3 +172,111 @@ httpGet:
   port: {{ $h.port }}
 {{- end -}}
 {{- end }}
+
+{{/*
+The minimum number of replicas the service runs: autoscaling.minReplicas with
+the HPA on, else replicaCount. The PDB and topology spread need more than one.
+*/}}
+{{- define "service.minReplicas" -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- .Values.autoscaling.minReplicas -}}
+{{- else -}}
+{{- .Values.replicaCount -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Pod-spec fields shared by every pod tonin renders: ServiceAccount, token
+automount, imagePullSecrets, pod securityContext, nodeSelector, tolerations
+and (service pods only) topologySpreadConstraints. Include it once per pod
+spec, at the pod spec's indentation:
+
+  spec:
+    {{- include "service.podSpecCommon" (dict "root" . "component" "server") | nindent 6 }}
+
+`root` is the chart's top-level context (`$` inside a range). `component`:
+  server  — the service's own pods (Deployment, StatefulSet): the chart
+            ServiceAccount, plus topology spread when minReplicas > 1;
+  migrate — the migration hook Job: the hook-scoped `<service>-migrate`
+            ServiceAccount (the chart's own does not exist yet on a first
+            install), never an API token;
+  cronjob — CronJob pods: the chart ServiceAccount, no spread.
+*/}}
+{{- define "service.podSpecCommon" -}}
+{{- $root := .root -}}
+{{- $component := .component | default "server" -}}
+{{- $serviceAccount := include "service.name" $root -}}
+{{- if eq $component "migrate" -}}
+{{- $serviceAccount = printf "%s-migrate" $serviceAccount -}}
+{{- end -}}
+serviceAccountName: {{ $serviceAccount }}
+automountServiceAccountToken: {{ and (ne $component "migrate") $root.Values.serviceAccount.automountToken }}
+{{- with $root.Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $root.Values.podSecurityContext }}
+securityContext:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $root.Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $root.Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- if and (eq $component "server") (gt (int (include "service.minReplicas" $root)) 1) }}
+{{- with $root.Values.topologySpreadConstraints }}
+{{- $selector := dict "matchLabels" (include "service.selectorLabels" $root | fromYaml) }}
+{{- $constraints := list }}
+{{- range . }}
+{{- $constraints = append $constraints (merge (dict) . (dict "labelSelector" $selector)) }}
+{{- end }}
+topologySpreadConstraints:
+  {{- toYaml $constraints | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Projected ServiceAccount token volumes ([service_account] tokens) and their
+read-only mounts in the server container.
+*/}}
+{{- define "service.saTokenVolumes" -}}
+{{- range .Values.serviceAccount.tokenVolumes }}
+- name: {{ .name }}
+  projected:
+    sources:
+      {{- range .sources }}
+      - serviceAccountToken:
+          audience: {{ .audience | quote }}
+          expirationSeconds: {{ .expirationSeconds }}
+          path: {{ .path | quote }}
+      {{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "service.saTokenVolumeMounts" -}}
+{{- range .Values.serviceAccount.tokenVolumes }}
+- name: {{ .name }}
+  mountPath: {{ .mountPath }}
+  readOnly: true
+{{- end }}
+{{- end }}
+
+{{/*
+Volumes of the service's own pods and the mounts of its server container:
+the datastore CA mounts, the [[volumes]] and the projected ServiceAccount
+tokens.
+*/}}
+{{- define "service.serverVolumes" -}}
+{{- include "service.podVolumes" . }}
+{{- include "service.saTokenVolumes" . }}
+{{- end }}
+
+{{- define "service.serverVolumeMounts" -}}
+{{- include "service.volumeMounts" (dict "root" . "pvc" true) }}
+{{- include "service.saTokenVolumeMounts" . }}
+{{- end }}

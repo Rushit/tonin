@@ -303,6 +303,7 @@ mod tests {
             client: Default::default(),
             workload: Default::default(),
             path_rules: vec![],
+            pod: Default::default(),
         };
 
         let plans = vec![plan.clone()];
@@ -408,6 +409,7 @@ mod tests {
             client: Default::default(),
             workload: Default::default(),
             path_rules: vec![],
+            pod: Default::default(),
         }
     }
 

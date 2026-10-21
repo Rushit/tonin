@@ -9,6 +9,7 @@ One `tonin.toml` renders every manifest your service needs to ship.
   - `Ingress` when you ask for one
   - `DATABASE_URL` / `REDIS_URL` from the platform's Secrets, plus egress to the database/cache pods, when `[database]` / `[cache]` is set (tonin references databases and caches, it does not run them: see [08-database.md](08-database.md))
   - A migration initContainer or pre-install/pre-upgrade hook `Job` when `[migrations]` is set
+  - A `ServiceAccount` per service, `imagePullSecrets`, node placement, a `PodDisruptionBudget`, topology spread and `CronJob`s (`[deploy] image_pull_secrets`, `[service_account]`, `[placement]`, `[pdb]`, `[[cronjobs]]`; see [Pods](#pods-pull-secrets-serviceaccount-placement-disruption-cronjobs))
   - Mesh-specific overlays (Cilium `CiliumNetworkPolicy`, Istio `PeerAuthentication`, Linkerd annotations) when `[deploy].mesh` is set
 - **`tonin helm generate`** writes them as a complete Helm chart inside the `./chart/` directory. **`tonin helm upgrade`** ships them. No hand-edited YAML, ever — the next `generate` would overwrite it.
 - **Multi-env overlays.** The same `tonin.toml` describes every environment (`dev`, `prd`, …) — `--env` picks the right block. `--env` is required: tonin has no default environment.
@@ -91,6 +92,9 @@ The renderer (`crates/tonin/src/codegen/render.rs`) maps `tonin.toml` fields to 
 | `hpa.yaml` | `[autoscale]` with a range for the environment (Deployments only) |
 | `ingress.yaml` | `[deploy].expose = "ingress"` |
 | `migration-job.yaml` | `[migrations]` with `mode = "job"` for the environment (plus a hook CiliumNetworkPolicy under Cilium) |
+| `serviceaccount.yaml` | always (the service's ServiceAccount; plus a hook `<service>-migrate` ServiceAccount when migrations run as a Job) |
+| `pdb.yaml` | `[pdb]` enabled for the environment and more than one replica |
+| `cronjob.yaml` | one `CronJob` per `[[cronjobs]]` entry active in the environment |
 | `mesh/<engine>/*.yaml` | `[deploy].mesh = "cilium" \| "istio" \| "linkerd"` |
 
 `[database]` and `[cache]` render no files of their own: they add env vars (from the platform
@@ -359,8 +363,9 @@ The chart splits along the same line:
 - `values.yaml` holds only environment-independent settings (image repository,
   ports, probes, resources, security context, migrations command). Every key
   that can differ per environment (replicas, autoscaling, mesh, MCP mode,
-  ingress, `[env]`, `[database]`/`[cache]`, secret keys, callers and
-  dependencies) has a neutral default there (`replicaCount: 1`, `mesh: "none"`,
+  ingress, `[env]`, `[database]`/`[cache]`, secret keys and `secrets.create`,
+  callers and dependencies, pull secrets, placement, PDB, CronJobs) has a
+  neutral default there (`replicaCount: 1`, `mesh: "none"`,
   `env: {}`, …), so one environment's settings never leak into another.
 - `values-<env>.yaml` sets all of those keys for that environment.
 
@@ -382,7 +387,7 @@ tls = "verify-full"
 tonin helm generate --env dev --env prd   # dev: literal URL; prd: contract Secret + CA mount
 ```
 
-The same pattern works for `[cache.<env>]`, `[migrations.<env>] mode`, and for the `[deploy]` fields that differ between environments (replicas, namespace, mesh, `mcp_sidecar`, `expose`).
+The same pattern works for `[cache.<env>]`, `[migrations.<env>] mode`, `[secrets.<env>] create`, `[placement.<env>]`, `[pdb.<env>]`, and for the `[deploy]` fields that differ between environments (replicas, namespace, mesh, `mcp_sidecar`, `expose`, `image_pull_secrets`).
 
 ### Per-environment namespaces and dependencies
 
@@ -537,6 +542,98 @@ The table renders into the chart's `env:` map in each `values-<env>.yaml`
 (the base `values.yaml` keeps `env: {}`), so it survives regeneration — unlike hand-edits to the
 `extraEnv: []` deploy-time escape hatch, which `tonin helm generate`
 intentionally leaves empty.
+
+## Pods: pull secrets, ServiceAccount, placement, disruption, CronJobs
+
+Every pod tonin renders (the Deployment, the migration Job, CronJobs) gets the
+same pod-level settings from one chart helper (`service.podSpecCommon`): the
+ServiceAccount, `automountServiceAccountToken`, `imagePullSecrets`, the pod
+`securityContext` from `[security.pod]`, `nodeSelector` and `tolerations`.
+Containers get `[security.container]`.
+
+```toml
+[deploy]
+image_pull_secrets = []                       # Secret names; per env in [deploy.<env>]
+
+[deploy.prd]
+image_pull_secrets = ["ghcr-read"]
+
+[placement.prd]                               # base [placement] + per-env overlays
+node_selector = { "zvl.io/role" = "app" }
+tolerations   = [{ key = "zvl.io/db", operator = "Equal", value = "identity", effect = "NoSchedule" }]
+# topology_spread = false                     # default: hostname spread, see below
+# topology_spread = [{ max_skew = 1, topology_key = "topology.kubernetes.io/zone", when_unsatisfiable = "DoNotSchedule" }]
+
+[pdb.prd]                                     # [pdb] alone = max_unavailable 1
+min_available = 1                             # or max_unavailable = 1 / "50%"
+
+[service_account]
+automount_token = false                       # default
+tokens = [                                    # projected, audience-bound, kubelet-rotated
+  { audience = "identity" },                  # → /var/run/secrets/tokens/identity, 3600 s
+  { audience = "zradar", path = "/var/run/secrets/tokens/zradar", expiration_seconds = 3600 },
+]
+# token = { audience = "identity" }           # shorthand for a single token
+
+[secrets.prd]
+create = false                                # <service>-secrets comes from a SealedSecret
+
+[[cronjobs]]
+name     = "purge-expired"                    # CronJob <service>-purge-expired
+schedule = "0 2 * * *"
+command  = ["/usr/local/bin/identity-purge-expired"]
+
+[[cronjobs]]
+name                      = "close-impersonation"
+schedule                  = "0 * * * *"
+args                      = ["close-impersonation"]   # keeps the service command
+concurrency_policy        = "Forbid"          # default; Allow | Replace
+successful_jobs_history_limit = 3             # default 3
+failed_jobs_history_limit     = 3             # default 3
+starting_deadline_seconds = 300               # optional
+backoff_limit             = 3                 # default 3
+resources                 = { cpu = "50m", memory = "64Mi" }  # default: the service's
+env                       = { LOG_FORMAT = "json" }         # wins over [env]
+envs                      = ["prd"]           # default: every environment
+```
+
+- **Pull secrets** name existing Secrets (the platform provides them; tonin
+  never renders registry credentials). `[deploy.<env>] image_pull_secrets`
+  replaces the base list.
+- **ServiceAccount**: named after the service, so a caller is
+  `system:serviceaccount:<namespace>:<service>`. No API token is mounted unless
+  `automount_token = true`. Each token in `tokens` is a projected
+  `serviceAccountToken` (minimum `expiration_seconds` 600); tokens in the same
+  directory share one projected volume mounted read-only into the server
+  container (never `subPath`, which would stop rotation).
+- **Migration Job ServiceAccount**: the Job is a pre-install/pre-upgrade hook,
+  so on a first install it runs before the chart's own resources exist. It runs
+  as `<service>-migrate`, a hook ServiceAccount at weight `-10` (before the hook
+  network policy at `-5` and the Job at `0`), deleted with the Job, and never
+  mounts an API token. The service's identity is never shared with the Job.
+- **Placement**: each field of `[placement.<env>]` replaces the base field.
+  Tolerations and spread constraints are checked for unknown keys
+  (`snake_case` or `camelCase`).
+- **Topology spread** is on by default: `maxSkew: 1` over
+  `kubernetes.io/hostname`, `ScheduleAnyway`, selecting the service's pods.
+  Constraints without a `label_selector` get the service's selector labels.
+  It is rendered only on the service's own pods, and only when they run more
+  than one replica (`autoscaling.minReplicas` with an HPA).
+- **PDB**: present means enabled (`enabled = false` turns it off per env).
+  Skipped automatically with one replica. `min_available` at or above the
+  replica count, or `max_unavailable = 0`, fails generation: such a budget
+  blocks every node drain. The PDB sets `unhealthyPodEvictionPolicy:
+  AlwaysAllow`, so a crash-looping pod never blocks node maintenance.
+- **`secrets.create`** per env: `false` references a `<service>-secrets`
+  Secret managed elsewhere (sealed secrets, External Secrets).
+- **CronJobs** run the service image with the service's env, `[secrets]` keys,
+  datastores (env and CA mount), security context, ServiceAccount, pull
+  secrets and placement. `command` replaces the service command; with only
+  `args`, the service command runs with those args (one of the two is
+  required). Pods carry `service.identity`, so the service's network policy
+  (egress to its datastores and dependencies) applies, but not the Service
+  selector label. Names are DNS labels and `<service>-<name>` is at most 52
+  characters.
 
 ## Fleet deploys from a lock (`tonin deploy`)
 

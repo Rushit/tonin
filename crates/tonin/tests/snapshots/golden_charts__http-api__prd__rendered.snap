@@ -3,6 +3,20 @@ source: crates/tonin/tests/golden_charts.rs
 expression: rendered
 ---
 ---
+# Source: platform-api/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-api
+  namespace: platform-prd
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/version: "0.1.3"
+    helm.sh/chart: platform-api-0.1.3
+automountServiceAccountToken: false
+
+---
 # Source: platform-api/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -51,11 +65,20 @@ spec:
         app: platform-api
         service.identity: platform-api.platform-prd
     spec:
+      serviceAccountName: platform-api
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 65532
         runAsGroup: 65532
         runAsNonRoot: true
         runAsUser: 65532
+      topologySpreadConstraints:
+        - labelSelector:
+            matchLabels:
+              app: platform-api
+          maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
       terminationGracePeriodSeconds: 45
       containers:
         - name: server
@@ -247,6 +270,25 @@ spec:
             - { port: "443", protocol: TCP }
             - { port: "6443", protocol: TCP }
 ---
+# Source: platform-api/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-api-migrate
+  namespace: platform-prd
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/version: "0.1.3"
+    helm.sh/chart: platform-api-0.1.3
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+automountServiceAccountToken: false
+
+---
 # Source: platform-api/templates/migration-job.yaml
 apiVersion: batch/v1
 kind: Job
@@ -274,6 +316,8 @@ spec:
         service.identity: platform-api.platform-prd
     spec:
       restartPolicy: Never
+      serviceAccountName: platform-api-migrate
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 65532
         runAsGroup: 65532
