@@ -15,6 +15,7 @@ rustup show
 # Required system tools
 # - protoc (for tonic-build; brew install protobuf | apt install protobuf-compiler)
 # - kubectl (only for the `tonin k8s validate|diff|apply` paths)
+# - helm + kubeconform (golden chart tests; skipped when missing, see below)
 # - a local k8s cluster (Rancher Desktop / OrbStack / Docker Desktop / kind / k3d) — see docs/12-kubernetes-deploy.md
 ```
 
@@ -27,6 +28,40 @@ just ci    # runs fmt-check + lint + test + doc — same gate as CI
 ```
 
 If that fails locally, CI will fail too. Don't merge over a red CI.
+
+### Golden Helm chart tests
+
+`crates/tonin/tests/golden_charts.rs` renders a chart for every fixture in
+`crates/tonin/tests/fixtures/charts/<name>/tonin.toml` with `tonin helm generate`,
+then for each env (`dev`, `prd`):
+
+- snapshots `Chart.yaml` and the values files,
+- runs `helm template <release> <chart> -f values.yaml -f values-<env>.yaml --namespace <ns>`
+  and snapshots the output,
+- validates the output with `kubeconform -strict` (Kubernetes schemas plus the
+  [datreeio CRDs-catalog](https://github.com/datreeio/CRDs-catalog) for `CiliumNetworkPolicy`).
+
+Snapshots live in `crates/tonin/tests/snapshots/`, so a template change shows up in review
+as a YAML diff. After changing a template or the generator:
+
+```bash
+just snapshots          # re-record every golden snapshot (requires helm + kubeconform)
+git diff crates/tonin/tests/snapshots/   # review, then commit with the change
+```
+
+(`cargo insta review` works too if you have `cargo-insta` installed.)
+
+Tools: CI pins the helm and kubeconform versions (see `.github/workflows/ci.yml`) and sets
+`TONIN_REQUIRE_HELM=1`, which turns a missing tool into a failure. Locally the helm and
+kubeconform steps are skipped with a `SKIPPED:` message when the tools are not on `PATH`;
+install the CI versions to get the same snapshots. `TONIN_TEST_HELM` / `TONIN_TEST_KUBECONFORM`
+point the test at a specific binary. kubeconform downloads schemas from
+`raw.githubusercontent.com` on first use (cached under `target/tmp/kubeconform-cache/`), so the
+first run needs network access.
+
+Resources that fail kubeconform today are listed in `KNOWN_INVALID` in the test, each with a
+TODO naming the milestone that fixes it. The test fails if anything else fails, or if a listed
+resource starts passing (remove it from the list then).
 
 ### Useful recipes
 
