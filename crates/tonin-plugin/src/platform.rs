@@ -186,13 +186,13 @@ impl PlatformOrchestrator for CliOrchestrator {
             // Parse timeout (default 300s if parse fails)
             let timeout = Duration::from_secs(300);
 
-            let values = DeployValues {
-                image: svc_lock.image.clone(),
-                version: svc_lock.version.clone(),
-                release: format!("{}-{}", plan.name, env),
-                namespace: plan.namespace.clone(),
+            let values = DeployValues::for_plan(
+                plan,
+                env,
+                svc_lock.image.clone(),
+                svc_lock.version.clone(),
                 timeout,
-            };
+            );
 
             match backend.upgrade(&values) {
                 Ok(()) => {
@@ -240,9 +240,8 @@ impl PlatformOrchestrator for CliOrchestrator {
         for plan in plans {
             let desired_version = lock.services.get(&plan.name).map(|s| s.version.clone());
 
-            let release_name = format!("{}-{}", plan.name, env);
             let running_version = backend
-                .running_version(&release_name, &plan.namespace)
+                .running_version(&plan.name, &plan.namespace)
                 .ok()
                 .flatten();
 
@@ -290,8 +289,7 @@ impl PlatformOrchestrator for CliOrchestrator {
             .find(|p| p.name == service)
             .ok_or_else(|| anyhow::anyhow!("service {} not found in tonin.toml", service))?;
 
-        let release_name = format!("{}-{}", service, env);
-        backend.rollback(&release_name, &plan.namespace)?;
+        backend.rollback(&plan.name, &plan.namespace)?;
 
         Ok(())
     }

@@ -264,7 +264,7 @@ pub fn compute_affected(
     }
 }
 
-fn git_diff(base: &str, head: &str, root: &std::path::Path) -> Result<Vec<String>> {
+pub(crate) fn git_diff(base: &str, head: &str, root: &std::path::Path) -> Result<Vec<String>> {
     let output = Command::new("git")
         .args(["diff", "--name-only", &format!("{}..{}", base, head)])
         .current_dir(root)

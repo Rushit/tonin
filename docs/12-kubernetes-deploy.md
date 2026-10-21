@@ -312,6 +312,37 @@ The table renders into the chart's `env:` map in each `values-<env>.yaml`
 `extraEnv: []` deploy-time escape hatch, which `tonin helm generate`
 intentionally leaves empty.
 
+## Fleet deploys from a lock (`tonin deploy`)
+
+`tonin release --env <ENV>` records a service's version and digest-pinned image
+in `environments/<ENV>/lock.toml`; `tonin deploy --env <ENV>` reconciles the
+cluster to that lock in dependency-wave order:
+
+```bash
+tonin deploy --env prd                              # every service in the lock
+tonin deploy --env prd --service identity           # only these services (repeatable)
+tonin deploy --env prd --affected --base v0.14.0    # only services affected since a ref
+tonin deploy --env prd --dry-run                    # print the helm commands, change nothing
+```
+
+For each service it runs, with the chart at `<service dir>/chart` (absolute):
+
+```bash
+helm upgrade --install <service> <service dir>/chart \
+  -f values.yaml -f values-<ENV>.yaml --namespace <namespace> \
+  --set-string image.repository=<repo> --set-string image.digest=sha256:… \
+  --wait --timeout <timeout> --atomic --cleanup-on-fail
+```
+
+- The release is named after the service (`[service].name`), the same release
+  `tonin helm upgrade` manages.
+- The image comes from the lock. A digest-pinned image sets `image.digest`, and
+  the chart renders `repository@digest`; no mutable tag is set. `image.tag`
+  is only set when the lock image has no digest.
+- A service is skipped when its release already runs the lock image (compared
+  by image, not chart version); `--converge` upgrades every selected service.
+- `--affected` uses the same computation as `tonin affected --base <ref>`.
+
 ## How it fits together
 
 ```mermaid
