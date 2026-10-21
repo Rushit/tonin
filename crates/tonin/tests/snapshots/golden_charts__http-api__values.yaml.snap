@@ -1,0 +1,185 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# Base values — environment-independent defaults.
+# Override per-environment with values-<env>.yaml.
+
+replicaCount: 1
+
+image:
+  repository: "ghcr.io/example/platform-api"
+  tag: "0.1.3"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 7001
+  portName: http
+  # Additional HTTP port for a gRPC backend that also serves HTTP (0 = none).
+  httpPort: 0
+  mcpPort: 50052
+  # HTTP health probe (httpGet). Rendered only when enabled.
+  health:
+    enabled: true
+    # grpc: true  → native grpc: probe (gRPC Health Protocol v1). Requires k8s ≥ 1.24.
+    # grpc: false → httpGet probe. Only safe when the service exposes an HTTP surface
+    #               (add [service.http] in tonin.toml). Setting grpc: false on a
+    #               gRPC-only service will fail at `helm template` time with a
+    #               clear error — see deployment.yaml.
+    grpc: false
+    path: "/health"
+    port: 7001
+
+# MCP tool surface. Derived automatically from [service].language:
+#   in-process → same binary, two ports (Rust — default).
+#   sidecar    → separate <name>-mcp container (Python, TypeScript, …).
+#   none       → disabled (HTTP/web services have no gRPC surface).
+# Override: [deploy] mcp_sidecar = false forces mode to none.
+mcp:
+  enabled: false
+  mode: none
+
+# Outbound proxy sidecar. Auto-injected when language != rust and depends_on is
+# non-empty. Handles singleflight coalescing, TTL cache, retry, and circuit breaking
+# across all worker processes. Override: [client] proxy = false in tonin.toml.
+outboundProxy:
+  enabled: false
+  port: 6565
+  image: "ghcr.io/rushit/tonin-proxy:latest"
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  limits:
+    cpu: "250m"
+    memory: "256Mi"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+
+
+podSecurityContext:
+  fsGroup: 65532
+  runAsGroup: 65532
+  runAsNonRoot: true
+  runAsUser: 65532
+
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+
+
+ingress:
+  enabled: false
+  host: ""
+
+mesh: "cilium"
+
+observability:
+  otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
+
+# Override the container entrypoint. Empty list = use the Docker image CMD.
+# Rust services default to /usr/local/bin/<name>; leave empty for all others.
+command: ["/usr/local/bin/platform-api"]
+
+# Gate RUST_LOG injection: only meaningful for Rust binaries.
+rustService: true
+
+# Plain (non-secret) runtime env vars from tonin.toml [env] (+ [env.<env>]
+# overlays, {env} substituted). Injected verbatim into the server container.
+env:
+  IDENTITY_GRPC_ADDR: "http://identity.platform-dev.svc.cluster.local:50051"
+  PLATFORM_REDIS_URL: "redis://redis.shared-dev.svc.cluster.local:6379"
+  PLATFORM_SERVER_ALLOWED_ORIGINS: "http://localhost:7002"
+  PLATFORM_SERVER_PORT: "7001"
+  TELEMETRY_URL: "http://telemetry.telemetry-dev.svc.cluster.local:8080"
+
+# Pod annotations. Mesh-derived entries (e.g. cilium transparent encryption) are
+# generated here; add your own at deploy time via --set podAnnotations.key=value.
+podAnnotations:
+  io.cilium/encryption: "enabled"
+
+# Escape hatches — empty by design so `tonin helm generate` never clobbers them.
+# Supply at DEPLOY time, not by hand-editing this file:
+#   extraEnv:       --set-json 'extraEnv=[{"name":"X","value":"y"}]'  (server + initContainer)
+#   extraManifests: -f extra.yaml  (each entry is a YAML string, run through tpl)
+# For a durable per-service manifest (e.g. a CronJob), prefer a custom template
+# under chart/templates/ — those survive regeneration.
+extraEnv: []
+extraManifests: []
+
+# Resolved stateful env (DATABASE_URL, REDIS_URL, …) injected verbatim.
+# Populated from tonin.toml [database]/[cache]; overridden per-env.
+statefulEnv: {}
+
+# Stateful dependencies — rendered when tonin.toml declares [database]/[cache].
+# `shared: true` points at an external instance and renders NO StatefulSet.
+database:
+  enabled: false
+  shared: false
+  engine: "none"
+  name: ""
+  namespace: ""
+  port: 5432
+  image: ""
+  storage: "2Gi"
+
+cache:
+  enabled: false
+  shared: false
+  engine: "none"
+  name: ""
+  namespace: ""
+  port: 6379
+  storage: "1Gi"
+
+# Secrets the service requires (DATABASE_PASSWORD, JWT keys, …).
+# create=true templates a Secret from `values` — supply real values at deploy
+# time (`--set secrets.values.KEY=...` or a private values file); NEVER commit
+# them. create=false references an externally-managed Secret named
+# <release>-secrets (e.g. created by ExternalSecrets / Vault / kubectl).
+secrets:
+  create: true
+  keys:
+    - PLATFORM_DATABASE_URL
+    - TELEMETRY_SERVICE_TOKEN
+  values: {}
+
+# DB migrations.
+#   mode: init-container  → runs before the server container in every pod
+#         (default; correct for an owned/in-chart DB and for dev).
+#   mode: job             → a pre-install/pre-upgrade hook Job that Helm gates
+#         the rollout on. Needs the DB + Secret to already exist (managed/shared
+#         DB + secrets.create=false), since pre-upgrade hooks run before the
+#         chart's own StatefulSet/Secret.
+#   env: extra env for the migration step only (e.g. IDENTITY_MIGRATE_ONLY=1) —
+#         never reaches the server container.
+migrations:
+  enabled: false
+  mode: init-container
+  command: []
+  env: {}
+
+# CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.
+networkPolicy:
+  enabled: true
+  port: 7001
+  mcp: false
+  callers: []
+  dependsOn:
+    - name: identity
+      namespace: platform-dev
+      port: 50051
+    - name: telemetry
+      namespace: telemetry-dev
+      port: 8080

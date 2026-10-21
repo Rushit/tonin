@@ -1,0 +1,183 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: rendered
+---
+---
+# Source: platform-api/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-api
+  namespace: platform-dev
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/version: "0.1.3"
+    helm.sh/chart: platform-api-0.1.3
+spec:
+  type: ClusterIP
+  selector:
+    app: platform-api
+  ports:
+    - name: http
+      port: 7001
+      targetPort: 7001
+
+---
+# Source: platform-api/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-api
+  namespace: platform-dev
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/version: "0.1.3"
+    helm.sh/chart: platform-api-0.1.3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: platform-api
+  template:
+    metadata:
+      labels:
+        app: platform-api
+        service.identity: platform-api.platform-dev
+      annotations:
+        io.cilium/encryption: enabled
+    spec:
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: server
+          image: "ghcr.io/example/platform-api:0.1.3"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /usr/local/bin/platform-api
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: "platform-api"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4317"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=platform-dev,service.version=0.1.3"
+            - name: RUST_LOG
+              value: "info"
+            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
+            # inside the DATABASE_URL literal that follows.
+            - name: PLATFORM_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: PLATFORM_DATABASE_URL
+            - name: TELEMETRY_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: TELEMETRY_SERVICE_TOKEN
+            - name: IDENTITY_GRPC_ADDR
+              value: "http://identity.platform-dev.svc.cluster.local:50051"
+            - name: PLATFORM_REDIS_URL
+              value: "redis://redis.shared-dev.svc.cluster.local:6379"
+            - name: PLATFORM_SERVER_ALLOWED_ORIGINS
+              value: "http://localhost:7002"
+            - name: PLATFORM_SERVER_PORT
+              value: "7001"
+            - name: TELEMETRY_URL
+              value: "http://telemetry.telemetry-dev.svc.cluster.local:8080"
+          ports:
+            - containerPort: 7001
+              name: http
+          livenessProbe:
+            httpGet:
+              path: "/health"
+              port: 7001
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: "/health"
+              port: 7001
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+
+---
+# Source: platform-api/templates/networkpolicy.yaml
+# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
+# (observability, declared dependencies, own DB/cache). mTLS, retries, and
+# circuit breaking stay with the mesh, not this policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: platform-api-ingress
+  namespace: platform-dev
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/version: "0.1.3"
+    helm.sh/chart: platform-api-0.1.3
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: platform-api.platform-dev
+  ingress:
+    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "7001", protocol: TCP }
+  egress:
+    # DNS (kube-dns). Any egress rule makes this policy default-deny for the
+    # pod, which would otherwise silently break service discovery.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            service.identity: identity.platform-dev
+      toPorts:
+        - ports:
+            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
+            - { port: "50051", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            service.identity: telemetry.telemetry-dev
+      toPorts:
+        - ports:
+            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
+            - { port: "8080", protocol: TCP }

@@ -29,6 +29,11 @@ check:
 test:
     {{ cargo }} nextest run --workspace
 
+# Re-record golden Helm chart snapshots (needs helm + kubeconform); review with `git diff`
+snapshots:
+    rm -f crates/tonin/tests/snapshots/golden_charts__*.snap
+    TONIN_REQUIRE_HELM=1 INSTA_UPDATE=always {{ cargo }} test -p tonin --test golden_charts
+
 # Run all tests including E2E (requires Docker/testcontainers)
 e2e:
     {{ cargo }} nextest run --workspace --include-ignored

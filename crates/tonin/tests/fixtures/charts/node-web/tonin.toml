@@ -1,0 +1,47 @@
+# Golden fixture: non-Rust HTTP frontend (Next.js-style) with a health path
+# and one HTTP dependency. Modelled on the zvectorlabs `ui-shell` app, plus
+# `language = "typescript"` so the non-Rust branches (no Rust command, outbound
+# proxy sidecar) are covered.
+schema = "v1"
+
+[image]
+registry = "ghcr.io/example"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 1000
+run_as_group    = 1000
+fs_group        = 1000
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = false
+
+[security.container.capabilities]
+drop = ["ALL"]
+
+[security.container.seccomp_profile]
+type = "RuntimeDefault"
+
+[service]
+name     = "web-shell"
+version  = "0.1.1"
+type     = "http"
+language = "typescript"
+port     = 7002
+
+[service.health]
+path = "/api/health"
+port = 7002
+
+[deploy]
+namespace   = "platform-{env}"
+replicas    = 1
+mcp_sidecar = false
+
+[resources]
+cpu    = "500m"
+memory = "512Mi"
+
+[depends_on]
+platform-api = { namespace = "platform-{env}", port = 7001 }

@@ -1,0 +1,10 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+apiVersion: v2
+name: identity
+description: "identity gRPC service (tonin)"
+type: application
+version: "0.3.7"
+appVersion: "0.3.7"

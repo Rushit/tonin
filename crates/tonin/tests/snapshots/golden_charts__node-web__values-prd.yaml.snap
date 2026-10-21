@@ -1,0 +1,61 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# prd-specific overrides — generated from the prd overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 1
+
+image:
+  tag: "0.1.1"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+
+# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
+statefulEnv: {}
+
+# Plain env vars from tonin.toml [env], merged with the [env.prd]
+# overlay and with {env} substituted for this environment.
+env: {}
+
+database:
+  enabled: false
+  shared: false
+  engine: "none"
+  name: ""
+  namespace: ""
+  port: 5432
+  image: ""
+  storage: "2Gi"
+
+cache:
+  enabled: false
+  shared: false
+  engine: "none"
+  name: ""
+  namespace: ""
+  port: 6379
+  storage: "1Gi"
+
+secrets:
+  keys: []
+
+migrations:
+  enabled: false
+  mode: init-container
+  command: []
+  env: {}
+
+networkPolicy:
+  enabled: true
+  port: 7002
+  mcp: false
+  callers: []
+  dependsOn:
+    - name: platform-api
+      namespace: platform-prd
+      port: 7001

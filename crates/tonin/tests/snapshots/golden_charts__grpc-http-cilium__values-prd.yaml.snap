@@ -1,0 +1,72 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# prd-specific overrides — generated from the prd overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 2
+
+image:
+  tag: "0.2.3"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+
+# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
+statefulEnv:
+  DATABASE_URL: "postgres://telemetry:$(DATABASE_PASSWORD)@telemetry-db.telemetry-prd.svc.cluster.local:5432/telemetry"
+  REDIS_URL: "redis://telemetry-cache.telemetry-prd.svc.cluster.local:6379"
+
+# Plain env vars from tonin.toml [env], merged with the [env.prd]
+# overlay and with {env} substituted for this environment.
+env:
+  IDENTITY_GRPC_URL: "http://identity.platform-prd.svc.cluster.local:50051"
+  S3_BUCKET: "example-prd-telemetry"
+  S3_ENDPOINT: "https://s3.example.invalid"
+
+database:
+  enabled: true
+  shared: false
+  engine: "postgres"
+  name: "telemetry-db"
+  namespace: "telemetry-prd"
+  port: 5432
+  image: "postgres:18"
+  storage: "2Gi"
+
+cache:
+  enabled: true
+  shared: false
+  engine: "redis"
+  name: "telemetry-cache"
+  namespace: "telemetry-prd"
+  port: 6379
+  storage: "1Gi"
+
+secrets:
+  keys:
+    - DATABASE_PASSWORD
+    - TELEMETRY_SERVICE_TOKEN
+    - AWS_ACCESS_KEY_ID
+    - AWS_SECRET_ACCESS_KEY
+
+migrations:
+  enabled: false
+  mode: init-container
+  command: []
+  env: {}
+
+networkPolicy:
+  enabled: true
+  port: 4317
+  mcp: true
+  callers:
+    - name: platform-api
+      namespace: platform-prd
+  dependsOn:
+    - name: identity
+      namespace: platform-prd
+      port: 50051
