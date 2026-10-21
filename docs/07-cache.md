@@ -85,6 +85,10 @@ namespace = "shared-dev"
 labels    = { "app.kubernetes.io/name" = "redis" }
 ```
 
+As with `[database.<env>]`, a `url` replaces only the Secret reference; set `namespace` and
+`labels` to where it points, or the network policy keeps targeting the contract pods in the
+service's namespace (`tonin helm generate` warns when both are missing under Cilium).
+
 `[caches.<name>]` takes the same fields, with defaults prefixed by the name: env
 `<NAME>_REDIS_URL`, Secret and pod label `<svc>-<name>-cache`.
 

@@ -11,6 +11,7 @@ use serde::Serialize;
 use tonin_plugin::{
     Caller, CallerSource, DatastoreEnv, DependencyRef, EgressSpec, McpMode, MigrationMode, Plan,
     ResourcesSpec, SecuritySection, ServiceKind, VolumeSource, VolumeSpec, WorkloadSpec,
+    datastore_url_warnings,
 };
 
 static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
@@ -153,6 +154,8 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     let base_plan = Plan::load_with_env(&toml_path, &args.envs[0])
         .with_context(|| format!("loading {}", toml_path.display()))?;
 
+    let toml_src = std::fs::read_to_string(&toml_path)
+        .with_context(|| format!("reading {}", toml_path.display()))?;
     for warning in unrendered_overlays(&toml_path, &args.envs)? {
         eprintln!("warning: {warning}");
     }
@@ -173,6 +176,13 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     for env_name in &args.envs {
         let env_plan = Plan::load_with_env(&toml_path, env_name)
             .with_context(|| format!("loading plan for env '{env_name}'"))?;
+        if env_plan.mesh.as_str() == "cilium" {
+            for warning in datastore_url_warnings(&toml_src, env_name)
+                .with_context(|| format!("reading {}", toml_path.display()))?
+            {
+                eprintln!("warning: {}: {warning}", toml_path.display());
+            }
+        }
         let mut env_ctx = build_context(&env_plan);
         env_ctx.insert("env_name", env_name);
         render_tmpl(

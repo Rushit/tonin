@@ -1097,9 +1097,129 @@ impl EmittedEnv {
     }
 }
 
+/// The datastore tables of a `tonin.toml`, for [`datastore_url_warnings`].
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawDatastores {
+    database: Option<RawDatabase>,
+    databases: BTreeMap<String, RawDatabase>,
+    cache: Option<RawCache>,
+    caches: BTreeMap<String, RawCache>,
+}
+
+/// Datastores whose `[<section>.<env>]` sets a literal `url` but neither
+/// `namespace` nor `labels`, in `tonin.toml` source `src`.
+///
+/// The `url` replaces only the Secret reference: the network-policy egress
+/// rule still targets the contract labels in the service's own namespace, so
+/// a dev `url` pointing at a shared instance elsewhere (e.g. Postgres in
+/// `shared-dev`) is blocked unless `namespace` and `labels` say where it is.
+/// Call it only for environments that render a network policy.
+pub fn datastore_url_warnings(src: &str, env: &str) -> Result<Vec<String>, Error> {
+    let raw: RawDatastores = toml::from_str(src).map_err(|e| Error::InvalidField {
+        field: "[database] / [cache]".into(),
+        reason: e.to_string(),
+    })?;
+    let databases = raw
+        .database
+        .iter()
+        .map(|r| (None, r))
+        .chain(raw.databases.iter().map(|(n, r)| (Some(n.as_str()), r)));
+    let caches = raw
+        .cache
+        .iter()
+        .map(|r| (None, r))
+        .chain(raw.caches.iter().map(|(n, r)| (Some(n.as_str()), r)));
+
+    let mut warnings = Vec::new();
+    let mut check = |section: String, url: bool, namespace: bool, labels: bool| {
+        if url && !namespace && !labels {
+            warnings.push(format!(
+                "[{section}.{env}] sets `url` but neither `namespace` nor `labels`: the network \
+                 policy allows egress only to the contract pods in the service's own namespace, \
+                 not to where the url points. Set `namespace` and `labels` under \
+                 [{section}.{env}] to the datastore's namespace and pod labels"
+            ));
+        }
+    };
+    for (variant, r) in databases {
+        let f = merge_db(&r.base, r.envs.get(env));
+        let engine = f.engine.as_deref().and_then(DatabaseEngine::try_parse);
+        if matches!(engine, Some(DatabaseEngine::Sqlite | DatabaseEngine::None)) {
+            continue;
+        }
+        check(
+            section_name("database", variant),
+            f.url.is_some(),
+            f.namespace.is_some(),
+            f.labels.is_some(),
+        );
+    }
+    for (variant, r) in caches {
+        let f = merge_cache(&r.base, r.envs.get(env));
+        let engine = f.engine.as_deref().and_then(CacheEngine::try_parse);
+        if matches!(engine, Some(CacheEngine::None)) {
+            continue;
+        }
+        check(
+            section_name("cache", variant),
+            f.url.is_some(),
+            f.namespace.is_some(),
+            f.labels.is_some(),
+        );
+    }
+    Ok(warnings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_url_without_namespace_or_labels_warns() {
+        let src = r#"
+            [database]
+            engine = "postgres"
+            [database.dev]
+            url = "postgresql://u:p@postgres.shared-dev.svc.cluster.local:5432/app"
+
+            [databases.analytics]
+            engine = "postgres"
+            [databases.analytics.dev]
+            url       = "postgresql://u:p@postgres.shared-dev.svc.cluster.local:5432/a"
+            namespace = "shared-dev"
+            labels    = { "app.kubernetes.io/name" = "postgres" }
+
+            [cache]
+            engine = "redis"
+            labels = { "app.kubernetes.io/name" = "redis" }
+            [cache.dev]
+            url = "redis://redis.shared-dev.svc.cluster.local:6379"
+
+            [caches.sessions]
+            engine = "redis"
+            [caches.sessions.dev]
+            url = "redis://redis.shared-dev.svc.cluster.local:6379"
+        "#;
+        let warnings = datastore_url_warnings(src, "dev").unwrap();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("[database.dev] sets `url`"),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[1].starts_with("[caches.sessions.dev] sets `url`"),
+            "{warnings:?}"
+        );
+        // No url for prd: the contract Secret and labels apply, nothing to say.
+        assert!(datastore_url_warnings(src, "prd").unwrap().is_empty());
+    }
+
+    #[test]
+    fn sqlite_url_needs_no_egress_override() {
+        let src = "[database]\nengine = \"sqlite\"\n[database.dev]\nurl = \"sqlite://x.db\"\n";
+        assert!(datastore_url_warnings(src, "dev").unwrap().is_empty());
+    }
 
     fn section<T: serde::de::DeserializeOwned>(toml_str: &str, key: &str) -> T {
         toml::from_str::<toml::Value>(toml_str)

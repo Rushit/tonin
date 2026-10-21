@@ -533,7 +533,9 @@ env    = "PLATFORM_DATABASE_URL"   # from api-pg-app / uri
 tls = "verify-full"                # mounts api-pg-ca / ca.crt at /etc/pg-ca
 
 [database.dev]                     # dev cluster without contract Secrets
-url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/api_dev"
+url       = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/api_dev"
+namespace = "shared-dev"           # egress to the shared instance, not the contract pods
+labels    = { "app.kubernetes.io/name" = "postgres" }
 
 [cache]
 engine = "redis"

@@ -33,7 +33,7 @@ The fields 0.15 removed fail with a pointer to the replacement:
 | 0.14 | 0.15 |
 | --- | --- |
 | `[database] size`, `version` | gone: the platform layer sizes and versions the database |
-| `[database.<env>] shared = true`, `[cache.<env>] shared = true` | remove; every database/cache is a contract reference. Keep a literal `url` under `[<section>.<env>]` for dev |
+| `[database.<env>] shared = true`, `[cache.<env>] shared = true` | remove; every database/cache is a contract reference. Keep a literal `url` under `[<section>.<env>]` for dev, with `namespace` and `labels` when the instance is in another namespace |
 | `[database] name`, `[cache] name` | `secret` (the Secret with the uri) and `cluster` / `labels` (egress target) |
 | base-table `url` | move it under `[database.<env>]` / `[cache.<env>]` |
 | `[migrations] run_on = "init-container"` | `mode = "init-container"` (`"job"`, `"none"`; per env in `[migrations.<env>]`) |
@@ -193,14 +193,18 @@ engine = "postgres"           # prd: DATABASE_URL from Secret identity-pg-app / 
 [database.prd]
 tls = "verify-full"           # mounts identity-pg-ca / ca.crt
 
-[database.dev]
-url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+[database.dev]                # shared dev Postgres in namespace shared-dev
+url       = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+namespace = "shared-dev"      # namespace + labels: where egress is allowed
+labels    = { "app.kubernetes.io/name" = "postgres" }
 
 [cache]
 engine = "redis"              # prd: REDIS_URL from Secret identity-cache / uri
 
 [cache.dev]
-url = "redis://redis.shared-dev.svc.cluster.local:6379"
+url       = "redis://redis.shared-dev.svc.cluster.local:6379"
+namespace = "shared-dev"
+labels    = { "app.kubernetes.io/name" = "redis" }
 
 [secrets]
 required = ["JWT_SECRET"]
@@ -225,6 +229,12 @@ name     = "purge-expired"
 schedule = "0 2 * * *"
 args     = ["purge-expired"]
 ```
+
+A dev `url` replaces only the Secret reference. The network policy still allows egress to the
+contract pod labels (`cnpg.io/cluster=identity-pg`, `app.kubernetes.io/name=identity-cache`) in
+the service's own namespace, so a `url` that points at an instance in another namespace needs
+`namespace` and `labels` too, or its connections are dropped. Since 0.16 `tonin helm generate`
+warns when an environment with network policy sets a `url` without either.
 
 Then regenerate and review the rendered chart per environment:
 

@@ -404,7 +404,9 @@ Always render with both files: `-f values.yaml -f values-<env>.yaml`
 engine = "postgres"
 
 [database.dev]
-url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/app_dev"
+url       = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/app_dev"
+namespace = "shared-dev"                              # egress to the shared instance
+labels    = { "app.kubernetes.io/name" = "postgres" }
 
 [database.prd]
 tls = "verify-full"
