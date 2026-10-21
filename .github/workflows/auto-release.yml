@@ -10,9 +10,13 @@
 #   2. Bumps the single unified version (/VERSION + Cargo.toml + Cargo.lock) and
 #      commits it straight to main via RELEASE_PAT (which bypasses branch
 #      protection) with a [skip ci] marker so it doesn't re-trigger anything.
-#   3. Tags v<version>, creates the GitHub Release, and dispatches release.yml
-#      to publish every artifact (CLI + SDK crates, CLI + proxy binaries, proxy
-#      Docker image) onto that one release.
+#   3. Tags v<version>, creates the GitHub Release (body: the CHANGELOG.md
+#      "## [<version>]" section, if any, above GitHub's generated notes), and
+#      dispatches release.yml to publish every artifact (CLI + SDK crates, CLI +
+#      proxy binaries, proxy Docker image) onto that one release.
+#
+# The new version is CURRENT (/VERSION) + bump, so never pre-bump VERSION in a
+# PR: a VERSION already at 0.15.0 plus a feat! commit would release 0.16.0.
 #
 # All three published packages share ONE version (tonin-sdk / tonin-proxy
 # inherit it via `version.workspace = true`), so there is a single v* tag.
@@ -188,10 +192,22 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh release view "v${NEW}" --repo "${{ github.repository }}" &>/dev/null; then
+            # If CHANGELOG.md has a "## [<NEW>]" section, put it above the
+            # generated notes (gh prepends --notes-file to --generate-notes).
+            awk -v want="## [${NEW}]" '
+              index($0, want) == 1 { on = 1; next }
+              on && /^## / { exit }
+              on { print }
+            ' CHANGELOG.md > "${RUNNER_TEMP}/notes.md" || true
+            NOTES_ARGS=()
+            if grep -q '[^[:space:]]' "${RUNNER_TEMP}/notes.md"; then
+              NOTES_ARGS=(--notes-file "${RUNNER_TEMP}/notes.md")
+            fi
             gh release create "v${NEW}" \
               --repo "${{ github.repository }}" \
               --title "v${NEW}" \
               --generate-notes \
+              "${NOTES_ARGS[@]}" \
               --target "${RELEASE_SHA}"
             echo "✔ created GitHub Release v${NEW}"
           fi
