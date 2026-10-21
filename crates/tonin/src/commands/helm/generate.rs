@@ -9,6 +9,18 @@ use tonin_plugin::{McpMode, MigrationRunOn, Plan, SecuritySection, ServiceKind};
 
 static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
 
+/// Chart files (relative to the chart directory) that earlier tonin versions
+/// generated and this version no longer ships. `generate` deletes them so a
+/// stale template never keeps rendering; `helm check` reports them as drift.
+///
+/// Only ever list paths tonin itself wrote: everything else under `chart/`
+/// (hand-written templates, extra values files) belongs to the user and is
+/// never touched.
+pub(crate) const OBSOLETE_FILES: &[&str] = &[
+    // Nothing yet: every file tonin has shipped is still generated. Add a path
+    // here in the same change that stops generating it.
+];
+
 /// Implemented by each optional `tonin.toml` section that contributes keys to the Tera context.
 /// Adding a new section means a new `impl` here — `build_context` stays stable.
 trait HelmContributor {
@@ -158,6 +170,11 @@ pub fn run(args: GenerateArgs) -> Result<()> {
 
     // --- templates/ (static Go template files — copy verbatim) -------------
     copy_static_templates(&templates_dir)?;
+
+    // --- files earlier tonin versions shipped -------------------------------
+    for removed in remove_obsolete(&chart_dir, OBSOLETE_FILES)? {
+        println!("removed obsolete {}", removed.display());
+    }
 
     println!("chart generated at {}", chart_dir.display());
     Ok(())
@@ -394,6 +411,26 @@ fn copy_static_templates(out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The files on `obsolete` (paths relative to `chart_dir`) that exist there.
+pub(crate) fn obsolete_present(chart_dir: &Path, obsolete: &[&str]) -> Vec<PathBuf> {
+    obsolete
+        .iter()
+        .map(PathBuf::from)
+        .filter(|rel| chart_dir.join(rel).is_file())
+        .collect()
+}
+
+/// Delete the files on `obsolete` from `chart_dir`; returns the removed paths
+/// (relative to `chart_dir`). Files not on the list are never touched.
+fn remove_obsolete(chart_dir: &Path, obsolete: &[&str]) -> Result<Vec<PathBuf>> {
+    let present = obsolete_present(chart_dir, obsolete);
+    for rel in &present {
+        let path = chart_dir.join(rel);
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(present)
+}
+
 /// Strip the `:tag` suffix from a full image string to get the repository.
 fn image_repository(image: &str) -> &str {
     image.split(':').next().unwrap_or(image)
@@ -507,6 +544,64 @@ orders-service = "myapp-dev"
         assert!(out.join("values.yaml").exists());
         assert!(out.join("values-dev.yaml").exists());
         assert!(out.join("values-prod.yaml").exists());
+    }
+
+    #[test]
+    fn obsolete_list_never_names_a_shipped_file() {
+        let shipped: Vec<String> = TEMPLATES
+            .get_dir("chart-templates")
+            .unwrap()
+            .files()
+            .map(|f| {
+                format!(
+                    "templates/{}",
+                    f.path().file_name().unwrap().to_string_lossy()
+                )
+            })
+            .chain(["Chart.yaml".to_string(), "values.yaml".to_string()])
+            .collect();
+        for obsolete in OBSOLETE_FILES {
+            assert!(
+                !shipped.iter().any(|s| s == obsolete),
+                "{obsolete} is still generated"
+            );
+            assert!(
+                !obsolete.starts_with("values-"),
+                "values-<env>.yaml files may be user-owned"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_obsolete_deletes_only_listed_tonin_files() {
+        let chart = tempfile::tempdir().unwrap();
+        let templates = chart.path().join("templates");
+        std::fs::create_dir_all(&templates).unwrap();
+        for f in [
+            "db-statefulset.yaml",
+            "custom-cronjob.yaml",
+            "deployment.yaml",
+        ] {
+            std::fs::write(templates.join(f), "kind: X\n").unwrap();
+        }
+
+        let removed = remove_obsolete(
+            chart.path(),
+            &[
+                "templates/db-statefulset.yaml",
+                "templates/cache-service.yaml",
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            removed,
+            vec![PathBuf::from("templates/db-statefulset.yaml")]
+        );
+        assert!(!templates.join("db-statefulset.yaml").exists());
+        // Hand-written and still-shipped files survive.
+        assert!(templates.join("custom-cronjob.yaml").exists());
+        assert!(templates.join("deployment.yaml").exists());
     }
 
     #[test]
