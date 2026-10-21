@@ -47,18 +47,4 @@ secrets:
 migrations:
   mode: {{ migrations_mode }}
 
-networkPolicy:
-  enabled: {% if is_cilium %}true{% else %}false{% endif %}
-  port: {{ port }}
-  mcp: {% if mcp_enabled %}true{% else %}false{% endif %}
-  callers:{% if callers | length == 0 %} []{% endif %}
-{%- for c in callers %}
-    - name: {{ c.name }}
-      namespace: {{ c.namespace }}
-{%- endfor %}
-  dependsOn:{% if depends_on | length == 0 %} []{% endif %}
-{%- for d in depends_on %}
-    - name: {{ d.name }}
-      namespace: {{ d.namespace }}
-      port: {{ d.port }}
-{%- endfor %}
+{{ network_policy_block }}

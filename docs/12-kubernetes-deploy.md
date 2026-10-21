@@ -410,6 +410,7 @@ inventory-service = { namespace = "inventory-{env}", prod = "inventory-shared" }
 audit-sink        = { namespace = "security-{env}", envs = ["prod"] }                      # only egresses in prod
 billing           = { namespace = "@inherit" }                                             # namespace set at deploy time; omitted from the chart
 otel-gateway      = { namespace = "observability-{env}", port = 4317 }                     # non-gRPC / non-default listen port
+zradar-platform   = { namespace = "zradar-{env}", ports = [8080, 8081, 8082] }             # several ports
 ```
 
 Resolution rules for an environment `E`:
@@ -418,9 +419,92 @@ Resolution rules for an environment `E`:
 - `envs = [...]` restricts the dependency to those environments; elsewhere it is dropped.
 - `@inherit` omits the entry from the rendered policy — supply it at deploy time (`--set-json`) or via GitOps.
 - If an active dependency has no namespace for `E`, or a `{...}` placeholder is left unresolved, generation **fails** — there is no silent fallback to a base value, which is what previously let a dev namespace leak into a prod chart.
-- `port` declares the dependency's listen port; the generated CiliumNetworkPolicy egress rule allows exactly that port. Omitted (and for the shorthand string form) it defaults to `50051`, the tonin gRPC convention — so existing files render the same egress rule as before.
+- `port` declares the dependency's listen port, `ports` a list of them (give one or the other); the generated CiliumNetworkPolicy egress rule allows exactly those ports. Omitted (and for the shorthand string form) it defaults to `50051`, the tonin gRPC convention — so existing files render the same egress rule as before.
 
 Both the shorthand string form and literal namespaces (no `{env}`) keep working unchanged.
+
+### Network policy (`[callers]`, `[egress]`)
+
+Under `mesh = "cilium"` every service gets one `CiliumNetworkPolicy`
+(`<svc>-ingress`) that is default-deny in both directions and allows:
+
+| Direction | Allowed | From |
+|---|---|---|
+| ingress | each caller, on its ports | `[callers]` |
+| egress | kube-dns (53/UDP+TCP) | always |
+| egress | the otel-collector (`app=otel-collector` in `observability`), 4317 | always (the collector is push-only; it never connects to pods) |
+| egress | other tonin services, on their ports | `[depends_on]` |
+| egress | databases and caches by contract pod labels | `[database]` / `[cache]` |
+| egress | DNS names, IP ranges, the kube-apiserver | `[egress]` |
+
+With no callers the policy still denies all ingress (it renders an empty
+`ingress: [{}]` rule). The migration Job (`[migrations] mode = "job"`) is
+excluded from this policy and has its own hook policy: DNS, the otel-collector
+and the datastores only, no `[depends_on]` or `[egress]`.
+
+#### `[callers]`
+
+```toml
+[callers]
+# Shorthand: the tonin service `ui-shell` in that namespace, default ports.
+ui-shell = "ui-{env}"
+
+# Caller table: pods matched by labels, in `namespace` (omit it for the
+# service's own namespace), on these ports only.
+cloudflared = { namespace = "edge", labels = { "app.kubernetes.io/name" = "cloudflared" }, ports = [4318] }
+
+# Caller table for a tonin service: `service` names it when the key differs.
+billing = { service = "billing-api", namespace = "billing-{env}", ports = [7001] }
+
+# Env overlay: entries (same two forms) added or replaced in prd only.
+[callers.prd]
+ui-shell = "ui"
+```
+
+- A caller table has the reserved keys `namespace`, `labels`, `service` and
+  `ports`; anything else is an error that lists them. `labels` and `service`
+  are exclusive. A service caller needs `namespace`.
+- A `[callers]` sub-table with **none** of the reserved keys is an
+  environment overlay, `[callers.<env>]`; its keys are callers. So a caller
+  can't be named `namespace`, `labels`, `service` or `ports`, and
+  `[callers.cloudflared]` with `namespace = …` is a caller, not an overlay.
+  Overlays don't nest; overlays of other environments are still validated.
+- `ports` (non-empty, 1-65535) replaces the default set: the main port, the
+  `[service.http]` port, and the MCP port when MCP is on.
+- Service callers are matched by `service.identity: <name>.<namespace>`;
+  label callers by their labels plus the namespace label.
+- Only service callers take part in `tonin affected` propagation (and
+  workspace loading adds service callers derived from other services'
+  `[depends_on]`; an explicit entry for the same service wins).
+
+#### `[egress]`
+
+```toml
+[egress]
+fqdns = [
+  { name = "api.stripe.com", ports = [443] },   # Cilium toFQDNs matchName
+  { pattern = "*.ovh.us", ports = [443] },      # matchPattern
+]
+cidrs = [{ cidr = "10.0.0.0/8", except = ["10.96.0.0/12"], ports = [5432] }]  # toCIDRSet
+kube_apiserver = true                           # toEntities: [kube-apiserver], ports 443 and 6443
+
+[egress.prd]                                    # per env: each key set here replaces the base value
+fqdns = [{ name = "s3.us-east-va.io.cloud.ovh.us", ports = [443] }]
+```
+
+- Every FQDN and CIDR entry needs `ports`. A FQDN entry has exactly one of
+  `name` (letters, digits, `-`, `.`) and `pattern` (the same plus `*`).
+  CIDRs are IPv4 or IPv6 `ip/prefix`.
+- When `fqdns` is non-empty, the kube-dns rule gains
+  `rules: dns: [{ matchPattern: "*" }]`. `toFQDNs` only works when Cilium's
+  DNS proxy sees the pod's lookups, so the rule is required; it does not
+  restrict which names resolve. Services without FQDN egress don't get it,
+  so their DNS doesn't go through the proxy (and they don't need Cilium's
+  L7 proxy).
+
+In `values-<env>.yaml` this is the `networkPolicy` key: `callers` (`name`,
+`namespace`, optional `labels` and `ports`), `dependsOn` (`name`, `namespace`,
+`ports`) and `egress` (`fqdns`, `cidrs`, `kubeApiserver`).
 
 ### Plain environment variables (`[env]`)
 

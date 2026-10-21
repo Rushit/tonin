@@ -27,6 +27,7 @@ pub mod config;
 pub mod deploy_backend;
 pub mod grpc_ui;
 pub mod lock;
+pub mod network;
 pub mod observe_backend;
 pub mod plan;
 pub mod platform;
@@ -43,6 +44,9 @@ pub use plan::{
     Mesh, MethodCacheSpec, Plan, RECOMMENDED_CLI_MIN, SUPPORTED_SCHEMAS, SecuritySection,
     ServiceKind, ServiceRef, WebMode, wave_groups,
 };
+
+// Network policy inputs ([callers], [egress])
+pub use network::{Caller, CallerSource, CidrEgress, EgressSpec, FqdnEgress};
 
 // Env resolution + resolved stateful types
 pub use stateful::{

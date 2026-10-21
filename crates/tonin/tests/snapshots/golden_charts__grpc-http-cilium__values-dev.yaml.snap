@@ -76,9 +76,28 @@ networkPolicy:
   port: 4317
   mcp: true
   callers:
-    - name: platform-api
-      namespace: platform-dev
+  - name: cloudflared
+    namespace: edge
+    labels:
+      app.kubernetes.io/name: cloudflared
+    ports:
+    - 4318
+  - name: platform-api
+    namespace: platform-dev
   dependsOn:
-    - name: identity
-      namespace: platform-dev
-      port: 50051
+  - name: identity
+    namespace: platform-dev
+    ports:
+    - 50051
+  egress:
+    fqdns:
+    - pattern: '*.ovh.us'
+      ports:
+      - 443
+    cidrs:
+    - cidr: 10.0.0.0/8
+      except:
+      - 10.96.0.0/12
+      ports:
+      - 9000
+    kubeApiserver: false

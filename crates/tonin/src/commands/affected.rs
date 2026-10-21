@@ -173,9 +173,11 @@ pub fn compute_affected(
         }
         visited_propagation.insert((svc_name.clone(), dep_layer.clone()));
 
-        // Find the plan for this service to get its callers
+        // Find the plan for this service to get its callers. Only tonin
+        // services propagate; namespace/label callers (cloudflared, …) are
+        // not built from this workspace.
         if let Some(plan) = plans.iter().find(|p| p.name == svc_name) {
-            for caller_ref in &plan.callers {
+            for caller_ref in plan.callers.iter().filter_map(|c| c.service()) {
                 // Find the plan for the caller
                 if let Some(caller_plan) = plans.iter().find(|p| p.name == caller_ref.name) {
                     let reason = format!("propagated from {} ({})", svc_name, dep_layer);
@@ -462,6 +464,7 @@ mod tests {
         ClientSpec, DEFAULT_DEPENDENCY_PORT, DependencyRef, McpMode, Mesh, PathRule, ServiceKind,
         ServiceRef,
     };
+    use tonin_plugin::{Caller, CallerSource};
 
     fn make_mock_plan(name: &str, depends_on: &[&str], path_rules: Vec<PathRule>) -> Plan {
         Plan {
@@ -490,10 +493,11 @@ mod tests {
                 .map(|d| DependencyRef {
                     name: d.to_string(),
                     namespace: "demo".to_string(),
-                    port: DEFAULT_DEPENDENCY_PORT,
+                    ports: vec![DEFAULT_DEPENDENCY_PORT],
                 })
                 .collect(),
             callers: Vec::new(),
+            egress: Default::default(),
             dir: PathBuf::from("."),
             database: None,
             named_databases: Vec::new(),
@@ -591,18 +595,18 @@ mod tests {
         );
 
         // Wire callers manually
-        auth.callers.push(ServiceRef {
+        auth.callers.push(Caller::from_service(ServiceRef {
             name: "logging-service".to_string(),
             namespace: "demo".to_string(),
-        });
-        auth.callers.push(ServiceRef {
+        }));
+        auth.callers.push(Caller::from_service(ServiceRef {
             name: "gateway-service".to_string(),
             namespace: "demo".to_string(),
-        });
-        logging.callers.push(ServiceRef {
+        }));
+        logging.callers.push(Caller::from_service(ServiceRef {
             name: "gateway-service".to_string(),
             namespace: "demo".to_string(),
-        });
+        }));
 
         vec![auth, logging, gateway]
     }
@@ -664,6 +668,33 @@ mod tests {
             assert_ne!(pkg.package, "logging-proto");
             assert_eq!(pkg.wave, 1);
         }
+    }
+
+    #[test]
+    fn label_callers_do_not_propagate() {
+        // auth-service is called only by pods matched by labels (named like
+        // a workspace service): a proto change must not reach gateway-service.
+        let mut plans = mock_workspace();
+        let auth = plans.iter_mut().find(|p| p.name == "auth-service").unwrap();
+        auth.callers = vec![Caller {
+            name: "gateway-service".to_string(),
+            source: CallerSource::Pods {
+                namespace: Some("edge".to_string()),
+                labels: [("app".to_string(), "gateway".to_string())].into(),
+            },
+            ports: vec![443],
+        }];
+        let changed = vec!["auth-service/auth-proto/src/lib.rs".to_string()];
+        let result = compute_affected(
+            changed,
+            &plans,
+            Granularity::Package,
+            "v1.3.9".into(),
+            "HEAD".into(),
+        );
+        let pkgs = result.affected_packages.unwrap();
+        let services: HashSet<_> = pkgs.iter().map(|p| p.service.as_str()).collect();
+        assert_eq!(services, HashSet::from(["auth-service"]));
     }
 
     #[test]

@@ -5,6 +5,9 @@
 # every env. Workload: requests/limits apart (no CPU limit), ephemeral
 # storage, a /tmp emptyDir, separate liveness/readiness paths, a startup
 # probe, a rolling-update strategy and a termination grace period (prd).
+# Network policy: a service caller and a namespace/label caller
+# (cloudflared), a dev-only label caller in the same namespace, a dependency
+# on several ports, FQDN egress (Stripe) and the kube-apiserver.
 schema = "v1"
 
 [image]
@@ -97,6 +100,17 @@ TELEMETRY_URL        = "http://telemetry.telemetry-{env}.svc.cluster.local:8080"
 [env.dev]
 PLATFORM_SERVER_ALLOWED_ORIGINS = "http://localhost:7002"
 
+[callers]
+web-shell   = "platform-{env}"
+cloudflared = { namespace = "edge", labels = { "app.kubernetes.io/name" = "cloudflared" } }
+
+[callers.dev]
+dev-proxy = { labels = { app = "dev-proxy" }, ports = [7001] }
+
 [depends_on]
 identity  = "platform-{env}"
-telemetry = { namespace = "telemetry-{env}", port = 8080 }
+telemetry = { namespace = "telemetry-{env}", ports = [8080, 8081, 8082] }
+
+[egress]
+fqdns          = [{ name = "api.stripe.com", ports = [443] }]
+kube_apiserver = true

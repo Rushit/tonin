@@ -77,11 +77,28 @@ networkPolicy:
   enabled: true
   port: 7001
   mcp: false
-  callers: []
+  callers:
+  - name: cloudflared
+    namespace: edge
+    labels:
+      app.kubernetes.io/name: cloudflared
+  - name: web-shell
+    namespace: platform-prd
   dependsOn:
-    - name: identity
-      namespace: platform-prd
-      port: 50051
-    - name: telemetry
-      namespace: telemetry-prd
-      port: 8080
+  - name: identity
+    namespace: platform-prd
+    ports:
+    - 50051
+  - name: telemetry
+    namespace: telemetry-prd
+    ports:
+    - 8080
+    - 8081
+    - 8082
+  egress:
+    fqdns:
+    - name: api.stripe.com
+      ports:
+      - 443
+    cidrs: []
+    kubeApiserver: true

@@ -16,7 +16,9 @@ Hooks run BEFORE the chart's own resources exist (on install) or are updated
     the database is allowed before the Job starts;
   - it runs as the namespace's default ServiceAccount.
 The Job's pods carry their own labels: the Service selector (`app`) does not
-match them, `service.identity` does, so the service's policies apply.
+match them. The service's own policy (networkpolicy.yaml) excludes
+`app.kubernetes.io/component: migrate`, so only the hook policy below applies:
+DNS, the otel-collector and the datastores; no [depends_on] or [egress].
 */}}
 {{- if and .Values.networkPolicy.enabled (eq .Values.mesh "cilium") }}
 apiVersion: cilium.io/v2

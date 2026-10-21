@@ -2127,8 +2127,9 @@ engine = "postgres"
 [cache]
 engine = "redis"
 
-# Services allowed to call this one (ingress allowlist for CiliumNetworkPolicy).
-# Format: <service-name> = "<namespace>"
+# Who may call this one (ingress allowlist for CiliumNetworkPolicy):
+#   <service-name> = "<namespace>"
+#   <name> = {{ namespace = "<ns>", labels = {{ app = "<app>" }}, ports = [<port>] }}
 [callers]
 # gateway = "default"
 "#

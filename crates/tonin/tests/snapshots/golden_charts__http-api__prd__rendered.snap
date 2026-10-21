@@ -142,9 +142,11 @@ spec:
 
 ---
 # Source: platform-api/templates/networkpolicy.yaml
-# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, the platform contract's databases and
-# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# CiliumNetworkPolicy for the service's pods: ingress allowlist ([callers])
+# and egress (DNS, the otel-collector, [depends_on], datastores, [egress]).
+# mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# The migration Job has its own policy (migration-job.yaml), so it is
+# excluded here.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -159,12 +161,21 @@ spec:
   endpointSelector:
     matchLabels:
       service.identity: platform-api.platform-prd
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: NotIn, values: [migrate] }
   ingress:
-    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
+    # caller: cloudflared
     - fromEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: observability
-            app: otel-collector
+            k8s:io.kubernetes.pod.namespace: edge
+            "app.kubernetes.io/name": "cloudflared"
+      toPorts:
+        - ports:
+            - { port: "7001", protocol: TCP }
+    # caller: web-shell
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: web-shell.platform-prd
       toPorts:
         - ports:
             - { port: "7001", protocol: TCP }
@@ -179,6 +190,12 @@ spec:
         - ports:
             - { port: "53", protocol: UDP }
             - { port: "53", protocol: TCP }
+          # toFQDNs learns IPs from DNS answers seen by Cilium's DNS proxy;
+          # this rule sends lookups through it (and allows any name).
+          rules:
+            dns:
+              - matchPattern: "*"
+    # The otel-collector is push-only: pods export to it on 4317.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: observability
@@ -186,20 +203,22 @@ spec:
       toPorts:
         - ports:
             - { port: "4317", protocol: TCP }
+    # [depends_on] identity
     - toEndpoints:
         - matchLabels:
             service.identity: identity.platform-prd
       toPorts:
         - ports:
-            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
+    # [depends_on] telemetry
     - toEndpoints:
         - matchLabels:
             service.identity: telemetry.telemetry-prd
       toPorts:
         - ports:
-            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "8080", protocol: TCP }
+            - { port: "8081", protocol: TCP }
+            - { port: "8082", protocol: TCP }
     # [database] (platform contract)
     - toEndpoints:
         - matchLabels:
@@ -214,6 +233,19 @@ spec:
       toPorts:
         - ports:
             - { port: "6379", protocol: TCP }
+    # [egress] api.stripe.com
+    - toFQDNs:
+        - matchName: "api.stripe.com"
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+    # [egress] kube_apiserver: 443 (Service) and 6443 (the usual endpoint port).
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+            - { port: "6443", protocol: TCP }
 ---
 # Source: platform-api/templates/migration-job.yaml
 apiVersion: batch/v1

@@ -4,7 +4,7 @@
 # the PVC mount) and /tmp, extra ports on extra Services (-ingest for OTLP/HTTP,
 # -internal for the query/admin gRPC ports), separate liveness/readiness paths
 # and a startup probe on the HTTP port, a staged rollout (partition) in prd,
-# and the CPU limit left out.
+# and the CPU limit left out. Callers reach the extra ports by port list.
 schema = "v1"
 
 [image]
@@ -114,8 +114,14 @@ TRACESTORE_DATA_DIR = "/home/nonroot/data"
 [secrets]
 required = ["TRACESTORE_SERVICE_TOKEN"]
 
+# OTLP/HTTP ingest only from cloudflared; the api reaches HTTP and the
+# internal query/admin ports.
 [callers]
-platform-api = "platform-{env}"
+platform-api = { namespace = "platform-{env}", ports = [8080, 8081, 8082] }
+cloudflared  = { namespace = "edge", labels = { "app.kubernetes.io/name" = "cloudflared" }, ports = [4318] }
+
+[egress.prd]
+fqdns = [{ name = "s3.example.invalid", ports = [443] }]
 
 [depends_on]
 identity = "platform-{env}"
