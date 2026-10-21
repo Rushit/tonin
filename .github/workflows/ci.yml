@@ -184,13 +184,15 @@ jobs:
 
       - name: Verify proxy round-trip (Health/Check)
         run: |
-          # Download the standard health.proto to bypass reflection, which is a
-          # bidirectional stream that deadlocks against proxy buffering.
-          curl -sSL https://raw.githubusercontent.com/grpc/grpc/master/src/proto/grpc/health/v1/health.proto -o health.proto
+          # Use the vendored standard health.proto to bypass reflection, which is
+          # a bidirectional stream that deadlocks against proxy buffering. It is
+          # vendored (pinned to grpc v1.84.0) because fetching it from grpc's
+          # `master` branch started returning 404 and broke CI.
           # timeout 30 guards against the proxy accepting the connection but
           # stalling on the upstream forward (would otherwise hang indefinitely).
           timeout 30 grpcurl -plaintext -connect-timeout 10 \
-            -proto health.proto \
+            -import-path .github/fixtures \
+            -proto grpc/health/v1/health.proto \
             -d '{"service":""}' localhost:6565 grpc.health.v1.Health/Check
 
       - name: Pull and smoke-test published latest image
