@@ -196,6 +196,12 @@ tonin helm diff --env prd
 tonin helm upgrade --env prd
 ```
 
+`generate` also deletes chart files that an earlier tonin version generated and
+this one no longer ships (a fixed list in the CLI), so a stale template never
+keeps rendering; `helm check` reports such files as `obsolete`. Files tonin
+never generated, such as your own templates under `chart/templates/`, are never
+touched.
+
 `--env` is required by `helm generate`, `helm check`, `affected`, `release` and
 `deploy`; there is no default environment, so a chart or lock is never written
 for an environment you did not name. The `tonin helm` cluster commands
