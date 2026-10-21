@@ -1,0 +1,123 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# dev-specific overrides — generated from the dev overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 1
+
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+image:
+  tag: "0.1.3"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+
+mesh: "cilium"
+
+mcp:
+  enabled: false
+  mode: none
+
+outboundProxy:
+  enabled: false
+
+ingress:
+  enabled: false
+  host: ""
+
+# Plain env vars from tonin.toml [env], merged with the [env.dev]
+# overlay and with {env} substituted for this environment.
+env:
+  IDENTITY_GRPC_ADDR: "http://identity.platform-dev.svc.cluster.local:50051"
+  PLATFORM_SERVER_ALLOWED_ORIGINS: "http://localhost:7002"
+  PLATFORM_SERVER_PORT: "7001"
+  TELEMETRY_URL: "http://telemetry.telemetry-dev.svc.cluster.local:8080"
+
+# Databases and caches of the platform contract, resolved for dev.
+datastores:
+  - name: database
+    env: PLATFORM_DATABASE_URL
+    secret:
+      env: PLATFORM_DATABASE_URL
+      name: platform-api-pg-app
+      key: uri
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: platform-api-pg
+  - name: cache
+    env: PLATFORM_REDIS_URL
+    secret:
+      env: PLATFORM_REDIS_URL
+      name: platform-api-cache
+      key: uri
+    egress:
+      port: 6379
+      labels:
+        app.kubernetes.io/name: platform-api-cache
+
+secrets:
+  create: true
+  keys:
+    - TELEMETRY_SERVICE_TOKEN
+
+migrations:
+  mode: job
+
+# Pull secrets, placement, disruption budget and CronJobs for dev.
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints:
+- maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+podDisruptionBudget:
+  enabled: false
+cronjobs: []
+
+networkPolicy:
+  enabled: true
+  port: 7001
+  mcp: false
+  callers:
+  - name: cloudflared
+    namespace: edge
+    labels:
+      app.kubernetes.io/name: cloudflared
+  - name: dev-proxy
+    labels:
+      app: dev-proxy
+    ports:
+    - 7001
+  - name: web-shell
+    namespace: platform-dev
+  dependsOn:
+  - name: identity
+    namespace: platform-dev
+    ports:
+    - 50051
+  - name: telemetry
+    namespace: telemetry-dev
+    ports:
+    - 8080
+    - 8081
+    - 8082
+  egress:
+    fqdns:
+    - name: api.stripe.com
+      ports:
+      - 443
+    cidrs: []
+    kubeApiserver: true

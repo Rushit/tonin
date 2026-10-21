@@ -78,8 +78,8 @@ cd greeter
 cargo run -p greeter
 
 # Generate Helm charts and deploy (needs a reachable cluster)
-tonin helm generate
-tonin helm upgrade
+tonin helm generate --env dev --env prd
+tonin helm upgrade --env dev
 ```
 
 The full reference service — proto, `tonin.toml`, handler, `build.rs`, generated manifests — lives at [examples/greeter](https://github.com/Rushit/tonin/tree/main/examples/greeter).

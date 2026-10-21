@@ -463,9 +463,115 @@ tonin platform status --env prod --json
 helm upgrade tonin-users helm/... --namespace prod
 ```
 
+## Generated service charts: values reference
+
+The per-service charts `tonin helm generate` writes keep environment-independent settings in
+`values.yaml` and everything an `[<section>.<env>]` overlay can change in `values-<env>.yaml`.
+Render with both (`-f values.yaml -f values-<env>.yaml`). The keys added in 0.15:
+
+| Key | File | From `tonin.toml` |
+| --- | --- | --- |
+| `workload.kind` | base | `[deploy] kind`: `Deployment` or `StatefulSet` (`templates/deployment.yaml` renders either) |
+| `workload.podManagementPolicy` | base | `[deploy] pod_management_policy` (StatefulSet) |
+| `workload.terminationGracePeriodSeconds` | env | `[deploy] termination_grace_period_seconds` (0 = Kubernetes default) |
+| `workload.strategy` | env | `[deploy.strategy]`; `strategy` on a Deployment, `updateStrategy` (with `partition`) on a StatefulSet |
+| `volumes` | base | `[[volumes]]`: `type` `empty-dir` (`emptyDir`) or `pvc` (`size`, `accessModes`, `storageClass`; StatefulSet `volumeClaimTemplates`) |
+| `extraPorts`, `extraServices` | base | `[[ports]]`: named container ports; `service` puts a port on Service `<name>-<service>` |
+| `service.health.livenessPath`, `readinessPath`, `startup` | base | `[service.health]` paths and `[service.health.startup]` |
+| `resources` | base | `[resources]` or `[resources.requests]` / `[resources.limits]` (CPU limit optional, `ephemeral-storage`) |
+| `command`, `args` | base | `[service] command` / `args`; Rust default `/usr/local/bin/<name>`, other languages the image's CMD |
+| `autoscaling.minReplicas` | env | `[autoscale] min_replicas` (HPA only for Deployments) |
+| `networkPolicy.callers[]`, `.dependsOn[].ports`, `.egress` | env | `[callers]`, `[depends_on]`, `[egress]` |
+| `imagePullSecrets`, `nodeSelector`, `tolerations`, `topologySpreadConstraints`, `pdb`, `serviceAccount`, `cronjobs` | env / base | `[deploy] image_pull_secrets`, `[placement]`, `[pdb]`, `[service_account]`, `[[cronjobs]]` |
+| `secrets.create` | env | `[secrets] create` / `[secrets.<env>] create` |
+
+A StatefulSet chart also renders the headless Service `<name>-headless`. Field-by-field
+`tonin.toml` documentation: [12-kubernetes-deploy.md](12-kubernetes-deploy.md); upgrading from
+0.14: [MIGRATION-0.15.md](MIGRATION-0.15.md).
+
+## Generated service charts: pods
+
+Every pod a generated chart renders (Deployment, migration Job, CronJobs)
+takes its ServiceAccount, `imagePullSecrets`, pod `securityContext`,
+`nodeSelector` and `tolerations` from the `service.podSpecCommon` helper in
+`_helpers.tpl`; the service's own pods also get `topologySpreadConstraints`.
+The values come from `[deploy] image_pull_secrets`, `[placement]`, `[pdb]`,
+`[service_account]` and `[[cronjobs]]` in `tonin.toml`; see
+[12-kubernetes-deploy.md](12-kubernetes-deploy.md#pods-pull-secrets-serviceaccount-placement-disruption-cronjobs).
+Custom templates that add a pod spec should include the same helper:
+
+```yaml
+    spec:
+      {{- include "service.podSpecCommon" (dict "root" . "component" "server") | nindent 6 }}
+```
+
+## Generated service charts: databases, caches and migrations
+
+The per-service charts `tonin helm generate` writes (see
+[12-kubernetes-deploy.md](12-kubernetes-deploy.md)) do not run databases or caches. Since
+tonin 0.15, `[database]` and `[cache]` in `tonin.toml` are references to a **platform contract**
+that the platform layer (CNPG, a Redis manifest, or a managed cloud service) provides in the
+service's namespace:
+
+| Contract | Default name | Used for |
+|---|---|---|
+| Secret `<svc>-pg-app`, key `uri` | from `Cluster <svc>-pg` (CNPG) | `DATABASE_URL` |
+| Secret `<svc>-pg-ca`, key `ca.crt` | from `Cluster <svc>-pg` (CNPG) | CA mount for `tls = "verify-full"` |
+| Pods labelled `cnpg.io/cluster=<svc>-pg`, port 5432 | CNPG | network-policy egress |
+| Secret `<svc>-cache`, key `uri` | platform Redis manifest | `REDIS_URL` |
+| Pods labelled `app.kubernetes.io/name=<svc>-cache`, port 6379 | platform Redis manifest | network-policy egress |
+
+Every name, the key, the env var, the pod labels and their namespace and port are overridable,
+on the table or per environment. A service named `api` whose code reads other variable names:
+
+```toml
+[database]
+engine = "postgres"
+env    = "PLATFORM_DATABASE_URL"   # from api-pg-app / uri
+
+[database.prd]
+tls = "verify-full"                # mounts api-pg-ca / ca.crt at /etc/pg-ca
+
+[database.dev]                     # dev cluster without contract Secrets
+url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/api_dev"
+
+[cache]
+engine = "redis"
+env    = "PLATFORM_REDIS_URL"      # from api-cache / uri
+
+[migrations]
+tool    = "custom"
+command = ["/usr/local/bin/api", "migrate"]
+mode    = "job"                    # "job" | "init-container" | "none", per env too
+```
+
+In the chart this becomes the `datastores` list in `values-<env>.yaml` (one entry per database or
+cache: `env`, `secret` {`env`, `name`, `key`}, `value`, `caMount`, `egress`) and
+`migrations.mode`. With `verify-full`, the raw uri goes into a helper var (`TONIN_PG_URI`)
+declared first, and `DATABASE_URL` is
+`$(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt` (Kubernetes `$(VAR)`
+expansion).
+
+`migrations.mode: job` renders `<svc>-migrate` as a `pre-install,pre-upgrade` hook (weight `0`)
+plus, under Cilium, its own hook CiliumNetworkPolicy (weight `-5`) so egress to the database is
+allowed before the Job starts. Hooks run before the release's own resources exist, so the Job
+depends only on the contract Secrets; `[secrets]` keys are referenced with `optional: true`. The
+Job's pods do not carry the `app` label the Service selects on.
+
+Under Cilium, the service's own policy excludes the migration Job's pods
+(`app.kubernetes.io/component: migrate`), so the Job never gets the service's `[depends_on]`
+or `[egress]` rules. Callers, dependencies and `[egress]` (FQDNs, CIDRs, kube-apiserver) are
+described in [12-kubernetes-deploy.md](12-kubernetes-deploy.md#network-policy-callers-egress).
+
+Charts generated by earlier versions contain `templates/db-statefulset.yaml`, `db-service.yaml`,
+`cache-statefulset.yaml` and `cache-service.yaml`; `tonin helm generate` deletes them and
+`tonin helm check` reports them. Full reference: [08-database.md](08-database.md),
+[07-cache.md](07-cache.md).
+
 ## See Also
 
 - [12-kubernetes-deploy.md](12-kubernetes-deploy.md) — Helm integration details
+- [08-database.md](08-database.md), [07-cache.md](07-cache.md) — the database and cache contract
 - [17-platform-integration.md](17-platform-integration.md) — Platform orchestrator API
 - [E2E-TESTING.md](E2E-TESTING.md) — Testing deployments with the Helm chart
 - [Helm Official Docs](https://helm.sh/docs/)

@@ -288,6 +288,7 @@ mod tests {
             security: None,
             depends_on: vec![],
             callers: vec![],
+            egress: Default::default(),
             dir: PathBuf::from("/services/users-service"),
             database: None,
             named_databases: vec![],
@@ -300,7 +301,9 @@ mod tests {
             env_vars: vec![],
             selected_env: "dev".to_string(),
             client: Default::default(),
+            workload: Default::default(),
             path_rules: vec![],
+            pod: Default::default(),
         };
 
         let plans = vec![plan.clone()];
@@ -387,10 +390,11 @@ mod tests {
                 .map(|d| DependencyRef {
                     name: d.to_string(),
                     namespace: "default".to_string(),
-                    port: DEFAULT_DEPENDENCY_PORT,
+                    ports: vec![DEFAULT_DEPENDENCY_PORT],
                 })
                 .collect(),
             callers: vec![],
+            egress: Default::default(),
             dir: PathBuf::from(format!("/services/{}", name)),
             database: None,
             named_databases: vec![],
@@ -403,7 +407,9 @@ mod tests {
             env_vars: vec![],
             selected_env: "dev".to_string(),
             client: Default::default(),
+            workload: Default::default(),
             path_rules: vec![],
+            pod: Default::default(),
         }
     }
 

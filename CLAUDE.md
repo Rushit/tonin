@@ -158,11 +158,14 @@ Drive the gate through `just`:
 
 - **`just fmt` then `just ci`** passes — `ci` is the same gate CI runs: `fmt-check` + clippy
   `-D warnings` + `test` + `doc`. Zero warnings is a gate, not advice.
-- New `plan.rs` behavior has a unit test (plain `#[test]` / `#[tokio::test]` — there is no
-  snapshot harness; don't add one without reason).
+- New `plan.rs` behavior has a unit test (plain `#[test]` / `#[tokio::test]`). The only snapshot
+  harness is the golden Helm chart test (`crates/tonin/tests/golden_charts.rs`); don't add others
+  without reason.
 - Touched a capability or `tonin.toml` field? Update its `docs/NN-*.md` + Status block in the same
-  change. Touched a template in `crates/tonin/templates/helm/`? Run **`just gen-example`** (re-renders
-  the greeter Helm chart and confirms it builds).
+  change. Touched a template in `crates/tonin/templates/helm/` or the Helm generator? Run
+  **`just snapshots`** and commit the reviewed YAML diff under `crates/tonin/tests/snapshots/`
+  (add or extend a fixture in `crates/tonin/tests/fixtures/charts/` for new behaviour), and run
+  **`just gen-example`** (re-renders the greeter Helm chart and confirms it builds).
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, …); see `CONTRIBUTING.md`.
 
 ## tonin-proxy Docker build

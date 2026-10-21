@@ -1,0 +1,123 @@
+# Golden fixture: gRPC service that also serves HTTP (health on the HTTP
+# port), cilium mesh, database + cache (dev: shared instances by URL, with
+# egress overridden to them), a named database, per-env env, and an autoscale
+# range. Network policy: cloudflared may call only the OTLP/HTTP port; S3
+# egress by FQDN (a pattern in dev, the exact prd endpoint in prd) and a dev
+# CIDR with an exception.
+# Pod hygiene: a PDB from the [pdb] defaults (maxUnavailable 1) in prd,
+# tolerations for a dedicated node and a custom zone spread, and placement
+# turned off again in dev.
+# Modelled on a trace-ingest service.
+schema = "v1"
+
+[image]
+registry = "ghcr.io/example"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 65532
+run_as_group    = 65532
+fs_group        = 65532
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = true
+
+[security.container.capabilities]
+drop = ["ALL"]
+
+[security.container.seccomp_profile]
+type = "RuntimeDefault"
+
+[service]
+name    = "telemetry"
+version = "0.2.3"
+type    = "grpc"
+port    = 4317
+
+[service.http]
+port = 8080
+
+[service.health]
+path = "/health"
+port = 8080
+
+[deploy]
+namespace = "telemetry-{env}"
+replicas  = 2
+mesh      = "cilium"
+
+[deploy.dev]
+replicas = 1
+
+[placement]
+node_selector = { "example.com/role" = "db" }
+tolerations   = [{ key = "example.com/db", operator = "Equal", value = "telemetry", effect = "NoSchedule" }]
+topology_spread = [
+  { max_skew = 1, topology_key = "topology.kubernetes.io/zone", when_unsatisfiable = "DoNotSchedule", min_domains = 2 },
+]
+
+[placement.dev]
+node_selector   = {}
+tolerations     = []
+topology_spread = false
+
+[pdb]
+
+[pdb.dev]
+enabled = false
+
+[resources]
+cpu    = "200m"
+memory = "512Mi"
+
+[autoscale]
+min_replicas = 1
+max_replicas = 4
+
+[database]
+engine = "postgres"
+
+[database.dev]
+url       = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/telemetry_dev"
+namespace = "shared-dev"
+labels    = { "app.kubernetes.io/name" = "postgres" }
+
+# Named variant: env ANALYTICS_DATABASE_URL, Secret telemetry-analytics-pg-app.
+[databases.analytics]
+engine = "postgres"
+
+[databases.analytics.dev]
+url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/analytics_dev"
+
+[cache]
+engine = "redis"
+
+[cache.dev]
+url = "redis://redis.shared-dev.svc.cluster.local:6379"
+
+[env]
+IDENTITY_GRPC_URL = "http://identity.platform-{env}.svc.cluster.local:50051"
+
+[env.prd]
+S3_BUCKET   = "example-prd-telemetry"
+S3_ENDPOINT = "https://s3.example.invalid"
+
+[secrets]
+required = ["TELEMETRY_SERVICE_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+
+[callers]
+platform-api = "platform-{env}"
+cloudflared  = { namespace = "edge", labels = { "app.kubernetes.io/name" = "cloudflared" }, ports = [4318] }
+
+[depends_on]
+identity = "platform-{env}"
+
+[egress]
+fqdns = [{ pattern = "*.example.com", ports = [443] }]
+
+[egress.dev]
+cidrs = [{ cidr = "10.0.0.0/8", except = ["10.96.0.0/12"], ports = [9000] }]
+
+[egress.prd]
+fqdns = [{ name = "s3.example-region.example.com", ports = [443] }]

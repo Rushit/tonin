@@ -40,7 +40,7 @@ provider = "k8s"          # default; reads from env vars k8s populated from a Se
 # provider = "aws-secrets-manager"
 
 # Declare which secret keys this service needs at runtime.
-required = ["STRIPE_API_KEY", "DATABASE_PASSWORD", "JWT_SIGNING_KEY"]
+required = ["STRIPE_API_KEY", "JWT_SIGNING_KEY"]
 
 # Optional: env-var → secret-key remap when the env var name your service
 # reads differs from the secret key name.
@@ -49,6 +49,18 @@ map = { STRIPE_KEY = "STRIPE_API_KEY" }
 # Optional: point at an External Secrets Operator store.
 # `kind` is the ESO resource kind ("ClusterSecretStore" or "SecretStore").
 # external_store = { name = "aws-secrets-manager", kind = "ClusterSecretStore" }
+```
+
+The chart templates the `<svc>-secrets` Secret from `secrets.values` when
+`create` is true (the default). Turn it off per environment when the Secret is
+managed elsewhere, e.g. a SealedSecret in prd:
+
+```toml
+[secrets]
+required = ["JWT_SIGNING_KEY"]
+
+[secrets.prd]
+create = false      # values-prd.yaml: secrets.create = false
 ```
 
 ## Using it
@@ -92,8 +104,9 @@ flowchart LR
 
 The dashed arrow is the 0.2 deliverable: today the renderer parses
 `[secrets]` but does not emit secret manifests from it. The only
-secret the renderer ships in 0.1 is the database-credentials `Secret`
-(`db-secret.yaml`), populated from `[database]`.
+Database and cache URLs are not service secrets: they come from the
+platform contract's Secrets (`<svc>-pg-app`, `<svc>-cache`; see
+[08-database.md](08-database.md)).
 
 ## Status (0.1)
 
@@ -101,10 +114,9 @@ secret the renderer ships in 0.1 is the database-credentials `Secret`
   - `SecretStore` trait + `EnvSecretStore` default in `tonin-core`.
   - `Instrumented<SecretStore>` decorator that wraps `get` in a `secret.get` span tagged with `secret.provider` (the key name is never recorded).
   - `[secrets]` block in `tonin.toml` is parsed into a typed `SecretsSpec` (`provider`, `required`, `map`, `external_store`) by the CLI codegen.
-  - `db-secret.yaml` is rendered for `[database]` (independent of `[secrets]`).
+  - The chart reads each `[secrets].required` key from `<svc>-secrets` with `secretKeyRef`, and templates that Secret from `secrets.values` when `secrets.create` is true (`[secrets] create`, per environment `[secrets.<env>] create`).
 - **Not yet in 0.1**
-  - The k8s renderer does NOT emit a `Secret` resource keyed off `[secrets].required` — you create it yourself out-of-band (`kubectl create secret`, sealed-secrets, sops, CI).
-  - No `envFrom: secretRef` is appended to the Deployment from `[secrets].required` (only `db-secret.yaml` is referenced today).
+  - Secret values are never generated: supply them at deploy time, or create the Secret out-of-band (`kubectl create secret`, sealed-secrets, sops, CI) with `secrets.create=false`.
   - `provider = "external-secrets"` / `"vault"` / `"aws-secrets-manager"` parse, but no concrete impl crates ship, and `external_store` is not yet read by the renderer to emit an `ExternalSecret` CR.
   - No `Service::with_secrets` / `Service::secret_store()` accessor — wire `Arc<dyn SecretStore>` into your own state struct.
 - **0.2 plan** — renderer consumes `[secrets].required` + `external_store` to emit a `Secret` or `ExternalSecret`; concrete impl crates `tonin-vault`, `tonin-aws-secrets`; `Service` accessor for the configured store.

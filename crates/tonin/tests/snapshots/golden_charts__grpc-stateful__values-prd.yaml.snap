@@ -1,0 +1,136 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# prd-specific overrides — generated from the prd overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 2
+
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
+image:
+  tag: "0.3.7"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+
+mesh: "cilium"
+
+mcp:
+  enabled: true
+  mode: in-process
+
+outboundProxy:
+  enabled: false
+
+ingress:
+  enabled: false
+  host: ""
+
+# Plain env vars from tonin.toml [env], merged with the [env.prd]
+# overlay and with {env} substituted for this environment.
+env: {}
+
+# Databases and caches of the platform contract, resolved for prd.
+datastores:
+  - name: database
+    env: DATABASE_URL
+    secret:
+      env: TONIN_PG_URI
+      name: identity-pg-app
+      key: uri
+    value: $(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt
+    caMount:
+      volume: pg-ca
+      secret: identity-pg-ca
+      key: ca.crt
+      mountPath: /etc/pg-ca
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: identity-pg
+  - name: cache
+    env: REDIS_URL
+    secret:
+      env: REDIS_URL
+      name: identity-cache
+      key: uri
+    egress:
+      port: 6379
+      labels:
+        app.kubernetes.io/name: identity-cache
+
+secrets:
+  create: false
+  keys:
+    - JWT_SECRET
+
+migrations:
+  mode: job
+
+# Pull secrets, placement, disruption budget and CronJobs for prd.
+imagePullSecrets:
+- name: ghcr-read
+nodeSelector:
+  example.com/role: app
+tolerations: []
+topologySpreadConstraints:
+- maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+cronjobs:
+- name: purge-expired
+  schedule: 0 2 * * *
+  command:
+  - /usr/local/bin/identity-purge-expired
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  backoffLimit: 3
+  suspend: false
+- name: close-impersonation
+  schedule: 0 * * * *
+  args:
+  - close-impersonation
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  backoffLimit: 3
+  suspend: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+  env:
+    RUST_LOG_FORMAT: json
+
+networkPolicy:
+  enabled: true
+  port: 50051
+  mcp: true
+  callers:
+  - name: api-gateway
+    namespace: platform-prd
+  - name: telemetry
+    namespace: telemetry-prd
+  dependsOn:
+  - name: audit-log
+    namespace: platform-prd
+    ports:
+    - 50051
+  egress:
+    fqdns: []
+    cidrs: []
+    kubeApiserver: false

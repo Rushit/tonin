@@ -5,9 +5,15 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::network::{self, Caller, EgressSpec};
+use crate::pod::{self, PodSettings, RawCronJob, RawPdb, RawPlacement, RawServiceAccount};
 use crate::stateful::{
-    self, CacheSpec, ConfigSpec, DatabaseSpec, EmittedEnv, MigrationsSpec, RawCache, RawCallers,
+    self, CacheSpec, ConfigSpec, DatabaseSpec, EmittedEnv, MigrationsSpec, RawCache,
     RawConfigBlock, RawDatabase, RawMigrations, RawSecrets, SecretsSpec,
+};
+use crate::workload::{
+    self, RawAutoscale, RawPort, RawResources, RawStartupProbe, RawStrategy, RawVolume,
+    ReservedPorts, WorkloadSpec,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -16,6 +22,8 @@ pub enum Error {
     Io(PathBuf, #[source] std::io::Error),
     #[error("parsing {0}: {1}")]
     Toml(PathBuf, #[source] toml::de::Error),
+    #[error("{0}: {1}")]
+    Schema(PathBuf, Box<crate::schema::SchemaError>),
     #[error(
         "{path}: schema = {found:?} is not supported by this CLI. \
          Supported schemas: {supported:?}. \
@@ -41,6 +49,19 @@ pub enum Error {
          tonin already emits — rename the [env] key or drop the duplicate"
     )]
     ReservedEnvKey { key: String, origin: String },
+    #[error("{field} is no longer supported (tonin 0.15): {hint}")]
+    RemovedField { field: String, hint: String },
+    #[error("{field}: {reason}")]
+    InvalidField { field: String, reason: String },
+    #[error(
+        "env var {key} is emitted twice, by {first} and by {second}; \
+         rename one (e.g. `env = \"…\"` on a [database]/[cache] table)"
+    )]
+    DuplicateEnvVar {
+        key: String,
+        first: String,
+        second: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,27 +102,27 @@ impl ServiceRef {
 /// ports were declarable, so bare-string dependencies render identically.
 pub const DEFAULT_DEPENDENCY_PORT: u32 = 50051;
 
-fn default_dependency_port() -> u32 {
-    DEFAULT_DEPENDENCY_PORT
+fn default_dependency_ports() -> Vec<u32> {
+    vec![DEFAULT_DEPENDENCY_PORT]
 }
 
 /// One resolved `[depends_on]` entry: the downstream service, the namespace it
-/// lives in for the selected environment, and the port egress is allowed on.
+/// lives in for the selected environment, and the ports egress is allowed on.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DependencyRef {
     pub name: String,
     pub namespace: String,
-    /// Dependency's listen port (`port` in the table form). Defaults to
-    /// [`DEFAULT_DEPENDENCY_PORT`] so the bare-string shorthand keeps
-    /// rendering today's egress rule.
-    #[serde(default = "default_dependency_port")]
-    pub port: u32,
+    /// Dependency's listen ports (`port` or `ports` in the table form), never
+    /// empty. Defaults to [`DEFAULT_DEPENDENCY_PORT`] so the bare-string
+    /// shorthand keeps rendering today's egress rule.
+    #[serde(default = "default_dependency_ports")]
+    pub ports: Vec<u32>,
 }
 
 /// One `[depends_on]` entry parsed from TOML, before environment resolution.
 ///
 /// Both the shorthand (`name = "<ns>"`) and the table form
-/// (`name = { namespace = "<ns>", port = <p>, <env> = "<ns>", envs = [..] }`)
+/// (`name = { namespace = "<ns>", port = <p> | ports = [..], <env> = "<ns>", envs = [..] }`)
 /// land here.
 struct DepSpec {
     /// Default namespace pattern (may contain `{env}`), if declared.
@@ -110,8 +131,8 @@ struct DepSpec {
     env_overrides: BTreeMap<String, String>,
     /// Restrict the dependency to these envs; `None` ⇒ every env.
     envs: Option<Vec<String>>,
-    /// Declared egress port; `None` ⇒ [`DEFAULT_DEPENDENCY_PORT`].
-    port: Option<u32>,
+    /// Declared egress ports (`port` or `ports`); `None` ⇒ [`DEFAULT_DEPENDENCY_PORT`].
+    ports: Option<Vec<u32>>,
 }
 
 /// Substitute the `{env}` placeholder in a namespace pattern.
@@ -121,7 +142,7 @@ pub(crate) fn apply_env(pattern: &str, env: &str) -> String {
 
 /// Reject a namespace that still carries an unresolved `{...}` placeholder.
 /// `{env}` is the only supported token, so anything left over is a typo.
-fn ensure_resolved(context: &str, value: &str) -> Result<(), Error> {
+pub(crate) fn ensure_resolved(context: &str, value: &str) -> Result<(), Error> {
     if value.contains('{') || value.contains('}') {
         return Err(Error::UnresolvedNamespace {
             context: context.to_string(),
@@ -142,13 +163,13 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
             namespace: Some(s),
             env_overrides: BTreeMap::new(),
             envs: None,
-            port: None,
+            ports: None,
         }),
         toml::Value::Table(table) => {
             let mut namespace = None;
             let mut envs = None;
             let mut env_overrides = BTreeMap::new();
-            let mut port = None;
+            let mut ports: Option<Vec<u32>> = None;
             for (key, val) in table {
                 match key.as_str() {
                     "namespace" => {
@@ -165,7 +186,21 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
                         if !(1..=65535).contains(&p) {
                             return Err(invalid(format!("`port` {p} is outside 1-65535")));
                         }
-                        port = Some(p as u32);
+                        if ports.is_some() {
+                            return Err(invalid("give `port` or `ports`, not both".into()));
+                        }
+                        ports = Some(vec![p as u32]);
+                    }
+                    "ports" => {
+                        if ports.is_some() {
+                            return Err(invalid("give `port` or `ports`, not both".into()));
+                        }
+                        let list = network::parse_ports(&format!("depends_on.{name}"), &val)
+                            .map_err(|e| match e {
+                                Error::InvalidField { reason, .. } => invalid(reason),
+                                other => other,
+                            })?;
+                        ports = Some(list);
                     }
                     "envs" => {
                         let arr = val
@@ -196,7 +231,7 @@ fn parse_dependency(name: &str, value: toml::Value) -> Result<DepSpec, Error> {
                 namespace,
                 env_overrides,
                 envs,
-                port,
+                ports,
             })
         }
         other => Err(invalid(format!(
@@ -251,7 +286,7 @@ fn resolve_depends_on(
         out.push(DependencyRef {
             name,
             namespace: resolved,
-            port: spec.port.unwrap_or(DEFAULT_DEPENDENCY_PORT),
+            ports: spec.ports.unwrap_or_else(default_dependency_ports),
         });
     }
     Ok(out)
@@ -334,7 +369,12 @@ pub const SUPPORTED_SCHEMAS: &[&str] = &["v1"];
 ///
 /// 0.14.0: `[env]` / `[env.<env>]` plain env-var tables (older CLIs silently
 /// ignore them) and the `port` field in the `[depends_on]` table form.
-pub const RECOMMENDED_CLI_MIN: &str = "0.14.0";
+///
+/// 0.15.0: databases/caches as platform-contract references, StatefulSets,
+/// `[[volumes]]`, `[[ports]]`, network-policy callers/`[egress]`, pod hygiene
+/// (`[placement]`, `[pdb]`, `[service_account]`, `[[cronjobs]]`) and the
+/// strict schema: an older CLI ignores or misreads all of them.
+pub const RECOMMENDED_CLI_MIN: &str = "0.15.0";
 
 #[derive(Debug, Deserialize)]
 struct RawImage {
@@ -373,7 +413,7 @@ struct RawConfig {
     #[serde(default)]
     autoscale: Option<RawAutoscale>,
     // String shorthand (`name = "<ns>"`) or table form
-    // (`name = { namespace = "<ns>", port = <p>, <env> = "<ns>", envs = [..] }`).
+    // (`name = { namespace = "<ns>", port = <p> | ports = [..], <env> = "<ns>", envs = [..] }`).
     // Parsed as raw values and interpreted by `resolve_depends_on`.
     #[serde(default)]
     depends_on: BTreeMap<String, toml::Value>,
@@ -381,8 +421,14 @@ struct RawConfig {
     // `[env.<env>]` per-env override tables. Interpreted by `resolve_env_vars`.
     #[serde(default)]
     env: BTreeMap<String, toml::Value>,
+    // Namespace shorthand, caller tables and `[callers.<env>]` overlays;
+    // interpreted by `network::resolve_callers`.
     #[serde(default)]
-    callers: RawCallers,
+    callers: BTreeMap<String, toml::Value>,
+    // FQDN / CIDR / kube-apiserver egress (+ `[egress.<env>]` overlays);
+    // interpreted by `network::resolve_egress`.
+    #[serde(default)]
+    egress: toml::map::Map<String, toml::Value>,
     #[serde(default)]
     database: Option<RawDatabase>,
     #[serde(default)]
@@ -405,6 +451,18 @@ struct RawConfig {
     security: Option<RawSecurity>,
     #[serde(default)]
     path_rules: Vec<RawPathRule>,
+    #[serde(default)]
+    volumes: Vec<RawVolume>,
+    #[serde(default)]
+    ports: Vec<RawPort>,
+    #[serde(default)]
+    placement: Option<RawPlacement>,
+    #[serde(default)]
+    pdb: Option<RawPdb>,
+    #[serde(default)]
+    service_account: Option<RawServiceAccount>,
+    #[serde(default)]
+    cronjobs: Vec<RawCronJob>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -431,6 +489,13 @@ struct RawService {
     /// serve HTTP (health/metrics/admin) — the two are not mutually exclusive.
     #[serde(default)]
     http: Option<RawHttpEndpoint>,
+    /// Container command; `[]` = the image's ENTRYPOINT/CMD. Default:
+    /// `/usr/local/bin/<name>` for Rust, the image's for everything else.
+    #[serde(default)]
+    command: Option<Vec<String>>,
+    /// Container args (default none).
+    #[serde(default)]
+    args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -439,6 +504,15 @@ struct RawHealth {
     path: Option<String>,
     #[serde(default)]
     port: Option<u32>,
+    /// livenessProbe path (default `path`).
+    #[serde(default)]
+    liveness_path: Option<String>,
+    /// readinessProbe path (default `path`).
+    #[serde(default)]
+    readiness_path: Option<String>,
+    /// Optional startupProbe.
+    #[serde(default)]
+    startup: Option<RawStartupProbe>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,6 +534,19 @@ struct RawDeploy {
     namespace: String,
     #[serde(default)]
     expose: Option<String>,
+    /// `"deployment"` (default) or `"statefulset"`.
+    #[serde(default)]
+    kind: Option<String>,
+    /// StatefulSet only: `"OrderedReady"` (default) or `"Parallel"`.
+    #[serde(default)]
+    pod_management_policy: Option<String>,
+    #[serde(default)]
+    termination_grace_period_seconds: Option<u32>,
+    #[serde(default)]
+    strategy: Option<RawStrategy>,
+    /// Secret names for `imagePullSecrets` on every pod.
+    #[serde(default)]
+    image_pull_secrets: Option<Vec<String>>,
     #[serde(default, flatten)]
     envs: std::collections::BTreeMap<String, RawDeployEnv>,
 }
@@ -476,17 +563,11 @@ struct RawDeployEnv {
     mcp_sidecar: Option<bool>,
     #[serde(default)]
     expose: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawResources {
-    cpu: String,
-    memory: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawAutoscale {
-    max_replicas: u32,
+    #[serde(default)]
+    termination_grace_period_seconds: Option<u32>,
+    #[serde(default)]
+    strategy: Option<RawStrategy>,
+    image_pull_secrets: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -671,7 +752,11 @@ pub struct Plan {
     pub image_registry: Option<String>,
     pub security: Option<SecuritySection>,
     pub depends_on: Vec<DependencyRef>,
-    pub callers: Vec<ServiceRef>,
+    /// `[callers]` resolved for `selected_env` (ingress allowlist). Workspace
+    /// loading adds service callers derived from other services' `[depends_on]`.
+    pub callers: Vec<Caller>,
+    /// `[egress]` resolved for `selected_env`: FQDNs, CIDRs, kube-apiserver.
+    pub egress: EgressSpec,
     pub dir: PathBuf,
     pub database: Option<DatabaseSpec>,
     pub named_databases: Vec<(String, DatabaseSpec)>,
@@ -687,6 +772,178 @@ pub struct Plan {
     pub selected_env: String,
     pub client: ClientSpec,
     pub path_rules: Vec<PathRule>,
+    /// Workload kind, update strategy, volumes, extra ports, probes,
+    /// resources, command and autoscaling, resolved for `selected_env`.
+    pub workload: WorkloadSpec,
+    /// Pull secrets, placement, PDB, ServiceAccount and CronJobs, resolved
+    /// for `selected_env`.
+    pub pod: PodSettings,
+}
+
+/// Facts about the service [`resolve_workload`] validates against.
+struct WorkloadContext<'a> {
+    env: &'a str,
+    replicas: u32,
+    port: u32,
+    http_port: Option<u32>,
+    health: Option<&'a HealthSpec>,
+    mcp: McpMode,
+    proxy: bool,
+    is_rust: bool,
+}
+
+/// Port of the in-process / sidecar MCP server (`service.mcpPort` in the chart).
+const MCP_PORT: u32 = 50052;
+/// Port of the outbound proxy sidecar (`outboundProxy.port` in the chart).
+const PROXY_PORT: u32 = 6565;
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_workload(
+    service: &RawService,
+    deploy: &RawDeploy,
+    overlay: Option<&RawDeployEnv>,
+    resources: &RawResources,
+    autoscale: Option<&RawAutoscale>,
+    volumes: &[RawVolume],
+    ports: &[RawPort],
+    cx: WorkloadContext<'_>,
+) -> Result<WorkloadSpec, Error> {
+    let kind = workload::parse_kind(deploy.kind.as_deref())?;
+    let pod_management_policy =
+        workload::resolve_pod_management_policy(kind, deploy.pod_management_policy.as_deref())?;
+    let strategy = workload::resolve_strategy(
+        kind,
+        deploy.strategy.as_ref(),
+        overlay.and_then(|o| o.strategy.as_ref()),
+        cx.env,
+    )?;
+    let termination_grace_period_seconds = overlay
+        .and_then(|o| o.termination_grace_period_seconds)
+        .or(deploy.termination_grace_period_seconds);
+    if termination_grace_period_seconds == Some(0) {
+        return Err(Error::InvalidField {
+            field: "[deploy].termination_grace_period_seconds".into(),
+            reason: "must be at least 1 (0 kills the pod without a graceful shutdown)".into(),
+        });
+    }
+
+    // Ports already in the pod: the primary port, [service.http], MCP, proxy.
+    let mut reserved = ReservedPorts {
+        names: vec!["grpc", "http", "mcp", "proxy"],
+        numbers: vec![(cx.port, "[service].port")],
+    };
+    if let Some(p) = cx.http_port {
+        reserved.numbers.push((p, "[service.http]"));
+    }
+    if cx.mcp != McpMode::None {
+        reserved.numbers.push((MCP_PORT, "MCP"));
+    }
+    if cx.proxy {
+        reserved.numbers.push((PROXY_PORT, "outbound proxy"));
+    }
+    let ports = workload::resolve_ports(&service.name, ports, &reserved)?;
+    let volumes = workload::resolve_volumes(kind, volumes)?;
+    let resources = workload::resolve_resources(resources)?;
+    let autoscale = workload::resolve_autoscale(autoscale, kind, cx.replicas, cx.env)?;
+
+    // Probes: separate liveness/readiness paths and an optional startupProbe.
+    let declared = service.health.as_ref();
+    let grpc_probe = cx.health.is_none_or(|h| h.grpc);
+    let mut probes = workload::ProbesSpec::default();
+    if let Some(h) = cx.health {
+        if grpc_probe {
+            for (field, set) in [
+                (
+                    "liveness_path",
+                    declared.and_then(|d| d.liveness_path.as_ref()),
+                ),
+                (
+                    "readiness_path",
+                    declared.and_then(|d| d.readiness_path.as_ref()),
+                ),
+                (
+                    "startup.path",
+                    declared
+                        .and_then(|d| d.startup.as_ref())
+                        .and_then(|s| s.path.as_ref()),
+                ),
+            ] {
+                if set.is_some() {
+                    return Err(Error::InvalidField {
+                        field: format!("[service.health].{field}"),
+                        reason: "this service is probed over gRPC (no HTTP surface); add [service.http] to probe an HTTP path"
+                            .into(),
+                    });
+                }
+            }
+        } else {
+            probes.liveness_path = declared
+                .and_then(|d| d.liveness_path.clone())
+                .unwrap_or_else(|| h.path.clone());
+            probes.readiness_path = declared
+                .and_then(|d| d.readiness_path.clone())
+                .unwrap_or_else(|| h.path.clone());
+        }
+        for (field, path) in [
+            ("liveness_path", &probes.liveness_path),
+            ("readiness_path", &probes.readiness_path),
+        ] {
+            if !path.is_empty() && !path.starts_with('/') {
+                return Err(Error::InvalidField {
+                    field: format!("[service.health].{field}"),
+                    reason: format!("{path:?} must start with '/'"),
+                });
+            }
+        }
+        if let Some(st) = declared.and_then(|d| d.startup.as_ref()) {
+            let path = if grpc_probe {
+                String::new()
+            } else {
+                st.path
+                    .clone()
+                    .unwrap_or_else(|| probes.liveness_path.clone())
+            };
+            if !grpc_probe && !path.starts_with('/') {
+                return Err(Error::InvalidField {
+                    field: "[service.health.startup].path".into(),
+                    reason: format!("{path:?} must start with '/'"),
+                });
+            }
+            let period_seconds = st.period_seconds.unwrap_or(10);
+            let failure_threshold = st.failure_threshold.unwrap_or(30);
+            if period_seconds == 0 || failure_threshold == 0 {
+                return Err(Error::InvalidField {
+                    field: "[service.health.startup]".into(),
+                    reason: "period_seconds and failure_threshold must be at least 1".into(),
+                });
+            }
+            probes.startup = Some(workload::StartupProbeSpec {
+                path,
+                period_seconds,
+                failure_threshold,
+            });
+        }
+    }
+
+    let command = match &service.command {
+        Some(c) => c.clone(),
+        None if cx.is_rust => vec![format!("/usr/local/bin/{}", service.name)],
+        None => Vec::new(),
+    };
+
+    Ok(WorkloadSpec {
+        kind,
+        pod_management_policy,
+        strategy,
+        termination_grace_period_seconds,
+        volumes,
+        ports,
+        probes,
+        resources,
+        command,
+        args: service.args.clone().unwrap_or_default(),
+        autoscale,
+    })
 }
 
 impl Plan {
@@ -697,6 +954,8 @@ impl Plan {
     pub fn load_with_env(toml_path: &Path, env: &str) -> Result<Self, Error> {
         let raw_str = std::fs::read_to_string(toml_path)
             .map_err(|e| Error::Io(toml_path.to_path_buf(), e))?;
+        crate::schema::validate(&raw_str, &crate::schema::TONIN_TOML)
+            .map_err(|e| Error::Schema(toml_path.to_path_buf(), Box::new(e)))?;
         let raw: RawConfig =
             toml::from_str(&raw_str).map_err(|e| Error::Toml(toml_path.to_path_buf(), e))?;
 
@@ -714,7 +973,8 @@ impl Plan {
         let depends_on = resolve_depends_on(raw.depends_on, env)?;
         let env_vars = resolve_env_vars(&raw.env, env)?;
 
-        let explicit_callers = stateful::resolve_callers(&raw.callers, env);
+        let explicit_callers = network::resolve_callers(&raw.callers, env)?;
+        let egress = network::resolve_egress(&raw.egress, env)?;
 
         let deploy_overlay = raw.deploy.envs.get(env);
         let deploy_replicas = deploy_overlay
@@ -723,7 +983,7 @@ impl Plan {
         let deploy_namespace = {
             let raw_ns = deploy_overlay
                 .and_then(|o| o.namespace.clone())
-                .unwrap_or(raw.deploy.namespace);
+                .unwrap_or_else(|| raw.deploy.namespace.clone());
             let ns = apply_env(&raw_ns, env);
             ensure_resolved("deploy.namespace", &ns)?;
             ns
@@ -738,13 +998,21 @@ impl Plan {
             .or(raw.deploy.mcp_sidecar);
         let deploy_expose = deploy_overlay
             .and_then(|o| o.expose.clone())
-            .or(raw.deploy.expose);
-
-        let max_replicas = raw
-            .autoscale
-            .as_ref()
-            .map(|a| a.max_replicas)
-            .unwrap_or(deploy_replicas);
+            .or_else(|| raw.deploy.expose.clone());
+        pod::validate_pull_secrets(
+            "[deploy]",
+            raw.deploy.image_pull_secrets.as_deref().unwrap_or_default(),
+        )?;
+        for (e, o) in &raw.deploy.envs {
+            pod::validate_pull_secrets(
+                &format!("[deploy.{e}]"),
+                o.image_pull_secrets.as_deref().unwrap_or_default(),
+            )?;
+        }
+        let image_pull_secrets = deploy_overlay
+            .and_then(|o| o.image_pull_secrets.clone())
+            .or_else(|| raw.deploy.image_pull_secrets.clone())
+            .unwrap_or_default();
 
         let dir = toml_path
             .parent()
@@ -826,6 +1094,9 @@ impl Plan {
         // Resolved language — used for both MCP and proxy derivation.
         let language = raw.service.language.as_deref().unwrap_or("rust");
         let is_rust = language == "rust";
+        // A plain Node.js app (e.g. a Next.js server): no tonin SDK, so no MCP
+        // sidecar binary and no outbound proxy; the image's CMD runs it.
+        let is_node = language == "node";
 
         // McpMode: derived from language + kind. Explicit [deploy] mcp_sidecar=false
         // overrides to None (backward-compat escape hatch); true is a no-op.
@@ -833,6 +1104,7 @@ impl Plan {
             Some(false) => McpMode::None,
             _ => match kind {
                 ServiceKind::Http | ServiceKind::Web => McpMode::None,
+                ServiceKind::Backend if is_node => McpMode::None,
                 ServiceKind::Backend if is_rust => McpMode::InProcess,
                 ServiceKind::Backend => McpMode::Sidecar,
             },
@@ -842,40 +1114,38 @@ impl Plan {
         // calls at least one downstream. [client] proxy=false is an escape hatch.
         let proxy_override = raw.client.as_ref().and_then(|c| c.proxy);
         let needs_outbound_proxy =
-            !is_rust && !depends_on.is_empty() && proxy_override != Some(false);
+            !is_rust && !is_node && !depends_on.is_empty() && proxy_override != Some(false);
 
         let svc_name = raw.service.name.clone();
-        let svc_ns = deploy_namespace.clone();
-        let database = raw
-            .database
+        let database = match &raw.database {
+            Some(r) => stateful::resolve_database(r, env, &svc_name, None)?,
+            None => None,
+        };
+        let mut named_databases: Vec<(String, DatabaseSpec)> = Vec::new();
+        for (name, r) in &raw.databases {
+            if let Some(spec) = stateful::resolve_database(r, env, &svc_name, Some(name))? {
+                named_databases.push((name.clone(), spec));
+            }
+        }
+        let cache = match &raw.cache {
+            Some(r) => stateful::resolve_cache(r, env, &svc_name, None)?,
+            None => None,
+        };
+        let mut named_caches: Vec<(String, CacheSpec)> = Vec::new();
+        for (name, r) in &raw.caches {
+            if let Some(spec) = stateful::resolve_cache(r, env, &svc_name, Some(name))? {
+                named_caches.push((name.clone(), spec));
+            }
+        }
+        let secrets = raw
+            .secrets
             .as_ref()
-            .map(|r| stateful::resolve_database(r, env, &svc_name, &svc_ns));
-        let named_databases: Vec<(String, DatabaseSpec)> = raw
-            .databases
-            .iter()
-            .map(|(name, r)| {
-                (
-                    name.clone(),
-                    stateful::resolve_database(r, env, &svc_name, &svc_ns),
-                )
-            })
-            .collect();
-        let cache = raw
-            .cache
+            .map(|s| stateful::resolve_secrets(s, env));
+        let migrations = raw
+            .migrations
             .as_ref()
-            .map(|r| stateful::resolve_cache(r, env, &svc_name, &svc_ns));
-        let named_caches: Vec<(String, CacheSpec)> = raw
-            .caches
-            .iter()
-            .map(|(name, r)| {
-                (
-                    name.clone(),
-                    stateful::resolve_cache(r, env, &svc_name, &svc_ns),
-                )
-            })
-            .collect();
-        let secrets = raw.secrets.as_ref().map(stateful::resolve_secrets);
-        let migrations = raw.migrations.as_ref().map(stateful::resolve_migrations);
+            .map(|m| stateful::resolve_migrations(m, env))
+            .transpose()?;
         let config = raw.config.as_ref().map(stateful::resolve_config);
 
         let client = raw
@@ -904,43 +1174,97 @@ impl Plan {
             .unwrap_or_default();
 
         let mut emitted_env = EmittedEnv::default();
-        if let Some(d) = &database {
-            emitted_env.extend_database(d, &svc_name);
+        if let Some(s) = &secrets {
+            emitted_env.extend_secrets(s);
         }
-        for (name, d) in &named_databases {
-            let prefix = format!("{}_DATABASE", name.to_uppercase());
-            emitted_env.extend_database_named(&prefix, d, &svc_name);
+        if let Some(d) = &database {
+            emitted_env.extend_database(d);
+        }
+        for (_, d) in &named_databases {
+            emitted_env.extend_database(d);
         }
         if let Some(c) = &cache {
             emitted_env.extend_cache(c);
         }
-        for (name, c) in &named_caches {
-            let prefix = format!("{}_REDIS", name.to_uppercase());
-            emitted_env.extend_cache_named(&prefix, c);
-        }
-        if let Some(s) = &secrets {
-            emitted_env.extend_secrets(s);
+        for (_, c) in &named_caches {
+            emitted_env.extend_cache(c);
         }
 
-        // Reserved-name guard: `[env]` must not shadow env vars tonin already
-        // emits (stateful literals like DATABASE_URL / REDIS_URL, or
-        // secret-sourced keys). Duplicate container env names are
-        // last-one-wins in Kubernetes — silently overriding a resolved URL is
-        // exactly the drift tonin.toml exists to prevent, so hard-error.
-        for (key, _) in &env_vars {
-            if emitted_env.literals.iter().any(|(k, _)| k == key) {
-                return Err(Error::ReservedEnvKey {
+        // Duplicate container env names are last-one-wins in Kubernetes, so
+        // two sections emitting the same var (or `[env]` shadowing one tonin
+        // emits) would silently override a resolved value: hard-error.
+        let declared = emitted_env.declared();
+        for (i, (key, origin)) in declared.iter().enumerate() {
+            if let Some((_, first)) = declared[..i].iter().find(|(k, _)| k == key) {
+                return Err(Error::DuplicateEnvVar {
                     key: key.clone(),
-                    origin: "stateful ([database]/[cache])".into(),
-                });
-            }
-            if emitted_env.from_secret.iter().any(|k| k == key) {
-                return Err(Error::ReservedEnvKey {
-                    key: key.clone(),
-                    origin: "secret-sourced ([secrets])".into(),
+                    first: first.clone(),
+                    second: origin.clone(),
                 });
             }
         }
+        for (key, _) in &env_vars {
+            if let Some((_, origin)) = declared.iter().find(|(k, _)| k == key) {
+                return Err(Error::ReservedEnvKey {
+                    key: key.clone(),
+                    origin: origin.clone(),
+                });
+            }
+        }
+
+        let workload = resolve_workload(
+            &raw.service,
+            &raw.deploy,
+            deploy_overlay,
+            &raw.resources,
+            raw.autoscale.as_ref(),
+            &raw.volumes,
+            &raw.ports,
+            WorkloadContext {
+                env,
+                replicas: deploy_replicas,
+                port,
+                http_port,
+                health: health.as_ref(),
+                mcp: mcp_mode,
+                proxy: needs_outbound_proxy,
+                is_rust,
+            },
+        )?;
+        let max_replicas = workload
+            .autoscale
+            .map_or(deploy_replicas, |a| a.max_replicas);
+        let cpu = workload
+            .resources
+            .requests
+            .get("cpu")
+            .cloned()
+            .unwrap_or_default();
+        let memory = workload
+            .resources
+            .requests
+            .get("memory")
+            .cloned()
+            .unwrap_or_default();
+
+        let cronjobs = pod::resolve_cronjobs(&raw.cronjobs, &raw.service.name, env)?;
+        for job in &cronjobs {
+            for key in job.env.keys() {
+                if let Some((_, origin)) = declared.iter().find(|(k, _)| k == key) {
+                    return Err(Error::InvalidField {
+                        field: format!("[[cronjobs]] {}.env.{key}", job.name),
+                        reason: format!("collides with the {origin} env var tonin already emits"),
+                    });
+                }
+            }
+        }
+        let pod = PodSettings {
+            image_pull_secrets,
+            placement: pod::resolve_placement(raw.placement.as_ref(), env)?,
+            pdb: pod::resolve_pdb(raw.pdb.as_ref(), env, deploy_replicas)?,
+            service_account: pod::resolve_service_account(raw.service_account.as_ref())?,
+            cronjobs,
+        };
 
         Ok(Plan {
             name: raw.service.name,
@@ -958,13 +1282,14 @@ impl Plan {
             mcp_mode,
             needs_outbound_proxy,
             expose: deploy_expose,
-            cpu: raw.resources.cpu,
-            memory: raw.resources.memory,
+            cpu,
+            memory,
             image,
             image_registry,
             security,
             depends_on,
             callers: explicit_callers,
+            egress,
             dir,
             database,
             named_databases,
@@ -977,6 +1302,7 @@ impl Plan {
             emitted_env,
             env_vars,
             selected_env: env.to_string(),
+            workload,
             path_rules: raw
                 .path_rules
                 .into_iter()
@@ -988,6 +1314,7 @@ impl Plan {
                     build_order: r.build_order,
                 })
                 .collect(),
+            pod,
         })
     }
 
@@ -1009,18 +1336,21 @@ impl Plan {
             .collect();
         for plan in plans.iter_mut() {
             for (caller_name, caller_ns, deps) in &snapshot {
+                let derived = ServiceRef {
+                    name: caller_name.clone(),
+                    namespace: caller_ns.clone(),
+                };
+                // An explicit [callers] entry for the same service wins
+                // (it may carry its own ports).
                 if deps
                     .iter()
                     .any(|d| d.name == plan.name && d.namespace == plan.namespace)
+                    && !plan.callers.iter().any(|c| c.service() == Some(&derived))
                 {
-                    plan.callers.push(ServiceRef {
-                        name: caller_name.clone(),
-                        namespace: caller_ns.clone(),
-                    });
+                    plan.callers.push(Caller::from_service(derived));
                 }
             }
             plan.callers.sort();
-            plan.callers.dedup();
         }
 
         plans.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1314,27 +1644,27 @@ mod tests {
         .concat();
         let p = try_load_env(&body, "prod").unwrap();
         let d = p.depends_on.iter().find(|d| d.name == "identity").unwrap();
-        assert_eq!(d.port, DEFAULT_DEPENDENCY_PORT, "shorthand keeps 50051");
+        assert_eq!(
+            d.ports,
+            vec![DEFAULT_DEPENDENCY_PORT],
+            "shorthand keeps 50051"
+        );
     }
 
     #[test]
     fn depends_on_table_port_is_used() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nzradar-platform = { namespace = \"zradar-{env}\", port = 4317 }\ngateway = { namespace = \"edge-{env}\", port = 7001, prod = \"edge\" }\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\ntelemetry = { namespace = \"telemetry-{env}\", port = 4317 }\ngateway = { namespace = \"edge-{env}\", port = 7001, prod = \"edge\" }\n",
         ]
         .concat();
         let p = try_load_env(&body, "prod").unwrap();
-        let zr = p
-            .depends_on
-            .iter()
-            .find(|d| d.name == "zradar-platform")
-            .unwrap();
-        assert_eq!(zr.namespace, "zradar-prod");
-        assert_eq!(zr.port, 4317);
+        let zr = p.depends_on.iter().find(|d| d.name == "telemetry").unwrap();
+        assert_eq!(zr.namespace, "telemetry-prod");
+        assert_eq!(zr.ports, vec![4317]);
         let gw = p.depends_on.iter().find(|d| d.name == "gateway").unwrap();
         assert_eq!(gw.namespace, "edge", "per-env override still wins");
-        assert_eq!(gw.port, 7001, "port applies alongside env overrides");
+        assert_eq!(gw.ports, vec![7001], "port applies alongside env overrides");
     }
 
     #[test]
@@ -1345,7 +1675,111 @@ mod tests {
         ]
         .concat();
         let p = try_load_env(&body, "dev").unwrap();
-        assert_eq!(p.depends_on[0].port, DEFAULT_DEPENDENCY_PORT);
+        assert_eq!(p.depends_on[0].ports, vec![DEFAULT_DEPENDENCY_PORT]);
+    }
+
+    #[test]
+    fn depends_on_ports_list_is_used() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\ntelemetry = { namespace = \"telemetry-{env}\", ports = [8080, 8081, 8082] }\n",
+        ]
+        .concat();
+        let p = try_load_env(&body, "prd").unwrap();
+        assert_eq!(p.depends_on[0].ports, vec![8080, 8081, 8082]);
+    }
+
+    #[test]
+    fn depends_on_port_and_ports_together_is_error() {
+        for deps in [
+            "z = { namespace = \"d\", port = 1, ports = [2] }",
+            "z = { namespace = \"d\", ports = [2], port = 1 }",
+        ] {
+            let body = [
+                SVC,
+                "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\n",
+                deps,
+                "\n",
+            ]
+            .concat();
+            let err = try_load_env(&body, "dev").unwrap_err().to_string();
+            assert!(err.contains("not both"), "{err}");
+        }
+    }
+
+    #[test]
+    fn depends_on_bad_ports_list_is_error() {
+        for (deps, want) in [
+            ("z = { namespace = \"d\", ports = [] }", "must not be empty"),
+            ("z = { namespace = \"d\", ports = [0] }", "outside 1-65535"),
+            (
+                "z = { namespace = \"d\", ports = 8080 }",
+                "must be an array",
+            ),
+            (
+                "z = { namespace = \"d\", ports = [80, 80] }",
+                "listed twice",
+            ),
+        ] {
+            let body = [
+                SVC,
+                "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\n",
+                deps,
+                "\n",
+            ]
+            .concat();
+            let err = try_load_env(&body, "dev").unwrap_err().to_string();
+            assert!(
+                err.contains("depends_on.z") && err.contains(want),
+                "{deps}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_derived_callers_skip_explicit_and_keep_label_callers() {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("tonin-ws-test-{}-{n}", std::process::id()));
+        let write = |dir: &str, body: &str| {
+            let d = root.join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("tonin.toml"), body).unwrap();
+        };
+        let svc = |name: &str, extra: &str| {
+            format!(
+                "[service]\nname = \"{name}\"\nversion = \"0.1.0\"\n\
+                 [deploy]\nreplicas = 1\nnamespace = \"demo\"\n\
+                 [resources]\ncpu = \"100m\"\nmemory = \"128Mi\"\n{extra}"
+            )
+        };
+        write(
+            "api",
+            &svc(
+                "api",
+                "[callers]\nshell = { namespace = \"demo\", ports = [7001] }\n\
+                 cloudflared = { namespace = \"edge\", labels = { app = \"cf\" } }\n",
+            ),
+        );
+        write("shell", &svc("shell", "[depends_on]\napi = \"demo\"\n"));
+        write("worker", &svc("worker", "[depends_on]\napi = \"demo\"\n"));
+        let plans = Plan::load_workspace_with_env(&root, "dev").unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        let api = plans.iter().find(|p| p.name == "api").unwrap();
+        let names: Vec<&str> = api.callers.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["cloudflared", "shell", "worker"]);
+        let shell = api.callers.iter().find(|c| c.name == "shell").unwrap();
+        assert_eq!(
+            shell.ports,
+            vec![7001],
+            "explicit caller kept, not duplicated"
+        );
+        let services: Vec<&str> = api
+            .callers
+            .iter()
+            .filter_map(|c| c.service())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(services, vec!["shell", "worker"]);
     }
 
     #[test]
@@ -1403,18 +1837,18 @@ mod tests {
     fn env_base_entries_resolve_with_env_placeholder() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env]\nIDENTITY_GRPC_URL = \"http://identity.zvectorlabs-{env}.svc.cluster.local:50051\"\nLOG_FORMAT = \"json\"\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env]\nIDENTITY_GRPC_URL = \"http://identity.platform-{env}.svc.cluster.local:50051\"\nLOG_FORMAT = \"json\"\n",
         ]
         .concat();
         let dev = try_load_env(&body, "dev").unwrap();
         assert_eq!(
             env_var(&dev, "IDENTITY_GRPC_URL").as_deref(),
-            Some("http://identity.zvectorlabs-dev.svc.cluster.local:50051")
+            Some("http://identity.platform-dev.svc.cluster.local:50051")
         );
         let prod = try_load_env(&body, "prod").unwrap();
         assert_eq!(
             env_var(&prod, "IDENTITY_GRPC_URL").as_deref(),
-            Some("http://identity.zvectorlabs-prod.svc.cluster.local:50051")
+            Some("http://identity.platform-prod.svc.cluster.local:50051")
         );
         assert_eq!(env_var(&prod, "LOG_FORMAT").as_deref(), Some("json"));
     }
@@ -1504,6 +1938,29 @@ mod tests {
         .concat();
         let err = try_load_env(&body, "prod").unwrap_err();
         assert!(matches!(err, Error::ReservedEnvKey { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn datastore_env_colliding_with_a_secret_key_is_error() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[secrets]\nrequired = [\"PLATFORM_DATABASE_URL\"]\n[database]\nengine = \"postgres\"\nenv = \"PLATFORM_DATABASE_URL\"\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(matches!(err, Error::DuplicateEnvVar { .. }), "got {err:?}");
+        assert!(err.to_string().contains("[secrets].required"), "{err}");
+    }
+
+    #[test]
+    fn removed_database_field_fails_the_plan() {
+        let body = [
+            SVC,
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[database]\nengine = \"postgres\"\nsize = \"10Gi\"\n",
+        ]
+        .concat();
+        let err = try_load_env(&body, "prod").unwrap_err();
+        assert!(matches!(err, Error::RemovedField { .. }), "got {err:?}");
     }
 
     #[test]
@@ -1698,6 +2155,113 @@ allowPrivilegeEscalation = false
         );
     }
 
+    // ---- workload (T3) -------------------------------------------------------
+
+    const SVC_NODE: &str = "[service]\nname = \"shell\"\nversion = \"0.1.0\"\ntype = \"http\"\nlanguage = \"node\"\nport = 7002\n[resources]\ncpu = \"50m\"\nmemory = \"64Mi\"\n";
+
+    #[test]
+    fn node_language_runs_the_image_cmd_without_proxy_or_mcp() {
+        let p = try_load_env(&format!("{SVC_NODE}{DEPLOY_WITH_DEP}"), "prd").unwrap();
+        assert!(p.workload.command.is_empty(), "image CMD runs a node app");
+        assert!(!p.needs_outbound_proxy, "no proxy for plain node");
+        assert_eq!(p.mcp_mode, McpMode::None);
+        // A node gRPC backend gets no MCP sidecar either.
+        let backend = SVC_NODE.replace("type = \"http\"\n", "");
+        let p = try_load_env(&format!("{backend}{DEPLOY_WITH_DEP}"), "prd").unwrap();
+        assert_eq!(p.mcp_mode, McpMode::None);
+    }
+
+    #[test]
+    fn command_and_args_pass_through() {
+        let rust = try_load_env(&format!("{SVC_RUST}{DEPLOY_NO_DEP}"), "prd").unwrap();
+        assert_eq!(rust.workload.command, ["/usr/local/bin/svc"]);
+        let svc = SVC_RUST.replace(
+            "version = \"0.1.0\"\n",
+            "version = \"0.1.0\"\ncommand = []\nargs = [\"serve\", \"--json\"]\n",
+        );
+        let p = try_load_env(&format!("{svc}{DEPLOY_NO_DEP}"), "prd").unwrap();
+        assert!(p.workload.command.is_empty());
+        assert_eq!(p.workload.args, ["serve", "--json"]);
+    }
+
+    #[test]
+    fn statefulset_with_pvc_ports_and_strategy() {
+        let toml = format!(
+            "{SVC_RUST}[deploy]\nreplicas = 2\nnamespace = \"demo\"\nkind = \"statefulset\"\n\
+             [deploy.prd.strategy]\npartition = 1\n\
+             [[volumes]]\nname = \"data\"\ntype = \"pvc\"\nmount_path = \"/data\"\nsize = \"8Gi\"\n\
+             [[ports]]\nname = \"otlp-http\"\nport = 4318\nservice = \"ingest\"\n"
+        );
+        let p = try_load_env(&toml, "prd").unwrap();
+        assert_eq!(p.workload.kind, crate::WorkloadKind::StatefulSet);
+        assert_eq!(p.workload.extra_services(), ["ingest"]);
+        assert_eq!(p.workload.strategy.as_ref().unwrap().kind, "RollingUpdate");
+        let dev = try_load_env(&toml, "dev").unwrap();
+        assert!(dev.workload.strategy.is_none(), "partition is prd-only");
+
+        let with_hpa = format!("{toml}[autoscale]\nmax_replicas = 4\n");
+        assert!(
+            try_load_env(&with_hpa, "prd").is_err(),
+            "no HPA on a StatefulSet"
+        );
+        let deployment = toml.replace("kind = \"statefulset\"\n", "");
+        let err = try_load_env(&deployment, "dev").unwrap_err();
+        assert!(err.to_string().contains("statefulset"), "{err}");
+    }
+
+    #[test]
+    fn extra_ports_must_not_reuse_tonin_ports() {
+        let toml = format!("{SVC_RUST}{DEPLOY_NO_DEP}[[ports]]\nname = \"extra\"\nport = 50052\n");
+        let err = try_load_env(&toml, "prd").unwrap_err();
+        assert!(err.to_string().contains("MCP"), "{err}");
+    }
+
+    #[test]
+    fn autoscale_min_replicas_is_honoured() {
+        let toml = format!(
+            "{SVC_RUST}[deploy]\nreplicas = 1\nnamespace = \"demo\"\n\
+             [autoscale]\nmin_replicas = 2\nmax_replicas = 8\n[autoscale.dev]\nenabled = false\n"
+        );
+        let p = try_load_env(&toml, "prd").unwrap();
+        let a = p.workload.autoscale.unwrap();
+        assert_eq!((a.min_replicas, a.max_replicas), (2, 8));
+        assert_eq!(p.max_replicas, 8);
+        let dev = try_load_env(&toml, "dev").unwrap();
+        assert!(dev.workload.autoscale.is_none());
+        assert_eq!(dev.max_replicas, 1);
+    }
+
+    #[test]
+    fn probe_paths_and_startup() {
+        let http = "[service]\nname = \"svc\"\nversion = \"0.1.0\"\ntype = \"http\"\n\
+                    [service.health]\nliveness_path = \"/live\"\n[service.health.startup]\n\
+                    [resources]\ncpu = \"50m\"\nmemory = \"64Mi\"\n";
+        let p = try_load_env(&format!("{http}{DEPLOY_NO_DEP}"), "prd").unwrap();
+        assert_eq!(p.workload.probes.liveness_path, "/live");
+        assert_eq!(p.workload.probes.readiness_path, "/health");
+        let st = p.workload.probes.startup.unwrap();
+        assert_eq!((st.path.as_str(), st.failure_threshold), ("/live", 30));
+
+        // A gRPC-only service has no HTTP path to probe.
+        let grpc = SVC_RUST.replace(
+            "[resources]",
+            "[service.health]\nreadiness_path = \"/ready\"\n[resources]",
+        );
+        assert!(try_load_env(&format!("{grpc}{DEPLOY_NO_DEP}"), "prd").is_err());
+    }
+
+    #[test]
+    fn resources_requests_and_limits_apart() {
+        let svc = "[service]\nname = \"svc\"\nversion = \"0.1.0\"\n\
+                   [resources.requests]\ncpu = \"250m\"\nmemory = \"512Mi\"\n\
+                   [resources.limits]\nmemory = \"512Mi\"\n";
+        let p = try_load_env(&format!("{svc}{DEPLOY_NO_DEP}"), "prd").unwrap();
+        assert_eq!(p.cpu, "250m");
+        assert!(!p.workload.resources.limits.contains_key("cpu"));
+        let bad = svc.replace("\"250m\"", "\"250 m\"");
+        assert!(try_load_env(&format!("{bad}{DEPLOY_NO_DEP}"), "prd").is_err());
+    }
+
     // ---- wave_groups --------------------------------------------------------
 
     fn make_test_plan(name: &str, depends_on: &[&str]) -> Plan {
@@ -1727,10 +2291,11 @@ allowPrivilegeEscalation = false
                 .map(|d| DependencyRef {
                     name: d.to_string(),
                     namespace: "demo".to_string(),
-                    port: DEFAULT_DEPENDENCY_PORT,
+                    ports: vec![DEFAULT_DEPENDENCY_PORT],
                 })
                 .collect(),
             callers: Vec::new(),
+            egress: Default::default(),
             dir: std::path::PathBuf::from("."),
             database: None,
             named_databases: Vec::new(),
@@ -1743,7 +2308,9 @@ allowPrivilegeEscalation = false
             env_vars: Vec::new(),
             selected_env: "prod".to_string(),
             client: ClientSpec::default(),
+            workload: Default::default(),
             path_rules: Vec::new(),
+            pod: Default::default(),
         }
     }
 

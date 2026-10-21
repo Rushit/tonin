@@ -27,11 +27,15 @@ pub mod config;
 pub mod deploy_backend;
 pub mod grpc_ui;
 pub mod lock;
+pub mod network;
 pub mod observe_backend;
 pub mod plan;
 pub mod platform;
+pub mod pod;
 pub mod run_backend;
+pub mod schema;
 pub(crate) mod stateful;
+pub mod workload;
 
 // Config types and loaders
 pub use config::ConfigLoader;
@@ -43,11 +47,27 @@ pub use plan::{
     ServiceKind, ServiceRef, WebMode, wave_groups,
 };
 
+// Network policy inputs ([callers], [egress])
+pub use network::{Caller, CallerSource, CidrEgress, EgressSpec, FqdnEgress};
+
 // Env resolution + resolved stateful types
 pub use stateful::{
-    CacheEngine, CacheSpec, ConfigEngine, ConfigSpec, DatabaseEngine, DatabaseSpec, EmittedEnv,
-    ExternalStore, MigrationRunOn, MigrationTool, MigrationsSpec, SecretProvider, SecretsSpec,
-    select_env,
+    CaMount, CacheEngine, CacheSpec, ConfigEngine, ConfigSpec, DatabaseEngine, DatabaseSpec,
+    DatabaseTls, DatastoreEnv, DatastoreSource, EgressTarget, EmittedEnv, ExternalStore,
+    MigrationMode, MigrationTool, MigrationsSpec, PG_CA_KEY, PG_CA_MOUNT_DIR, SecretEnvRef,
+    SecretProvider, SecretsSpec, select_env,
+};
+
+// Workload shape ([deploy] kind, volumes, ports, probes, resources)
+pub use workload::{
+    AutoscaleSpec, PortSpec, ProbesSpec, ResourcesSpec, StartupProbeSpec, StrategySpec,
+    VolumeSource, VolumeSpec, WorkloadKind, WorkloadSpec,
+};
+
+// Pod hygiene: pull secrets, placement, PDB, ServiceAccount, CronJobs
+pub use pod::{
+    CpuMemory, CronJobSpec, CronResources, IntOrPercent, PdbSpec, PlacementSpec, PodSettings,
+    SaToken, ServiceAccountSpec, TokenSource, TokenVolume,
 };
 
 // Lock store types
@@ -60,7 +80,7 @@ pub use build_backend::{
 
 // Deploy backend types
 pub use deploy_backend::{
-    DeployBackend, DeployEvent, DeployStatus, DeployValues, DryRunBackend, HelmBackend,
+    DeployBackend, DeployEvent, DeployStatus, DeployValues, DryRunBackend, HelmBackend, ImageRef,
     NoopReporter, TelemetryReporter,
 };
 

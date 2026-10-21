@@ -1,0 +1,128 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# prd-specific overrides — generated from the prd overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 2
+
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
+image:
+  tag: "0.2.3"
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 4
+
+mesh: "cilium"
+
+mcp:
+  enabled: true
+  mode: in-process
+
+outboundProxy:
+  enabled: false
+
+ingress:
+  enabled: false
+  host: ""
+
+# Plain env vars from tonin.toml [env], merged with the [env.prd]
+# overlay and with {env} substituted for this environment.
+env:
+  IDENTITY_GRPC_URL: "http://identity.platform-prd.svc.cluster.local:50051"
+  S3_BUCKET: "example-prd-telemetry"
+  S3_ENDPOINT: "https://s3.example.invalid"
+
+# Databases and caches of the platform contract, resolved for prd.
+datastores:
+  - name: database
+    env: DATABASE_URL
+    secret:
+      env: DATABASE_URL
+      name: telemetry-pg-app
+      key: uri
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: telemetry-pg
+  - name: databases.analytics
+    env: ANALYTICS_DATABASE_URL
+    secret:
+      env: ANALYTICS_DATABASE_URL
+      name: telemetry-analytics-pg-app
+      key: uri
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: telemetry-analytics-pg
+  - name: cache
+    env: REDIS_URL
+    secret:
+      env: REDIS_URL
+      name: telemetry-cache
+      key: uri
+    egress:
+      port: 6379
+      labels:
+        app.kubernetes.io/name: telemetry-cache
+
+secrets:
+  create: true
+  keys:
+    - TELEMETRY_SERVICE_TOKEN
+    - AWS_ACCESS_KEY_ID
+    - AWS_SECRET_ACCESS_KEY
+
+migrations:
+  mode: none
+
+# Pull secrets, placement, disruption budget and CronJobs for prd.
+imagePullSecrets: []
+nodeSelector:
+  example.com/role: db
+tolerations:
+- effect: NoSchedule
+  key: example.com/db
+  operator: Equal
+  value: telemetry
+topologySpreadConstraints:
+- maxSkew: 1
+  minDomains: 2
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: DoNotSchedule
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+cronjobs: []
+
+networkPolicy:
+  enabled: true
+  port: 4317
+  mcp: true
+  callers:
+  - name: cloudflared
+    namespace: edge
+    labels:
+      app.kubernetes.io/name: cloudflared
+    ports:
+    - 4318
+  - name: platform-api
+    namespace: platform-prd
+  dependsOn:
+  - name: identity
+    namespace: platform-prd
+    ports:
+    - 50051
+  egress:
+    fqdns:
+    - name: s3.example-region.example.com
+      ports:
+      - 443
+    cidrs: []
+    kubeApiserver: false

@@ -1,0 +1,74 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# dev-specific overrides — generated from the dev overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 1
+
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
+image:
+  tag: "0.1.1"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+
+mesh: "cilium"
+
+mcp:
+  enabled: false
+  mode: none
+
+outboundProxy:
+  enabled: true
+
+ingress:
+  enabled: false
+  host: ""
+
+# Plain env vars from tonin.toml [env], merged with the [env.dev]
+# overlay and with {env} substituted for this environment.
+env: {}
+
+# Databases and caches of the platform contract, resolved for dev.
+datastores: []
+
+secrets:
+  create: true
+  keys: []
+
+migrations:
+  mode: none
+
+# Pull secrets, placement, disruption budget and CronJobs for dev.
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints:
+- maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+podDisruptionBudget:
+  enabled: false
+cronjobs: []
+
+networkPolicy:
+  enabled: true
+  port: 7002
+  mcp: false
+  callers: []
+  dependsOn:
+  - name: platform-api
+    namespace: platform-dev
+    ports:
+    - 7001
+  egress:
+    fqdns: []
+    cidrs: []
+    kubeApiserver: false

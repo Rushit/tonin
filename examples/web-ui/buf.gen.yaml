@@ -1,9 +1,8 @@
 version: v2
 plugins:
+  # protoc-gen-es v2 emits messages and service descriptors together;
+  # Connect v2 consumes them directly (no protoc-gen-connect-es).
   - local: protoc-gen-es
-    out: src/gen
-    opt: [target=ts]
-  - local: protoc-gen-connect-es
     out: src/gen
     opt: [target=ts]
 inputs:

@@ -6,6 +6,9 @@
 //!
 //! Only files `generate` itself writes are compared — hand-authored templates
 //! under `chart/templates/` (e.g. a custom CronJob) are never flagged as drift.
+//! Files an earlier tonin version generated and this one no longer ships
+//! (`generate::OBSOLETE_FILES`) are reported as `obsolete`: `generate` would
+//! delete them.
 
 use std::path::{Path, PathBuf};
 
@@ -25,9 +28,9 @@ pub struct CheckArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Environments to check `values-<env>.yaml` for.
-    /// Defaults to: dev, staging, prod.
-    #[arg(long = "env", value_name = "ENV")]
+    /// Environment to check `values-<env>.yaml` for. Repeat for each
+    /// environment, matching the `--env` list given to `generate`. Required.
+    #[arg(long = "env", value_name = "ENV", required = true)]
     pub envs: Vec<String>,
 }
 
@@ -59,6 +62,15 @@ pub fn run(args: CheckArgs) -> Result<()> {
 /// Only files produced by `generate` are considered; files present in
 /// `chart_dir` but not regenerated (user-authored templates) are ignored.
 fn collect_drift(service_dir: &Path, chart_dir: &Path, envs: &[String]) -> Result<Vec<String>> {
+    collect_drift_with(service_dir, chart_dir, envs, generate::OBSOLETE_FILES)
+}
+
+fn collect_drift_with(
+    service_dir: &Path,
+    chart_dir: &Path,
+    envs: &[String],
+    obsolete: &[&str],
+) -> Result<Vec<String>> {
     let tmp = tempfile::TempDir::new().context("creating temp dir for chart check")?;
 
     generate::run(GenerateArgs {
@@ -83,6 +95,9 @@ fn collect_drift(service_dir: &Path, chart_dir: &Path, envs: &[String]) -> Resul
                 }
             }
         }
+    }
+    for rel in generate::obsolete_present(chart_dir, obsolete) {
+        drift.push(format!("obsolete {}", rel.display()));
     }
     drift.sort();
     Ok(drift)
@@ -156,6 +171,27 @@ memory = \"128Mi\"
         assert!(
             drift.iter().any(|d| d.contains("Chart.yaml")),
             "expected Chart.yaml drift, got {drift:?}"
+        );
+    }
+
+    #[test]
+    fn obsolete_tonin_file_is_drift() {
+        let (dir, chart) = generate_chart();
+        std::fs::write(
+            chart.join("templates").join("legacy-config.yaml"),
+            "kind: ConfigMap\n",
+        )
+        .unwrap();
+        let drift = collect_drift_with(
+            dir.path(),
+            &chart,
+            &["dev".to_string()],
+            &["templates/legacy-config.yaml"],
+        )
+        .unwrap();
+        assert_eq!(
+            drift,
+            vec!["obsolete templates/legacy-config.yaml".to_string()]
         );
     }
 

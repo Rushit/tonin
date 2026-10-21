@@ -102,7 +102,7 @@ tonin platform status --env staging --json
     "timestamp": 1719792000
   },
   {
-    "service": "zradar-platform",
+    "service": "telemetry",
     "env": "staging",
     "running_version": "1.1.0",
     "desired_version": "1.2.0",
@@ -203,7 +203,7 @@ Here's a typical agnitiv-platform deployment orchestration:
 
 ```
 1. agnitiv-platform calls: tonin platform status --env staging --json
-   → Gets current state (e.g., identity:healthy, zradar-platform:degraded)
+   → Gets current state (e.g., identity:healthy, telemetry:degraded)
 
 2. agnitiv-platform triggers: tonin platform deploy --env staging --service identity --json
    → Identity deploys successfully

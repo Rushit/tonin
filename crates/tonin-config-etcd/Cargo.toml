@@ -13,7 +13,7 @@ description = "etcd v3 Config implementation for the tonin framework. Native ser
 
 [dependencies]
 tonin-sdk = { workspace = true }
-etcd-client  = { version = "0.14", features = ["tls"] }
+etcd-client  = { version = "0.21", features = ["tls"] }
 tokio        = { workspace = true }
 async-trait  = { workspace = true }
 tracing      = { workspace = true }

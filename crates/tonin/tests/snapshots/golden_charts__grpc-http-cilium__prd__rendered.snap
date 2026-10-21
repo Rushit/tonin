@@ -1,0 +1,296 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: rendered
+---
+---
+# Source: telemetry/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+automountServiceAccountToken: false
+
+---
+# Source: telemetry/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  type: ClusterIP
+  selector:
+    app: telemetry
+  ports:
+    - name: grpc
+      port: 4317
+      targetPort: 4317
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: mcp
+      port: 50052
+      targetPort: 50052
+
+---
+# Source: telemetry/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  selector:
+    matchLabels:
+      app: telemetry
+  template:
+    metadata:
+      labels:
+        app: telemetry
+        service.identity: telemetry.telemetry-prd
+    spec:
+      serviceAccountName: telemetry
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      nodeSelector:
+        example.com/role: db
+      tolerations:
+        - effect: NoSchedule
+          key: example.com/db
+          operator: Equal
+          value: telemetry
+      containers:
+        - name: server
+          image: "ghcr.io/example/telemetry:0.2.3"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /usr/local/bin/telemetry
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: "telemetry"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4317"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=telemetry-prd,service.version=0.2.3"
+            - name: RUST_LOG
+              value: "info"
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
+            - name: TELEMETRY_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-secrets
+                  key: TELEMETRY_SERVICE_TOKEN
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-pg-app
+                  key: uri
+            - name: ANALYTICS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-analytics-pg-app
+                  key: uri
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-cache
+                  key: uri
+            - name: IDENTITY_GRPC_URL
+              value: "http://identity.platform-prd.svc.cluster.local:50051"
+            - name: S3_BUCKET
+              value: "example-prd-telemetry"
+            - name: S3_ENDPOINT
+              value: "https://s3.example.invalid"
+          ports:
+            - containerPort: 4317
+              name: grpc
+            - containerPort: 8080
+              name: http
+            # In-process MCP: the same server process also serves MCP on this port.
+            - containerPort: 50052
+              name: mcp
+          livenessProbe:
+            httpGet:
+              path: "/health"
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: "/health"
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 200m
+              memory: 512Mi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+
+---
+# Source: telemetry/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: telemetry
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# Source: telemetry/templates/networkpolicy.yaml
+# CiliumNetworkPolicy for the service's pods: ingress allowlist ([callers])
+# and egress (DNS, the otel-collector, [depends_on], datastores, [egress]).
+# mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+# The migration Job has its own policy (migration-job.yaml), so it is
+# excluded here.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: telemetry-ingress
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: telemetry.telemetry-prd
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: NotIn, values: [migrate] }
+  ingress:
+    # caller: cloudflared
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            "app.kubernetes.io/name": "cloudflared"
+      toPorts:
+        - ports:
+            - { port: "4318", protocol: TCP }
+    # caller: platform-api
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: platform-api.platform-prd
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+            - { port: "8080", protocol: TCP }
+            - { port: "50052", protocol: TCP }
+  egress:
+    # DNS (kube-dns). Any egress rule makes this policy default-deny for the
+    # pod, which would otherwise silently break service discovery.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+          # toFQDNs learns IPs from DNS answers seen by Cilium's DNS proxy;
+          # this rule sends lookups through it (and allows any name).
+          rules:
+            dns:
+              - matchPattern: "*"
+    # The otel-collector is push-only: pods export to it on 4317.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    # [depends_on] identity
+    - toEndpoints:
+        - matchLabels:
+            service.identity: identity.platform-prd
+      toPorts:
+        - ports:
+            - { port: "50051", protocol: TCP }
+    # [database] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: "telemetry-pg"
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # [databases.analytics] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: "telemetry-analytics-pg"
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # [cache] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: "telemetry-cache"
+      toPorts:
+        - ports:
+            - { port: "6379", protocol: TCP }
+    # [egress] s3.example-region.example.com
+    - toFQDNs:
+        - matchName: "s3.example-region.example.com"
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }

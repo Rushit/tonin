@@ -1,0 +1,10 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+apiVersion: v2
+name: platform-api
+description: "platform-api HTTP service (tonin)"
+type: application
+version: "0.1.3"
+appVersion: "0.1.3"

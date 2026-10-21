@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
-use tonin_plugin::deploy_backend::{DeployBackend, HelmBackend};
+use tonin_plugin::Plan;
+use tonin_plugin::deploy_backend::{DeployBackend, HelmBackend, ImageRef};
 use tonin_plugin::lock::{GitLockStore, LockStore};
 
 #[derive(Args)]
@@ -11,42 +12,44 @@ pub struct StatusArgs {
     #[arg(long, env = "TONIN_ENV")]
     pub env: String,
 
-    /// Workspace root containing environments/.
+    /// Workspace root containing tonin.toml files + environments/.
     #[arg(long)]
     pub workspace: Option<PathBuf>,
 }
 
 pub fn run(args: StatusArgs) -> Result<()> {
-    let root = args
-        .workspace
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = match args.workspace {
+        Some(dir) => dir,
+        None => std::env::current_dir().context("cannot determine current directory")?,
+    };
     let store = GitLockStore::new(&root);
     let lock = store.read(&args.env)?;
+    let plans = Plan::load_workspace_with_env(&root, &args.env)?;
     let backend = HelmBackend;
 
     println!("Environment: {}", args.env);
-    println!("{:<25} {:<12} {:<12} STATUS", "SERVICE", "LOCK", "RUNNING");
+    println!("{:<25} {:<12} STATUS", "SERVICE", "LOCK");
     println!("{}", "─".repeat(65));
 
     let mut services: Vec<_> = lock.services.iter().collect();
     services.sort_by_key(|(name, _)| name.as_str());
 
     for (name, desired) in services {
-        let release = format!("{name}-{}", args.env);
-        let running = backend.running_version(&release, &args.env).unwrap_or(None);
-        let (status_icon, status_text) = match running.as_deref() {
-            Some(v) if v == desired.version => ("✓", "in sync"),
-            Some(_) => ("✗", "DRIFT"),
-            None => ("✗", "NOT DEPLOYED"),
+        // Release = service name, in the namespace tonin.toml resolves for env.
+        let status = match plans.iter().find(|p| &p.name == name) {
+            None => "✗ NO tonin.toml".to_string(),
+            Some(plan) => {
+                let want = ImageRef::parse(&desired.image).to_string();
+                match backend.running_image(name, &plan.namespace).unwrap_or(None) {
+                    Some(running) if ImageRef::parse(&running).to_string() == want => {
+                        "✓ in sync".to_string()
+                    }
+                    Some(running) => format!("✗ DRIFT (running {running})"),
+                    None => "✗ NOT DEPLOYED".to_string(),
+                }
+            }
         };
-        println!(
-            "{:<25} {:<12} {:<12} {} {}",
-            name,
-            desired.version,
-            running.as_deref().unwrap_or("—"),
-            status_icon,
-            status_text
-        );
+        println!("{:<25} {:<12} {status}", name, desired.version);
     }
     Ok(())
 }

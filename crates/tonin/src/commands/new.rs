@@ -1032,7 +1032,7 @@ or tag. The CLI downloads the tarball, checks `version.toml` compatibility, and 
 
 ```sh
 # Regenerate Helm charts after editing tonin.toml
-tonin helm generate
+tonin helm generate --env dev --env prd
 
 # Preview against a real cluster
 tonin helm diff --env prod
@@ -1551,7 +1551,7 @@ fn print_next_steps(
     match (lang, st, wm) {
         (Lang::Rust, _, _) => {
             eprintln!("  cargo build                  # compile the stub server");
-            eprintln!("  tonin helm generate          # render Helm chart from tonin.toml");
+            eprintln!("  tonin helm generate --env dev --env prd  # render Helm chart");
         }
         (Lang::Python, _, _) => {
             eprintln!("  (cd client-python && bash codegen.sh)   # generate client stubs");
@@ -1937,7 +1937,7 @@ Extra clients (if scaffolded): `{name}-py` (Python), `{name}-ts` (TypeScript).
 ```bash
 cargo build && cargo test --workspace
 cargo clippy --workspace -- -D warnings
-cd {name}-server && tonin helm generate  # render Helm chart from tonin.toml
+cd {name}-server && tonin helm generate --env dev --env prd  # render Helm chart from tonin.toml
 ```
 
 ## Versioning policy
@@ -1990,7 +1990,7 @@ fn ws_agents_md(name: &str) -> String {
 ```bash
 cargo build && cargo test --workspace
 cargo clippy --workspace -- -D warnings
-cd {name}-server && tonin helm generate  # render Helm chart from tonin.toml
+cd {name}-server && tonin helm generate --env dev --env prd  # render Helm chart from tonin.toml
 ```
 
 ## Non-negotiable rules
@@ -2127,8 +2127,9 @@ engine = "postgres"
 [cache]
 engine = "redis"
 
-# Services allowed to call this one (ingress allowlist for CiliumNetworkPolicy).
-# Format: <service-name> = "<namespace>"
+# Who may call this one (ingress allowlist for CiliumNetworkPolicy):
+#   <service-name> = "<namespace>"
+#   <name> = {{ namespace = "<ns>", labels = {{ app = "<app>" }}, ports = [<port>] }}
 [callers]
 # gateway = "default"
 "#
@@ -2373,7 +2374,7 @@ tonin gRPC binary. Handlers start as stubs (`UNIMPLEMENTED`); fill in real logic
 cargo build -p {name}-server
 cargo test --test contract_e2e_test   # in-process gRPC, no Docker needed
 cargo test -p {name}-server           # all tests including unit tests
-tonin helm generate                   # render Helm chart from tonin.toml
+tonin helm generate --env dev --env prd  # render Helm chart from tonin.toml
 ```
 
 ## Rust / tonin coding standards
@@ -2768,7 +2769,7 @@ fn server_makefile(name: &str) -> String {
          \tcargo nextest run --test migrations_test\n\
          \n\
          k8s-generate: ## Regenerate k8s manifests via tonin\n\
-         \ttonin helm generate\n\
+         \ttonin helm generate --env dev --env prd\n\
          \n\
          migrate: ## Apply migrations to DATABASE_URL (dev/local)\n\
          \tsqlx migrate run --source migrations\n\
@@ -3208,7 +3209,9 @@ fn print_workspace_next_steps(name: &str, extras: &[ClientLang]) {
     eprintln!("  cd {name}");
     eprintln!("  cargo build --workspace          # compiles Rust crates");
     eprintln!("  cargo test --workspace           # contract test should pass");
-    eprintln!("  cd {name}-server && tonin helm generate  # render Helm chart from tonin.toml");
+    eprintln!(
+        "  cd {name}-server && tonin helm generate --env dev --env prd  # render Helm chart from tonin.toml"
+    );
     for client in extras {
         match client {
             ClientLang::Python => {
@@ -3235,5 +3238,52 @@ fn print_workspace_next_steps(name: &str, extras: &[ClientLang]) {
             }
             ClientLang::Rust => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod scaffold_schema_tests {
+    use super::*;
+
+    fn vars(language: &str, service_type: &str) -> Vars {
+        Vars {
+            service_name: "demo".into(),
+            service_name_snake: "demo".into(),
+            service_camel: "Demo".into(),
+            service_proto_module: "demo".into(),
+            language: language.into(),
+            service_type: service_type.into(),
+        }
+    }
+
+    fn load(dir: &Path) {
+        for env in ["dev", "prd"] {
+            tonin_plugin::Plan::load_with_env(&dir.join("tonin.toml"), env)
+                .unwrap_or_else(|e| panic!("scaffolded tonin.toml fails the schema ({env}): {e}"));
+        }
+    }
+
+    /// Every `tonin.toml` `tonin new` writes passes the strict schema.
+    #[test]
+    fn scaffolded_tonin_toml_files_pass_the_schema() {
+        for (lang, st, wm) in [
+            ("rust", ServiceType::Backend, None),
+            ("python", ServiceType::Backend, None),
+            ("typescript", ServiceType::Web, Some(WebMode::Spa)),
+            ("typescript", ServiceType::Web, Some(WebMode::Bff)),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let kind = if st == ServiceType::Web {
+                "web"
+            } else {
+                "backend"
+            };
+            write_service_toml(dir.path(), &vars(lang, kind), st, wm).unwrap();
+            emit_storage_block_in_micro_toml(dir.path(), StorageKind::S3).unwrap();
+            load(dir.path());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tonin.toml"), server_tonin_toml("demo")).unwrap();
+        load(dir.path());
     }
 }

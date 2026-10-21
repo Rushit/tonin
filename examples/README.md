@@ -51,7 +51,7 @@ What changes when you swap:
 
 | Mesh    | What gets rendered                                                  | Cluster prereq            |
 | ------- | ------------------------------------------------------------------- | ------------------------- |
-| cilium  | `io.cilium/encryption` annotation + `CiliumNetworkPolicy`           | Cilium CNI installed      |
+| cilium  | `CiliumNetworkPolicy` (encryption is a cluster setting)            | Cilium CNI installed      |
 | istio   | `ambient.istio.io/redirection` annotation + `AuthorizationPolicy` + `PeerAuthentication` | Istio ambient installed   |
 | linkerd | `linkerd.io/inject` annotation + `Server` + `AuthorizationPolicy`   | Linkerd installed         |
 | none    | Just a marker annotation; no mTLS, no policy                        | Local dev only            |

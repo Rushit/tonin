@@ -29,10 +29,28 @@ def _cargo() -> str:
     return "cargo.exe" if _is_windows() else "cargo"
 
 
+_GIT_LOCATION_ENV = {
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+}
+
+
 def run(cmd: list[str], *, label: str, extra_env: dict[str, str] | None = None) -> None:
     """Run *cmd*, print a progress label, and sys.exit on failure."""
     print(f"pre-commit: {label}...")
     env = os.environ.copy()
+    # git exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE (and friends) to
+    # hooks. Tests that run `git` in a tempdir would inherit them and act on
+    # this repo instead (e.g. writing core.bare=true into .git/config).
+    for key in list(env):
+        if key in _GIT_LOCATION_ENV or key.startswith("GIT_CONFIG"):
+            del env[key]
     if extra_env:
         env.update(extra_env)
     result = subprocess.run(cmd, env=env)

@@ -1,9 +1,9 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { createPromiseClient } from "@connectrpc/connect";
+import { createClient } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
-// import { Orders } from "./gen/orders/v1/orders_connect"; // after `npm run gen`
+// import { Orders } from "./gen/orders_pb"; // after `npm run gen`
 
 const transport = createGrpcWebTransport({
   // In-cluster: web-ui is in the mesh, so this URL is mTLS-encrypted by Linkerd.
@@ -17,7 +17,7 @@ function App() {
   const [result, setResult] = React.useState<string>("");
 
   async function placeOrder() {
-    // const client = createPromiseClient(Orders, transport);
+    // const client = createClient(Orders, transport);
     // const r = await client.placeOrder({ sku, qty, customerId: "demo" });
     // setResult(`order=${r.orderId} accepted=${r.accepted}`);
     setResult(`(stub) would place order sku=${sku} qty=${qty}`);

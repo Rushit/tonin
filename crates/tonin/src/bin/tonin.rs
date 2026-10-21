@@ -36,7 +36,7 @@ COMMON WORKFLOWS
     cargo run -p greeter               # boots gRPC + MCP locally
 
   Render Helm chart and deploy (built-in, no separate install needed):
-    tonin helm generate              # writes ./chart/ from tonin.toml
+    tonin helm generate --env dev --env prod  # writes ./chart/ from tonin.toml
     tonin helm diff --env prod       # show what would change
     tonin helm upgrade --env prod    # helm upgrade --install
 
@@ -62,7 +62,8 @@ INTROSPECTION FOR CODING AGENTS
 
 ENVIRONMENT
 
-  TONIN_ENV         Default overlay env for Helm rendering (overlaid by --env).
+  TONIN_ENV         Env for `tonin helm <upgrade|template|diff|…>` and
+                    `tonin deploy`/`status` when --env is not given.
   TONIN_TELEMETRY   Set to 'off' to disable OTLP exports in scaffolded svcs.
   OTEL_EXPORTER_OTLP_ENDPOINT   Where scaffolded services send traces.
 
@@ -125,7 +126,7 @@ enum TopCmd {
     /// (`helm generate`) or wraps helm commands with auto-resolved release
     /// name, namespace, and values files.
     ///
-    ///   tonin helm generate            # render chart/ from tonin.toml
+    ///   tonin helm generate --env dev --env prod  # render chart/
     ///   tonin helm upgrade --env prod  # helm upgrade --install
     ///   tonin helm diff    --env prod  # helm diff upgrade (requires helm-diff)
     ///   tonin helm -- lint chart/      # raw passthrough to helm
@@ -142,9 +143,11 @@ enum TopCmd {
     /// Reads environments/<env>/lock.toml, computes which services need updating,
     /// and runs helm upgrade in dependency-wave order. Use --dry-run to preview.
     ///
-    ///   tonin deploy --env staging           # reconcile staging
-    ///   tonin deploy --env staging --dry-run # preview only
-    ///   tonin deploy --env prod --converge   # force all services
+    ///   tonin deploy --env prd                           # reconcile prd
+    ///   tonin deploy --env prd --dry-run                 # print helm commands only
+    ///   tonin deploy --env prd --service identity        # one service
+    ///   tonin deploy --env prd --affected --base v1.2.0  # changed since a ref
+    ///   tonin deploy --env prd --converge                # force all services
     Deploy(commands::deploy::DeployArgs),
 
     /// Build and optionally push Docker images for services.

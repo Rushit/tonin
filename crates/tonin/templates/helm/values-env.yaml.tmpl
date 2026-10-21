@@ -3,23 +3,30 @@
 
 replicaCount: {{ replicas }}
 
+workload:
+  terminationGracePeriodSeconds: {{ termination_grace_period_seconds }}
+  {{ strategy_block }}
+
 image:
   tag: "{{ version }}"
 
 autoscaling:
   enabled: {% if has_autoscale %}true{% else %}false{% endif %}
-  minReplicas: {{ replicas }}
+  minReplicas: {{ min_replicas }}
   maxReplicas: {{ max_replicas }}
-{% if expose %}
+
+mesh: "{{ mesh }}"
+
+mcp:
+  enabled: {% if mcp_enabled %}true{% else %}false{% endif %}
+  mode: {{ mcp_mode }}
+
+outboundProxy:
+  enabled: {% if needs_proxy %}true{% else %}false{% endif %}
+
 ingress:
-  enabled: true
-  host: "{{ expose }}"
-{% endif %}
-# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
-statefulEnv:{% if stateful_env_literals | length == 0 %} {}{% endif %}
-{%- for kv in stateful_env_literals %}
-  {{ kv.0 }}: "{{ kv.1 }}"
-{%- endfor %}
+  enabled: {% if expose %}true{% else %}false{% endif %}
+  host: "{{ expose | default(value="") }}"
 
 # Plain env vars from tonin.toml [env], merged with the [env.{{ env_name }}]
 # overlay and with {env} substituted for this environment.
@@ -28,52 +35,20 @@ env:{% if env_vars | length == 0 %} {}{% endif %}
   {{ kv.0 }}: "{{ kv.1 }}"
 {%- endfor %}
 
-database:
-  enabled: {{ db_enabled }}
-  shared: {% if db_shared %}true{% else %}false{% endif %}
-  engine: "{{ db_engine }}"
-  name: "{{ db_name }}"
-  namespace: "{{ db_namespace }}"
-  port: {{ db_port }}
-  image: "{{ db_image }}"
-  storage: "{{ db_size }}"
-
-cache:
-  enabled: {{ cache_enabled }}
-  shared: {% if cache_shared %}true{% else %}false{% endif %}
-  engine: "{{ cache_engine }}"
-  name: "{{ cache_name }}"
-  namespace: "{{ cache_namespace }}"
-  port: {{ cache_port }}
-  storage: "{{ cache_size }}"
+# Databases and caches of the platform contract, resolved for {{ env_name }}.
+{{ datastores_block }}
 
 secrets:
+  create: {% if secrets_create %}true{% else %}false{% endif %}
   keys:{% if secret_keys | length == 0 %} []{% endif %}
 {%- for key in secret_keys %}
     - {{ key }}
 {%- endfor %}
 
 migrations:
-  enabled: {% if migrations_enabled %}true{% else %}false{% endif %}
-  mode: init-container
-  command:{% if migrations_command | length == 0 %} []{% endif %}
-{%- for c in migrations_command %}
-    - "{{ c }}"
-{%- endfor %}
-  env: {}
+  mode: {{ migrations_mode }}
 
-networkPolicy:
-  enabled: {% if is_cilium %}true{% else %}false{% endif %}
-  port: {{ port }}
-  mcp: {% if mcp_enabled %}true{% else %}false{% endif %}
-  callers:{% if callers | length == 0 %} []{% endif %}
-{%- for c in callers %}
-    - name: {{ c.name }}
-      namespace: {{ c.namespace }}
-{%- endfor %}
-  dependsOn:{% if depends_on | length == 0 %} []{% endif %}
-{%- for d in depends_on %}
-    - name: {{ d.name }}
-      namespace: {{ d.namespace }}
-      port: {{ d.port }}
-{%- endfor %}
+# Pull secrets, placement, disruption budget and CronJobs for {{ env_name }}.
+{{ pod_block }}
+
+{{ network_policy_block }}

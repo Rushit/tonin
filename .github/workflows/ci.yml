@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
   pull_request:
-    branches: [main]
+    branches: [main, next]
   workflow_dispatch:
 
 # Cancel in-flight runs for the same branch + workflow when a new push lands.
@@ -25,6 +25,14 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
+      # Golden chart tests (crates/tonin/tests/golden_charts.rs) fail instead
+      # of skipping when helm or kubeconform is missing. Snapshots are recorded
+      # with these exact versions; bump them together with `just snapshots`.
+      TONIN_REQUIRE_HELM: "1"
+      HELM_VERSION: v4.3.0
+      HELM_SHA256: 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+      KUBECONFORM_VERSION: v0.8.0
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
 
     steps:
       - name: Checkout
@@ -60,6 +68,23 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: just
+
+      - name: Install helm + kubeconform (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/chart-tools" "$HOME/.local/bin"
+          cd "$RUNNER_TEMP/chart-tools"
+          curl -fsSLo helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tar.gz" | sha256sum -c -
+          tar -xzf helm.tar.gz linux-amd64/helm
+          install -m 0755 linux-amd64/helm "$HOME/.local/bin/helm"
+          curl -fsSLo kubeconform.tar.gz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
+          install -m 0755 kubeconform "$HOME/.local/bin/kubeconform"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/helm" version --short
+          "$HOME/.local/bin/kubeconform" -v
 
       - name: cargo fmt --check
         run: just fmt-check
@@ -159,13 +184,15 @@ jobs:
 
       - name: Verify proxy round-trip (Health/Check)
         run: |
-          # Download the standard health.proto to bypass reflection, which is a
-          # bidirectional stream that deadlocks against proxy buffering.
-          curl -sSL https://raw.githubusercontent.com/grpc/grpc/master/src/proto/grpc/health/v1/health.proto -o health.proto
+          # Use the vendored standard health.proto to bypass reflection, which is
+          # a bidirectional stream that deadlocks against proxy buffering. It is
+          # vendored (pinned to grpc v1.84.0) because fetching it from grpc's
+          # `master` branch started returning 404 and broke CI.
           # timeout 30 guards against the proxy accepting the connection but
           # stalling on the upstream forward (would otherwise hang indefinitely).
           timeout 30 grpcurl -plaintext -connect-timeout 10 \
-            -proto health.proto \
+            -import-path .github/fixtures \
+            -proto grpc/health/v1/health.proto \
             -d '{"service":""}' localhost:6565 grpc.health.v1.Health/Check
 
       - name: Pull and smoke-test published latest image
@@ -197,7 +224,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -295,7 +322,7 @@ jobs:
         run: cargo build --profile proxy-release -p tonin-proxy
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm

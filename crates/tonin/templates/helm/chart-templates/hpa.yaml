@@ -1,4 +1,5 @@
-{{- if .Values.autoscaling.enabled }}
+{{- /* Deployments only: a StatefulSet keeps a fixed replica count. */}}
+{{- if and .Values.autoscaling.enabled (eq .Values.workload.kind "Deployment") }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

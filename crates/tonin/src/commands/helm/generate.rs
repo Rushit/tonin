@@ -4,10 +4,32 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use include_dir::{Dir, include_dir};
+use std::collections::BTreeMap;
 use tera::Tera;
-use tonin_plugin::{McpMode, MigrationRunOn, Plan, SecuritySection, ServiceKind};
+
+use serde::Serialize;
+use tonin_plugin::{
+    Caller, CallerSource, DatastoreEnv, DependencyRef, EgressSpec, McpMode, MigrationMode, Plan,
+    ResourcesSpec, SecuritySection, ServiceKind, VolumeSource, VolumeSpec, WorkloadSpec,
+};
 
 static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
+
+/// Chart files (relative to the chart directory) that earlier tonin versions
+/// generated and this version no longer ships. `generate` deletes them so a
+/// stale template never keeps rendering; `helm check` reports them as drift.
+///
+/// Only ever list paths tonin itself wrote: everything else under `chart/`
+/// (hand-written templates, extra values files) belongs to the user and is
+/// never touched.
+pub(crate) const OBSOLETE_FILES: &[&str] = &[
+    // 0.15: databases and caches are platform-contract references; tonin no
+    // longer renders Postgres/Redis StatefulSets and Services.
+    "templates/db-statefulset.yaml",
+    "templates/db-service.yaml",
+    "templates/cache-statefulset.yaml",
+    "templates/cache-service.yaml",
+];
 
 /// Implemented by each optional `tonin.toml` section that contributes keys to the Tera context.
 /// Adding a new section means a new `impl` here — `build_context` stays stable.
@@ -99,9 +121,6 @@ fn snake_to_camel(key: &str) -> String {
     first + &rest
 }
 
-/// Default environments rendered unless `--envs` overrides.
-const DEFAULT_ENVS: &[&str] = &["dev", "staging", "prod"];
-
 #[derive(clap::Args)]
 pub struct GenerateArgs {
     /// Path to the service directory containing `tonin.toml`.
@@ -114,9 +133,9 @@ pub struct GenerateArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Environments to generate `values-<env>.yaml` for.
-    /// Defaults to: dev, staging, prod.
-    #[arg(long = "env", value_name = "ENV")]
+    /// Environment to generate `values-<env>.yaml` for. Repeat for each
+    /// environment (`--env dev --env prd`). Required: there is no default set.
+    #[arg(long = "env", value_name = "ENV", required = true)]
     pub envs: Vec<String>,
 }
 
@@ -124,8 +143,19 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     let service_dir = resolve_service_dir(args.path.as_deref())?;
     let toml_path = service_dir.join("tonin.toml");
 
-    let base_plan =
-        Plan::load(&toml_path).with_context(|| format!("loading {}", toml_path.display()))?;
+    anyhow::ensure!(
+        !args.envs.is_empty(),
+        "no environment given: pass --env <ENV> once per environment (e.g. --env dev --env prd)"
+    );
+
+    // Chart.yaml and the base values.yaml only use env-independent fields
+    // (see `base_context`), so any env's plan yields the same output.
+    let base_plan = Plan::load_with_env(&toml_path, &args.envs[0])
+        .with_context(|| format!("loading {}", toml_path.display()))?;
+
+    for warning in unrendered_overlays(&toml_path, &args.envs)? {
+        eprintln!("warning: {warning}");
+    }
 
     let chart_dir = args.out.unwrap_or_else(|| service_dir.join("chart"));
     let templates_dir = chart_dir.join("templates");
@@ -133,20 +163,14 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         .with_context(|| format!("creating {}", templates_dir.display()))?;
 
     // --- Chart.yaml --------------------------------------------------------
-    let ctx = build_context(&base_plan);
+    let ctx = base_context(&base_plan);
     render_tmpl("Chart.yaml.tmpl", &ctx, &chart_dir.join("Chart.yaml"))?;
 
     // --- values.yaml (base) ------------------------------------------------
     render_tmpl("values.yaml.tmpl", &ctx, &chart_dir.join("values.yaml"))?;
 
     // --- values-<env>.yaml -------------------------------------------------
-    let env_names: Vec<String> = if args.envs.is_empty() {
-        DEFAULT_ENVS.iter().map(|s| s.to_string()).collect()
-    } else {
-        args.envs
-    };
-
-    for env_name in &env_names {
+    for env_name in &args.envs {
         let env_plan = Plan::load_with_env(&toml_path, env_name)
             .with_context(|| format!("loading plan for env '{env_name}'"))?;
         let mut env_ctx = build_context(&env_plan);
@@ -161,8 +185,38 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     // --- templates/ (static Go template files — copy verbatim) -------------
     copy_static_templates(&templates_dir)?;
 
+    // --- files earlier tonin versions shipped -------------------------------
+    for removed in remove_obsolete(&chart_dir, OBSOLETE_FILES)? {
+        println!("removed obsolete {}", removed.display());
+    }
+
     println!("chart generated at {}", chart_dir.display());
     Ok(())
+}
+
+/// Overlays naming an environment that is not being generated: most likely
+/// a misspelt or stale environment name, whose settings would never apply.
+fn unrendered_overlays(toml_path: &Path, envs: &[String]) -> Result<Vec<String>> {
+    let src = std::fs::read_to_string(toml_path)
+        .with_context(|| format!("reading {}", toml_path.display()))?;
+    let overlays = tonin_plugin::schema::overlay_envs(&src)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", toml_path.display()))?;
+    Ok(overlays
+        .into_iter()
+        .filter(|o| !envs.contains(&o.env))
+        .map(|o| {
+            format!(
+                "{}:{}: {} names environment {:?}, which is not being generated ({}); \
+                 it never applies unless you pass --env {}",
+                toml_path.display(),
+                o.line,
+                o.location,
+                o.env,
+                envs.join(", "),
+                o.env
+            )
+        })
+        .collect())
 }
 
 fn build_context(plan: &Plan) -> tera::Context {
@@ -171,26 +225,26 @@ fn build_context(plan: &Plan) -> tera::Context {
     ctx.insert("version", &plan.version);
     ctx.insert("image_repository", &image_repository(&plan.image));
     ctx.insert("replicas", &plan.replicas);
+    let autoscale = plan.workload.autoscale;
+    ctx.insert(
+        "min_replicas",
+        &autoscale.map_or(plan.replicas, |a| a.min_replicas),
+    );
     ctx.insert("max_replicas", &plan.max_replicas);
-    ctx.insert("has_autoscale", &(plan.max_replicas > plan.replicas));
+    ctx.insert("has_autoscale", &autoscale.is_some());
     ctx.insert("mcp_enabled", &(plan.mcp_mode != McpMode::None));
     ctx.insert("mcp_mode", &plan.mcp_mode.as_str());
     ctx.insert("needs_proxy", &plan.needs_outbound_proxy);
     ctx.insert("proxy_port", &6565_u16);
-    ctx.insert("cpu", &plan.cpu);
-    ctx.insert("memory", &plan.memory);
+    ctx.insert(
+        "resources_block",
+        &resources_block(&plan.workload.resources),
+    );
+    workload_context(&plan.workload, &mut ctx);
     ctx.insert("namespace", &plan.namespace);
     ctx.insert("mesh", plan.mesh.as_str());
     ctx.insert("is_cilium", &(plan.mesh.as_str() == "cilium"));
     ctx.insert("expose", &plan.expose);
-
-    // Mesh-derived pod annotations. Generated (not hand-edited) so they survive
-    // `tonin helm generate`. Cilium gets transparent (WireGuard) encryption.
-    let mut pod_annotations: Vec<(String, String)> = Vec::new();
-    if plan.mesh.as_str() == "cilium" {
-        pod_annotations.push(("io.cilium/encryption".into(), "enabled".into()));
-    }
-    ctx.insert("pod_annotations", &pod_annotations);
 
     // Service protocol. `backend` → gRPC; `http` → HTTP; `web` → frontend.
     // A gRPC backend can ALSO expose an HTTP port via `plan.http_port`.
@@ -222,63 +276,13 @@ fn build_context(plan: &Plan) -> tera::Context {
         }
     }
 
-    // ---- Database. Always insert every key (with defaults) so the Tera
-    //      templates never hit an undefined variable when [database] is absent.
-    let db_enabled = plan
-        .database
-        .as_ref()
-        .is_some_and(|d| d.engine.as_str() != "none");
-    ctx.insert("db_enabled", &db_enabled);
-    match &plan.database {
-        Some(db) => {
-            ctx.insert("db_engine", db.engine.as_str());
-            ctx.insert("db_shared", &db.shared);
-            ctx.insert("db_name", &db.name);
-            ctx.insert("db_namespace", &db.namespace);
-            ctx.insert("db_port", &db.port());
-            ctx.insert("db_image", &db.image());
-            ctx.insert("db_size", &db.size);
-        }
-        None => {
-            ctx.insert("db_engine", "none");
-            ctx.insert("db_shared", &false);
-            ctx.insert("db_name", "");
-            ctx.insert("db_namespace", "");
-            ctx.insert("db_port", &5432_u32);
-            ctx.insert("db_image", "");
-            ctx.insert("db_size", "2Gi");
-        }
-    }
-
-    // ---- Cache. Same always-insert discipline.
-    let cache_enabled = plan
-        .cache
-        .as_ref()
-        .is_some_and(|c| c.engine.as_str() != "none");
-    ctx.insert("cache_enabled", &cache_enabled);
-    match &plan.cache {
-        Some(c) => {
-            ctx.insert("cache_engine", c.engine.as_str());
-            ctx.insert("cache_shared", &c.shared);
-            ctx.insert("cache_name", &c.name);
-            ctx.insert("cache_namespace", &c.namespace);
-            ctx.insert("cache_port", &c.port());
-            ctx.insert("cache_size", &c.size);
-        }
-        None => {
-            ctx.insert("cache_engine", "none");
-            ctx.insert("cache_shared", &false);
-            ctx.insert("cache_name", "");
-            ctx.insert("cache_namespace", "");
-            ctx.insert("cache_port", &6379_u32);
-            ctx.insert("cache_size", "1Gi");
-        }
-    }
-
-    // ---- Stateful env + secret keys. `emitted_env` already resolves
-    //      DATABASE_URL / REDIS_URL (literals) and the from-secret key list
-    //      (DATABASE_PASSWORD + declared [secrets].required) for this env.
-    ctx.insert("stateful_env_literals", &plan.emitted_env.literals);
+    // ---- Databases and caches: platform-contract references, resolved for
+    //      this env (Secret key or dev url → env var, CA mount, egress).
+    ctx.insert(
+        "datastores_block",
+        &datastores_block(&plan.emitted_env.datastores),
+    );
+    // ---- Keys of the service's own Secret ([secrets].required).
     ctx.insert("secret_keys", &plan.emitted_env.from_secret);
 
     // ---- Plain env vars from [env] (+ [env.<env>] overlay), resolved for
@@ -286,15 +290,13 @@ fn build_context(plan: &Plan) -> tera::Context {
     //      deployment template already injects into the server container.
     ctx.insert("env_vars", &plan.env_vars);
 
-    // ---- Migrations. `enabled` when tonin.toml asks for a managed migration
-    //      step (run_on = init-container). The chart renders either an
-    //      initContainer (default, dev / owned DB) or a pre-upgrade hook Job
-    //      (prod / managed DB) selected by `migrations.mode` at deploy time.
-    let migrations_enabled = plan
+    // ---- Migrations: `[migrations] mode` (+ `[migrations.<env>]`) selects
+    //      the initContainer, the pre-install/pre-upgrade hook Job, or nothing.
+    let migrations_mode = plan
         .migrations
         .as_ref()
-        .is_some_and(|m| matches!(m.run_on, MigrationRunOn::InitContainer));
-    ctx.insert("migrations_enabled", &migrations_enabled);
+        .map_or(MigrationMode::None, |m| m.mode);
+    ctx.insert("migrations_mode", migrations_mode.as_str());
     let migrations_command: Vec<String> = plan
         .migrations
         .as_ref()
@@ -302,15 +304,322 @@ fn build_context(plan: &Plan) -> tera::Context {
         .unwrap_or_default();
     ctx.insert("migrations_command", &migrations_command);
 
-    // ---- CiliumNetworkPolicy allowlist (callers) + egress (depends_on).
-    ctx.insert("callers", &plan.callers);
-    ctx.insert("depends_on", &plan.depends_on);
+    // ---- CiliumNetworkPolicy: ingress ([callers]) and egress
+    //      ([depends_on], [egress]); datastore egress comes from `datastores`.
+    ctx.insert(
+        "network_policy_block",
+        &network_policy_block(&NetworkPolicyValues::for_plan(plan)),
+    );
 
     ctx.insert("env_name", &plan.selected_env);
 
     plan.security.as_ref().contribute(&mut ctx);
+    // ---- Pull secrets, placement, PDB, ServiceAccount, CronJobs, secrets.create.
+    super::pod_values::contribute(plan, &mut ctx);
 
     ctx
+}
+
+/// Context for `Chart.yaml` and the base `values.yaml`: env-independent
+/// fields of `plan` only. Every key whose value depends on the environment
+/// (an `[<section>.<env>]` overlay or an `{env}` placeholder) gets a neutral
+/// default here; `values-<env>.yaml` carries the real value. This keeps the
+/// base free of one environment's settings (e.g. dev's shared-instance URLs).
+fn base_context(plan: &Plan) -> tera::Context {
+    let mut ctx = build_context(plan);
+    // [deploy] (+ overlays): replicas, autoscaling, mesh, MCP, ingress.
+    ctx.insert("replicas", &1_u32);
+    ctx.insert("min_replicas", &1_u32);
+    ctx.insert("max_replicas", &1_u32);
+    // [deploy] strategy / termination_grace_period_seconds (+ overlays).
+    ctx.insert("strategy_block", "strategy: {}");
+    ctx.insert("termination_grace_period_seconds", &0_u32);
+    ctx.insert("has_autoscale", &false);
+    ctx.insert("namespace", "");
+    ctx.insert("mesh", "none");
+    ctx.insert("is_cilium", &false);
+    ctx.insert("expose", &Option::<String>::None);
+    ctx.insert("mcp_enabled", &false);
+    ctx.insert("mcp_mode", McpMode::None.as_str());
+    // Derived from [depends_on].
+    ctx.insert("needs_proxy", &false);
+    // [database] / [cache] / [secrets] / [env] / [migrations] mode /
+    // [callers] / [depends_on].
+    ctx.insert("datastores_block", &datastores_block(&[]));
+    ctx.insert("secret_keys", &Vec::<String>::new());
+    ctx.insert("env_vars", &Vec::<(String, String)>::new());
+    ctx.insert("migrations_mode", MigrationMode::None.as_str());
+    ctx.insert(
+        "network_policy_block",
+        &network_policy_block(&NetworkPolicyValues {
+            enabled: false,
+            port: plan.port,
+            mcp: false,
+            callers: Vec::new(),
+            depends_on: Vec::new(),
+            egress: EgressSpec::default(),
+        }),
+    );
+    ctx.insert("env_name", "");
+    ctx
+}
+
+/// Workload keys: kind, StatefulSet settings, strategy, command/args,
+/// probes, volumes and extra ports.
+fn workload_context(w: &WorkloadSpec, ctx: &mut tera::Context) {
+    ctx.insert("workload_kind", w.kind.as_str());
+    ctx.insert(
+        "pod_management_policy",
+        w.pod_management_policy.as_deref().unwrap_or(""),
+    );
+    ctx.insert("strategy_block", &strategy_block(w));
+    ctx.insert(
+        "termination_grace_period_seconds",
+        &w.termination_grace_period_seconds.unwrap_or(0),
+    );
+    ctx.insert("command_json", &json_list(&w.command));
+    ctx.insert("args_json", &json_list(&w.args));
+    ctx.insert("liveness_path", &w.probes.liveness_path);
+    ctx.insert("readiness_path", &w.probes.readiness_path);
+    ctx.insert("startup_enabled", &w.probes.startup.is_some());
+    let startup = w
+        .probes
+        .startup
+        .clone()
+        .unwrap_or(tonin_plugin::StartupProbeSpec {
+            path: w.probes.liveness_path.clone(),
+            period_seconds: 10,
+            failure_threshold: 30,
+        });
+    ctx.insert("startup_path", &startup.path);
+    ctx.insert("startup_period_seconds", &startup.period_seconds);
+    ctx.insert("startup_failure_threshold", &startup.failure_threshold);
+    ctx.insert("volumes_block", &volumes_block(&w.volumes));
+    ctx.insert(
+        "extra_ports_block",
+        &yaml_list_block("extraPorts", &w.ports),
+    );
+    ctx.insert(
+        "extra_services_block",
+        &yaml_list_block("extraServices", &w.extra_services()),
+    );
+}
+
+/// A JSON array (valid YAML flow sequence) of strings.
+fn json_list(items: &[String]) -> String {
+    serde_json::to_string(items).unwrap_or_else(|_| "[]".into())
+}
+
+/// `key: []` or `key:` followed by the list as indented YAML.
+fn yaml_list_block<T: serde::Serialize>(key: &str, items: &[T]) -> String {
+    if items.is_empty() {
+        return format!("{key}: []");
+    }
+    let yaml = serde_yaml::to_string(items).unwrap_or_default();
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+    let body: Vec<String> = yaml.lines().map(|l| format!("  {l}")).collect();
+    format!("{key}:\n{}", body.join("\n"))
+}
+
+/// `strategy:` values key, in Kubernetes shape (`{}` = the controller's default).
+fn strategy_block(w: &WorkloadSpec) -> String {
+    match &w.strategy {
+        None => "strategy: {}".into(),
+        Some(s) => {
+            let yaml = serde_yaml::to_string(s).unwrap_or_default();
+            let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+            let body: Vec<String> = yaml.lines().map(|l| format!("    {l}")).collect();
+            format!("strategy:\n{}", body.join("\n"))
+        }
+    }
+}
+
+/// The container `resources:` values key.
+fn resources_block(r: &ResourcesSpec) -> String {
+    let mut out = String::from("resources:");
+    for (name, list) in [("requests", &r.requests), ("limits", &r.limits)] {
+        if list.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n  {name}:"));
+        for (k, v) in list {
+            out.push_str(&format!("\n    {k}: \"{v}\""));
+        }
+    }
+    if r.requests.is_empty() && r.limits.is_empty() {
+        out.push_str(" {}");
+    }
+    out
+}
+
+/// The `volumes:` values key ([[volumes]]): `type` selects the pod volume
+/// (`empty-dir`) or the StatefulSet claim template (`pvc`).
+fn volumes_block(volumes: &[VolumeSpec]) -> String {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Entry<'a> {
+        name: &'a str,
+        #[serde(rename = "type")]
+        kind: &'a str,
+        mount_path: &'a str,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        read_only: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        empty_dir: Option<std::collections::BTreeMap<&'a str, &'a str>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        storage_class: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        access_modes: Option<&'a [String]>,
+    }
+    let entries: Vec<Entry<'_>> = volumes
+        .iter()
+        .map(|v| match &v.source {
+            VolumeSource::EmptyDir { size_limit, medium } => {
+                let mut ed = std::collections::BTreeMap::new();
+                if let Some(m) = medium {
+                    ed.insert("medium", m.as_str());
+                }
+                if let Some(l) = size_limit {
+                    ed.insert("sizeLimit", l.as_str());
+                }
+                Entry {
+                    name: &v.name,
+                    kind: "empty-dir",
+                    mount_path: &v.mount_path,
+                    read_only: v.read_only,
+                    empty_dir: Some(ed),
+                    size: None,
+                    storage_class: None,
+                    access_modes: None,
+                }
+            }
+            VolumeSource::Pvc {
+                size,
+                storage_class,
+                access_modes,
+            } => Entry {
+                name: &v.name,
+                kind: "pvc",
+                mount_path: &v.mount_path,
+                read_only: v.read_only,
+                empty_dir: None,
+                size: Some(size),
+                storage_class: storage_class.as_deref(),
+                access_modes: Some(access_modes),
+            },
+        })
+        .collect();
+    yaml_list_block("volumes", &entries)
+}
+
+/// The `datastores:` values key: `datastores: []`, or the resolved list as
+/// YAML (keys in the order the chart templates read them).
+fn datastores_block(datastores: &[DatastoreEnv]) -> String {
+    if datastores.is_empty() {
+        return "datastores: []".into();
+    }
+    let yaml = serde_yaml::to_string(datastores).unwrap_or_default();
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+    let body: Vec<String> = yaml.lines().map(|l| format!("  {l}")).collect();
+    format!("datastores:\n{}", body.join("\n"))
+}
+
+/// The `networkPolicy:` values key, read by `networkpolicy.yaml`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NetworkPolicyValues {
+    enabled: bool,
+    /// Main service port (part of every caller's default port set).
+    port: u32,
+    /// MCP port in the default port set.
+    mcp: bool,
+    callers: Vec<CallerValues>,
+    depends_on: Vec<DependencyValues>,
+    egress: EgressSpec,
+}
+
+/// One ingress rule. A service caller is matched by
+/// `service.identity: <name>.<namespace>`; a caller with `labels` by those
+/// pod labels (in `namespace`, or the release namespace when absent).
+/// Empty `ports` means the default set (main + HTTP + MCP port).
+#[derive(Serialize)]
+struct CallerValues {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    labels: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ports: Vec<u32>,
+}
+
+impl From<&Caller> for CallerValues {
+    fn from(c: &Caller) -> Self {
+        match &c.source {
+            CallerSource::Service(s) => Self {
+                name: s.name.clone(),
+                namespace: Some(s.namespace.clone()),
+                labels: BTreeMap::new(),
+                ports: c.ports.clone(),
+            },
+            CallerSource::Pods { namespace, labels } => Self {
+                name: c.name.clone(),
+                namespace: namespace.clone(),
+                labels: labels.clone(),
+                ports: c.ports.clone(),
+            },
+        }
+    }
+}
+
+/// One egress rule to another tonin service (`service.identity`).
+#[derive(Serialize)]
+struct DependencyValues {
+    name: String,
+    namespace: String,
+    ports: Vec<u32>,
+}
+
+impl From<&DependencyRef> for DependencyValues {
+    fn from(d: &DependencyRef) -> Self {
+        Self {
+            name: d.name.clone(),
+            namespace: d.namespace.clone(),
+            ports: d.ports.clone(),
+        }
+    }
+}
+
+impl NetworkPolicyValues {
+    fn for_plan(plan: &Plan) -> Self {
+        Self {
+            enabled: plan.mesh.as_str() == "cilium",
+            port: plan.port,
+            mcp: plan.mcp_mode != McpMode::None,
+            callers: plan.callers.iter().map(CallerValues::from).collect(),
+            depends_on: plan.depends_on.iter().map(DependencyValues::from).collect(),
+            egress: plan.egress.clone(),
+        }
+    }
+}
+
+/// The `networkPolicy:` values key as YAML.
+fn network_policy_block(values: &NetworkPolicyValues) -> String {
+    #[derive(Serialize)]
+    struct Wrapper<'a> {
+        #[serde(rename = "networkPolicy")]
+        network_policy: &'a NetworkPolicyValues,
+    }
+    let yaml = serde_yaml::to_string(&Wrapper {
+        network_policy: values,
+    })
+    .unwrap_or_default();
+    yaml.strip_prefix("---\n")
+        .unwrap_or(&yaml)
+        .trim_end()
+        .to_string()
 }
 
 fn render_tmpl(tmpl_name: &str, ctx: &tera::Context, out_path: &Path) -> Result<()> {
@@ -358,6 +667,26 @@ fn copy_static_templates(out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The files on `obsolete` (paths relative to `chart_dir`) that exist there.
+pub(crate) fn obsolete_present(chart_dir: &Path, obsolete: &[&str]) -> Vec<PathBuf> {
+    obsolete
+        .iter()
+        .map(PathBuf::from)
+        .filter(|rel| chart_dir.join(rel).is_file())
+        .collect()
+}
+
+/// Delete the files on `obsolete` from `chart_dir`; returns the removed paths
+/// (relative to `chart_dir`). Files not on the list are never touched.
+fn remove_obsolete(chart_dir: &Path, obsolete: &[&str]) -> Result<Vec<PathBuf>> {
+    let present = obsolete_present(chart_dir, obsolete);
+    for rel in &present {
+        let path = chart_dir.join(rel);
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(present)
+}
+
 /// Strip the `:tag` suffix from a full image string to get the repository.
 fn image_repository(image: &str) -> &str {
     image.split(':').next().unwrap_or(image)
@@ -377,9 +706,9 @@ pub fn resolve_service_dir(explicit: Option<&Path>) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// A `tonin.toml` exercising every stateful surface: owned DB + cache in
-    /// prod, a shared DB in dev, app secrets, callers (with a dev overlay),
-    /// migrations, and the cilium mesh.
+    /// A `tonin.toml` exercising every stateful surface: contract DB + cache
+    /// in prod, literal dev URLs, app secrets, callers (with a dev overlay),
+    /// migrations (a Job in prod), and the cilium mesh.
     const RICH_TOML: &str = r#"
 schema = "v1"
 
@@ -405,23 +734,24 @@ memory = "128Mi"
 engine = "postgres"
 
 [database.dev]
-shared = true
-url    = "postgresql://u:p@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+url = "postgresql://u:p@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
 
 [cache]
 engine = "redis"
 
 [cache.dev]
-shared = true
-url    = "redis://redis.shared-dev.svc.cluster.local:6379"
+url = "redis://redis.shared-dev.svc.cluster.local:6379"
 
 [secrets]
 required = ["JWT_SIGNING_KEY"]
 
 [migrations]
-tool   = "sqlx"
-dir    = "migrations/"
-run_on = "init-container"
+tool = "sqlx"
+dir  = "migrations/"
+mode = "init-container"
+
+[migrations.prod]
+mode = "job"
 
 [callers]
 orders-service = "myapp"
@@ -436,6 +766,18 @@ orders-service = "myapp-dev"
 
     fn read(p: &Path) -> String {
         std::fs::read_to_string(p).unwrap()
+    }
+
+    #[test]
+    fn overlays_for_environments_not_generated_are_reported() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let toml = svc.path().join("tonin.toml");
+        let all = unrendered_overlays(&toml, &["dev".into(), "prod".into()]).unwrap();
+        assert!(all.is_empty(), "{all:?}");
+        let warnings = unrendered_overlays(&toml, &["dev".into(), "prd".into()]).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("[migrations.prod]"), "{warnings:?}");
     }
 
     #[test]
@@ -456,17 +798,18 @@ orders-service = "myapp-dev"
             "deployment.yaml",
             "service.yaml",
             "hpa.yaml",
-            "db-statefulset.yaml",
-            "db-service.yaml",
-            "cache-statefulset.yaml",
-            "cache-service.yaml",
             "secret.yaml",
             "networkpolicy.yaml",
+            "migration-job.yaml",
         ] {
             assert!(
                 out.join("templates").join(f).exists(),
                 "missing template {f}"
             );
+        }
+        // Databases and caches are platform-contract references: nothing renders them.
+        for f in OBSOLETE_FILES {
+            assert!(!out.join(f).exists(), "{f} must not be generated");
         }
         assert!(out.join("values.yaml").exists());
         assert!(out.join("values-dev.yaml").exists());
@@ -474,7 +817,137 @@ orders-service = "myapp-dev"
     }
 
     #[test]
-    fn prod_values_own_the_database_and_carry_db_password_secret() {
+    fn every_template_renders_the_image_through_the_helper() {
+        let dir = TEMPLATES.get_dir("chart-templates").unwrap();
+        for file in dir.files() {
+            let name = file.path().file_name().unwrap().to_string_lossy();
+            if name == "_helpers.tpl" {
+                continue;
+            }
+            let src = file.contents_utf8().unwrap();
+            assert!(
+                !src.contains(".Values.image.repository"),
+                "{name} builds the image reference itself; use `include \"service.image\" .`"
+            );
+        }
+        let helpers = dir
+            .files()
+            .find(|f| f.path().ends_with("_helpers.tpl"))
+            .unwrap()
+            .contents_utf8()
+            .unwrap();
+        assert!(helpers.contains(r#"define "service.image""#));
+        assert!(helpers.contains(".Values.image.digest"));
+    }
+
+    #[test]
+    fn obsolete_list_never_names_a_shipped_file() {
+        let shipped: Vec<String> = TEMPLATES
+            .get_dir("chart-templates")
+            .unwrap()
+            .files()
+            .map(|f| {
+                format!(
+                    "templates/{}",
+                    f.path().file_name().unwrap().to_string_lossy()
+                )
+            })
+            .chain(["Chart.yaml".to_string(), "values.yaml".to_string()])
+            .collect();
+        for obsolete in OBSOLETE_FILES {
+            assert!(
+                !shipped.iter().any(|s| s == obsolete),
+                "{obsolete} is still generated"
+            );
+            assert!(
+                !obsolete.starts_with("values-"),
+                "values-<env>.yaml files may be user-owned"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_obsolete_deletes_only_listed_tonin_files() {
+        let chart = tempfile::tempdir().unwrap();
+        let templates = chart.path().join("templates");
+        std::fs::create_dir_all(&templates).unwrap();
+        for f in [
+            "db-statefulset.yaml",
+            "custom-cronjob.yaml",
+            "deployment.yaml",
+        ] {
+            std::fs::write(templates.join(f), "kind: X\n").unwrap();
+        }
+
+        let removed = remove_obsolete(
+            chart.path(),
+            &[
+                "templates/db-statefulset.yaml",
+                "templates/cache-service.yaml",
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            removed,
+            vec![PathBuf::from("templates/db-statefulset.yaml")]
+        );
+        assert!(!templates.join("db-statefulset.yaml").exists());
+        // Hand-written and still-shipped files survive.
+        assert!(templates.join("custom-cronjob.yaml").exists());
+        assert!(templates.join("deployment.yaml").exists());
+    }
+
+    #[test]
+    fn base_values_are_identical_for_every_env() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let render = |env: &str| {
+            let out = svc.path().join(format!("chart-{env}"));
+            run(GenerateArgs {
+                path: Some(svc.path().to_path_buf()),
+                out: Some(out.clone()),
+                envs: vec![env.into()],
+            })
+            .unwrap();
+            (
+                read(&out.join("values.yaml")),
+                read(&out.join("Chart.yaml")),
+            )
+        };
+        let (dev, dev_chart) = render("dev");
+        let (prod, prod_chart) = render("prod");
+        assert_eq!(dev, prod, "base values.yaml must not depend on --env");
+        assert_eq!(dev_chart, prod_chart);
+
+        // Nothing from any overlay or env-resolved section leaks into the base.
+        for leaked in [
+            "shared-dev",
+            "myapp-dev",
+            "orders-service",
+            "identity-pg-app",
+            "cnpg.io/cluster",
+            "JWT_SIGNING_KEY",
+            "io.cilium",
+        ] {
+            assert!(!dev.contains(leaked), "base leaks {leaked:?}:\n{dev}");
+        }
+        assert!(dev.contains("replicaCount: 1"), "{dev}");
+        assert!(dev.contains("mesh: \"none\""), "{dev}");
+        assert!(dev.contains("\ndatastores: []"), "{dev}");
+        assert!(dev.contains("  mode: none"), "{dev}");
+        assert!(dev.contains("networkPolicy:\n  enabled: false"), "{dev}");
+
+        // values-<env>.yaml carries the env-specific settings instead.
+        let prod_env = read(&svc.path().join("chart-prod/values-prod.yaml"));
+        assert!(prod_env.contains("replicaCount: 2"), "{prod_env}");
+        assert!(prod_env.contains("mesh: \"cilium\""), "{prod_env}");
+        assert!(prod_env.contains("mode: in-process"), "{prod_env}");
+        assert!(prod_env.contains("name: identity-pg-app"), "{prod_env}");
+    }
+
+    #[test]
+    fn prod_values_reference_the_platform_contract() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);
         let out = svc.path().join("chart");
@@ -486,19 +959,27 @@ orders-service = "myapp-dev"
         .unwrap();
 
         let prod = read(&out.join("values-prod.yaml"));
-        // prod has no [database.prod] overlay -> owned (shared:false).
-        assert!(prod.contains("shared: false"), "prod db should be owned");
-        assert!(prod.contains("name: \"identity-db\""));
-        // Owned DB means DATABASE_PASSWORD is a required secret key.
-        assert!(prod.contains("DATABASE_PASSWORD"));
-        assert!(prod.contains("JWT_SIGNING_KEY"));
+        // DATABASE_URL / REDIS_URL come from the contract Secrets' `uri` key.
+        for expected in [
+            "- name: database\n    env: DATABASE_URL\n    secret:\n      env: DATABASE_URL\n      name: identity-pg-app\n      key: uri",
+            "- name: cache\n    env: REDIS_URL\n    secret:\n      env: REDIS_URL\n      name: identity-cache\n      key: uri",
+            "cnpg.io/cluster: identity-pg",
+            "app.kubernetes.io/name: identity-cache",
+            "port: 5432",
+            "port: 6379",
+        ] {
+            assert!(prod.contains(expected), "missing {expected:?}:\n{prod}");
+        }
+        // tonin no longer adds a password key to the service's own Secret.
+        assert!(!prod.contains("DATABASE_PASSWORD"), "{prod}");
+        assert!(prod.contains("- JWT_SIGNING_KEY"));
         // Cilium policy allowlist resolves the base caller namespace.
         assert!(prod.contains("name: orders-service"));
         assert!(prod.contains("namespace: myapp"));
     }
 
     #[test]
-    fn dev_values_use_shared_instances_without_db_password() {
+    fn dev_values_use_literal_urls_instead_of_contract_secrets() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);
         let out = svc.path().join("chart");
@@ -510,40 +991,73 @@ orders-service = "myapp-dev"
         .unwrap();
 
         let dev = read(&out.join("values-dev.yaml"));
-        assert!(dev.contains("shared: true"), "dev db should be shared");
-        // Shared DB (url override) emits no DATABASE_PASSWORD secret key.
         assert!(
-            !dev.contains("DATABASE_PASSWORD"),
-            "shared dev db must not require DATABASE_PASSWORD"
+            dev.contains(
+                "env: DATABASE_URL\n    value: postgresql://u:p@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+            ),
+            "{dev}"
         );
-        // The shared URL is injected verbatim as stateful env.
-        assert!(dev.contains("postgres.shared-dev.svc.cluster.local"));
+        assert!(
+            dev.contains("value: redis://redis.shared-dev.svc.cluster.local:6379"),
+            "{dev}"
+        );
+        assert!(!dev.contains("identity-pg-app"), "{dev}");
+        assert!(!dev.contains("DATABASE_PASSWORD"), "{dev}");
         // Caller dev overlay applies.
         assert!(dev.contains("namespace: myapp-dev"));
     }
 
     #[test]
-    fn migrations_default_to_init_container_mode_and_ship_job_template() {
+    fn migrations_mode_is_per_env_and_ships_job_template() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);
         let out = svc.path().join("chart");
         run(GenerateArgs {
             path: Some(svc.path().to_path_buf()),
             out: Some(out.clone()),
-            envs: vec!["prod".into()],
+            envs: vec!["dev".into(), "prod".into()],
         })
         .unwrap();
 
         let values = read(&out.join("values.yaml"));
-        assert!(values.contains("enabled: true")); // [migrations] present
-        assert!(values.contains("mode: init-container")); // default mode
+        assert!(values.contains("  mode: none"), "{values}"); // env-neutral base
+        assert!(values.contains("- \"sqlx\""), "{values}");
         assert!(values.contains("env: {}")); // migration-only env hatch
-        // Both the initContainer (deployment) and the Job hook template ship;
-        // mode selects which renders at deploy time.
-        assert!(out.join("templates").join("migration-job.yaml").exists());
+        let dev = read(&out.join("values-dev.yaml"));
+        assert!(dev.contains("migrations:\n  mode: init-container"), "{dev}");
+        let prod = read(&out.join("values-prod.yaml"));
+        assert!(prod.contains("migrations:\n  mode: job"), "{prod}");
+
         let job = read(&out.join("templates").join("migration-job.yaml"));
         assert!(job.contains("helm.sh/hook\": pre-install,pre-upgrade"));
         assert!(job.contains(r#"eq .Values.migrations.mode "job""#));
+        // The Job's pods are not selected by the Service (`app`), but carry
+        // service.identity so the service's network policy applies.
+        assert!(job.contains("app.kubernetes.io/component: migrate"));
+        assert!(job.contains("service.identity:"));
+        // Its network policy is a hook that runs before the Job.
+        assert!(job.contains("\"helm.sh/hook-weight\": \"-5\""), "{job}");
+    }
+
+    #[test]
+    fn generate_removes_the_db_and_cache_templates_of_earlier_versions() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let out = svc.path().join("chart");
+        let templates = out.join("templates");
+        std::fs::create_dir_all(&templates).unwrap();
+        for f in OBSOLETE_FILES {
+            std::fs::write(out.join(f), "kind: StatefulSet\n").unwrap();
+        }
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+        for f in OBSOLETE_FILES {
+            assert!(!out.join(f).exists(), "{f} survived regeneration");
+        }
     }
 
     #[test]
@@ -564,15 +1078,19 @@ orders-service = "myapp-dev"
         assert!(helpers.contains(".Chart.Name"));
         assert!(!helpers.contains(".Release.Name"));
 
-        // Secret-sourced env (DATABASE_PASSWORD) must precede the statefulEnv
-        // literals (DATABASE_URL) so k8s can expand $(DATABASE_PASSWORD).
+        // Secret-sourced env precedes the datastore env and the plain env, so
+        // their values can use $(VAR) expansion.
         let deployment = read(&out.join("templates").join("deployment.yaml"));
         let secrets_at = deployment.find(".Values.secrets.keys").unwrap();
-        let stateful_at = deployment.find(".Values.statefulEnv").unwrap();
-        assert!(
-            secrets_at < stateful_at,
-            "secrets.keys must be rendered before statefulEnv"
-        );
+        let datastores_at = deployment.find("\"service.datastoreEnv\"").unwrap();
+        let env_at = deployment.find(".Values.env }}").unwrap();
+        assert!(secrets_at < datastores_at && datastores_at < env_at);
+        // Within a datastore, the Secret-sourced (helper) var comes first.
+        let helper = read(&out.join("templates").join("_helpers.tpl"));
+        let def = helper.find("define \"service.datastoreEnv\"").unwrap();
+        let secret_at = def + helper[def..].find("secretKeyRef").unwrap();
+        let value_at = def + helper[def..].find("value: {{ .value").unwrap();
+        assert!(secret_at < value_at);
     }
 
     #[test]
@@ -635,9 +1153,15 @@ type = "RuntimeDefault"
         assert!(values.contains("type: RuntimeDefault"), "{values}");
 
         let deployment = read(&out.join("templates").join("deployment.yaml"));
+        // The pod securityContext comes from the shared pod-spec helper.
         assert!(
-            deployment.contains("with .Values.podSecurityContext"),
+            deployment.contains(r#"include "service.podSpecCommon""#),
             "{deployment}"
+        );
+        let helpers = read(&out.join("templates").join("_helpers.tpl"));
+        assert!(
+            helpers.contains("with $root.Values.podSecurityContext"),
+            "{helpers}"
         );
         assert!(
             deployment.contains("with .Values.containerSecurityContext"),
@@ -761,7 +1285,7 @@ registry = "ghcr.io/myorg"
             envs: vec!["prod".into()],
         })
         .unwrap();
-        let values = read(&out.join("values.yaml"));
+        let values = read(&out.join("values-prod.yaml"));
         // RICH_TOML enables mcp_sidecar; the chart defaults to in-process (same
         // binary, two ports) — not a separate <name>-mcp sidecar container.
         assert!(values.contains("mode: in-process"));
@@ -771,7 +1295,7 @@ registry = "ghcr.io/myorg"
     }
 
     #[test]
-    fn cilium_mesh_emits_pod_annotations_and_escape_hatches() {
+    fn cilium_mesh_has_no_pod_annotations_and_keeps_escape_hatches() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);
         let out = svc.path().join("chart");
@@ -783,8 +1307,12 @@ registry = "ghcr.io/myorg"
         .unwrap();
 
         let values = read(&out.join("values.yaml"));
-        // Cilium transparent encryption is generated, not hand-edited.
-        assert!(values.contains("io.cilium/encryption"));
+        // No mesh-derived pod annotations: Cilium transparent encryption is a
+        // cluster setting, not a per-pod annotation (and is off by design).
+        assert!(values.contains("podAnnotations: {}"), "{values}");
+        let prod = read(&out.join("values-prod.yaml"));
+        assert!(!prod.contains("io.cilium/encryption"), "{prod}");
+        assert!(!prod.contains("podAnnotations"), "{prod}");
         // Escape hatches default empty so regeneration never clobbers them.
         assert!(values.contains("extraEnv: []"));
         assert!(values.contains("extraManifests: []"));
@@ -852,7 +1380,7 @@ memory = "64Mi"
 
         let values = read(&out.join("values.yaml"));
         assert!(values.contains("enabled: false")); // database/cache off
-        assert!(values.contains("statefulEnv: {}"));
+        assert!(values.contains("datastores: []"));
         assert!(values.contains("keys: []"));
         // mesh=none -> no cilium policy.
         assert!(values.contains("networkPolicy:\n  enabled: false"));
@@ -1089,26 +1617,26 @@ audit    = { namespace = "security-{env}", envs = ["prod"] }
         // prod: {env} → prod, per-env override wins, prod-only dep present.
         let prod = read(&out.join("values-prod.yaml"));
         assert!(
-            prod.contains("- name: identity\n      namespace: platform-prod"),
+            prod.contains("- name: identity\n    namespace: platform-prod"),
             "{prod}"
         );
         assert!(
-            prod.contains("- name: billing\n      namespace: billing-shared"),
+            prod.contains("- name: billing\n    namespace: billing-shared"),
             "{prod}"
         );
         assert!(
-            prod.contains("- name: audit\n      namespace: security-prod"),
+            prod.contains("- name: audit\n    namespace: security-prod"),
             "{prod}"
         );
 
         // dev: default namespace (not the prod override), prod-only dep absent.
         let dev = read(&out.join("values-dev.yaml"));
         assert!(
-            dev.contains("- name: identity\n      namespace: platform-dev"),
+            dev.contains("- name: identity\n    namespace: platform-dev"),
             "{dev}"
         );
         assert!(
-            dev.contains("- name: billing\n      namespace: billing-dev"),
+            dev.contains("- name: billing\n    namespace: billing-dev"),
             "{dev}"
         );
         assert!(
@@ -1133,12 +1661,12 @@ port    = 7001
 [deploy]
 replicas  = 1
 mesh      = "cilium"
-namespace = "zvectorlabs-{env}"
+namespace = "platform-{env}"
 [resources]
 cpu    = "100m"
 memory = "128Mi"
 [env]
-IDENTITY_GRPC_URL = "http://identity.zvectorlabs-{env}.svc.cluster.local:50051"
+IDENTITY_GRPC_URL = "http://identity.platform-{env}.svc.cluster.local:50051"
 LOG_FORMAT        = "json"
 [env.dev]
 LOG_FORMAT = "pretty"
@@ -1156,7 +1684,7 @@ LOG_FORMAT = "pretty"
         let dev = read(&out.join("values-dev.yaml"));
         assert!(
             dev.contains(
-                "IDENTITY_GRPC_URL: \"http://identity.zvectorlabs-dev.svc.cluster.local:50051\""
+                "IDENTITY_GRPC_URL: \"http://identity.platform-dev.svc.cluster.local:50051\""
             ),
             "{dev}"
         );
@@ -1164,15 +1692,16 @@ LOG_FORMAT = "pretty"
         let prod = read(&out.join("values-prod.yaml"));
         assert!(
             prod.contains(
-                "IDENTITY_GRPC_URL: \"http://identity.zvectorlabs-prod.svc.cluster.local:50051\""
+                "IDENTITY_GRPC_URL: \"http://identity.platform-prod.svc.cluster.local:50051\""
             ),
             "{prod}"
         );
         assert!(prod.contains("LOG_FORMAT: \"json\""), "{prod}");
-        // Base values.yaml carries the map too, and the deployment template
-        // injects .Values.env into the server container.
+        // The base values.yaml is env-neutral: [env] is per-env only. The
+        // deployment template injects .Values.env into the server container.
         let base = read(&out.join("values.yaml"));
-        assert!(base.contains("IDENTITY_GRPC_URL:"), "{base}");
+        assert!(!base.contains("IDENTITY_GRPC_URL"), "{base}");
+        assert!(base.contains("\nenv: {}"), "{base}");
         let deployment = read(&out.join("templates").join("deployment.yaml"));
         assert!(deployment.contains(".Values.env"), "{deployment}");
     }
@@ -1201,20 +1730,20 @@ LOG_FORMAT = "pretty"
             r#"
 schema = "v1"
 [service]
-name    = "zvectorlabs-api"
+name    = "api"
 version = "0.1.0"
 type    = "http"
 port    = 7001
 [deploy]
-namespace = "zvectorlabs-{env}"
+namespace = "platform-{env}"
 replicas  = 1
 mesh      = "cilium"
 [resources]
 cpu    = "100m"
 memory = "256Mi"
 [depends_on]
-identity        = "zvectorlabs-{env}"
-zradar-platform = { namespace = "zradar-{env}", port = 4317 }
+identity        = "platform-{env}"
+telemetry = { namespace = "telemetry-{env}", port = 4317 }
 "#,
         );
         let out = svc.path().join("chart");
@@ -1228,20 +1757,22 @@ zradar-platform = { namespace = "zradar-{env}", port = 4317 }
         let prod = read(&out.join("values-prod.yaml"));
         // Bare-string form keeps the historical 50051 default.
         assert!(
-            prod.contains("- name: identity\n      namespace: zvectorlabs-prod\n      port: 50051"),
+            prod.contains(
+                "- name: identity\n    namespace: platform-prod\n    ports:\n    - 50051"
+            ),
             "{prod}"
         );
         // Table form carries its declared port.
         assert!(
             prod.contains(
-                "- name: zradar-platform\n      namespace: zradar-prod\n      port: 4317"
+                "- name: telemetry\n    namespace: telemetry-prod\n    ports:\n    - 4317"
             ),
             "{prod}"
         );
 
         let policy = read(&out.join("templates").join("networkpolicy.yaml"));
         assert!(
-            policy.contains(r#"port: "{{ .port | default 50051 }}""#),
+            policy.contains(r#"(.ports | default (list (.port | default 50051)))"#),
             "egress uses the per-dependency port: {policy}"
         );
         assert!(
@@ -1283,19 +1814,16 @@ orders = "shop"
         })
         .unwrap();
 
-        let values = read(&out.join("values.yaml"));
+        let base = read(&out.join("values.yaml"));
+        assert!(
+            base.contains("port: 6565"),
+            "proxy port must be 6565: {base}"
+        );
+        let values = read(&out.join("values-prod.yaml"));
         // Proxy injected — Python + depends_on
         assert!(
-            values.contains("outboundProxy:"),
-            "outboundProxy section must be present: {values}"
-        );
-        assert!(
-            values.contains("enabled: true"),
+            values.contains("outboundProxy:\n  enabled: true"),
             "proxy must be enabled: {values}"
-        );
-        assert!(
-            values.contains("port: 6565"),
-            "proxy port must be 6565: {values}"
         );
         // MCP is sidecar for Python
         assert!(
@@ -1327,14 +1855,10 @@ orders = "shop"
         })
         .unwrap();
 
-        let values = read(&out.join("values.yaml"));
+        let values = read(&out.join("values-prod.yaml"));
         // Rust never gets the proxy even though RICH_TOML has depends_on
         assert!(
-            values.contains("outboundProxy:"),
-            "outboundProxy section present: {values}"
-        );
-        assert!(
-            values.contains("enabled: false"),
+            values.contains("outboundProxy:\n  enabled: false"),
             "proxy must be disabled for Rust: {values}"
         );
         assert!(

@@ -1,13 +1,34 @@
+{{- /*
+The service's workload: a Deployment, or a StatefulSet for [deploy] kind =
+"statefulset" (headless Service in service.yaml, one PVC per pod per `pvc`
+volume). Both share this pod template.
+*/}}
+{{- $sts := eq .Values.workload.kind "StatefulSet" }}
 apiVersion: apps/v1
-kind: Deployment
+kind: {{ ternary "StatefulSet" "Deployment" $sts }}
 metadata:
   name: {{ include "service.name" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "service.labels" . | nindent 4 }}
 spec:
-  {{- if not .Values.autoscaling.enabled }}
+  {{- if or $sts (not .Values.autoscaling.enabled) }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  {{- if $sts }}
+  serviceName: {{ include "service.name" . }}-headless
+  {{- with .Values.workload.podManagementPolicy }}
+  podManagementPolicy: {{ . }}
+  {{- end }}
+  {{- with .Values.workload.strategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- else }}
+  {{- with .Values.workload.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- end }}
   selector:
     matchLabels:
@@ -22,16 +43,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      {{- with .Values.podSecurityContext }}
-      securityContext:
-        {{- toYaml . | nindent 8 }}
+      {{- include "service.podSpecCommon" (dict "root" . "component" "server") | nindent 6 }}
+      {{- with .Values.workload.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
       {{- end }}
-      {{- if and .Values.migrations.enabled (eq .Values.migrations.mode "init-container") }}
+      {{- if eq .Values.migrations.mode "init-container" }}
       # DB migrations run to completion before the server starts. For the
       # pre-upgrade Job alternative, set migrations.mode=job (see migration-job.yaml).
       initContainers:
         - name: migrate
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "service.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- with .Values.containerSecurityContext }}
           securityContext:
@@ -42,8 +63,8 @@ spec:
             - {{ . | quote }}
             {{- end }}
           env:
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             {{- range .Values.secrets.keys }}
             - name: {{ . }}
               valueFrom:
@@ -51,9 +72,8 @@ spec:
                   name: {{ include "service.name" $ }}-secrets
                   key: {{ . }}
             {{- end }}
-            {{- range $k, $v := .Values.statefulEnv }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
+            {{- with include "service.datastoreEnv" . | trim }}
+            {{- . | nindent 12 }}
             {{- end }}
             {{- range $k, $v := .Values.migrations.env }}
             - name: {{ $k }}
@@ -62,18 +82,26 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with include "service.volumeMounts" (dict "root" . "pvc" true) | trim }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
       {{- end }}
       containers:
         - name: server
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "service.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- with .Values.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if .Values.command }}
+          {{- with .Values.command }}
           command:
-            {{- toYaml .Values.command | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           env:
             - name: OTEL_SERVICE_NAME
@@ -86,8 +114,8 @@ spec:
             - name: RUST_LOG
               value: "info"
             {{- end }}
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             {{- range .Values.secrets.keys }}
             - name: {{ . }}
               valueFrom:
@@ -95,9 +123,8 @@ spec:
                   name: {{ include "service.name" $ }}-secrets
                   key: {{ . }}
             {{- end }}
-            {{- range $k, $v := .Values.statefulEnv }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
+            {{- with include "service.datastoreEnv" . | trim }}
+            {{- . | nindent 12 }}
             {{- end }}
             {{- range $k, $v := .Values.env }}
             - name: {{ $k }}
@@ -118,40 +145,44 @@ spec:
             - containerPort: {{ .Values.service.mcpPort }}
               name: mcp
             {{- end }}
+            {{- range .Values.extraPorts }}
+            - containerPort: {{ .port }}
+              name: {{ .name }}
+              protocol: {{ .protocol }}
+            {{- end }}
           {{- if .Values.service.health.enabled }}
           {{- if and (not .Values.service.health.grpc) (not .Values.service.health.path) }}
           {{- fail "service.health.grpc is false but service.health.path is empty. A pure gRPC service has no HTTP surface to probe. Either keep grpc: true, or add [service.http] in tonin.toml to expose an HTTP health endpoint, then set service.health.path to its path." }}
           {{- end }}
+          {{- $h := .Values.service.health }}
           livenessProbe:
-            {{- if .Values.service.health.grpc }}
-            grpc:
-              port: {{ .Values.service.health.port }}
-            {{- else }}
-            httpGet:
-              path: {{ .Values.service.health.path | quote }}
-              port: {{ .Values.service.health.port }}
-            {{- end }}
+            {{- include "service.probeAction" (dict "root" . "path" ($h.livenessPath | default $h.path)) | nindent 12 }}
             periodSeconds: 10
             failureThreshold: 3
           readinessProbe:
-            {{- if .Values.service.health.grpc }}
-            grpc:
-              port: {{ .Values.service.health.port }}
-            {{- else }}
-            httpGet:
-              path: {{ .Values.service.health.path | quote }}
-              port: {{ .Values.service.health.port }}
-            {{- end }}
+            {{- include "service.probeAction" (dict "root" . "path" ($h.readinessPath | default $h.path)) | nindent 12 }}
             periodSeconds: 5
             failureThreshold: 3
+          {{- with $h.startup }}
+          {{- if .enabled }}
+          startupProbe:
+            {{- include "service.probeAction" (dict "root" $ "path" (.path | default $h.path)) | nindent 12 }}
+            periodSeconds: {{ .periodSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+          {{- end }}
+          {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- with include "service.serverVolumeMounts" . | trim }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
         {{- if and .Values.mcp.enabled (eq .Values.mcp.mode "sidecar") }}
         # Sidecar MCP: a separate <name>-mcp binary proxying to the gRPC server.
         # Only valid if the image actually ships that binary.
         - name: mcp
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "service.image" . | quote }}
           {{- with .Values.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -198,3 +229,33 @@ spec:
             requests: { cpu: "50m",  memory: "64Mi"  }
             limits:   { cpu: "200m", memory: "128Mi" }
         {{- end }}
+      {{- with include "service.serverVolumes" . | trim }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
+  {{- if $sts }}
+  {{- $claims := list }}
+  {{- range .Values.volumes }}
+  {{- if eq .type "pvc" }}
+  {{- $claims = append $claims . }}
+  {{- end }}
+  {{- end }}
+  {{- with $claims }}
+  volumeClaimTemplates:
+    {{- range . }}
+    - metadata:
+        name: {{ .name }}
+        labels:
+          {{- include "service.selectorLabels" $ | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml .accessModes | nindent 10 }}
+        {{- with .storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .size }}
+    {{- end }}
+  {{- end }}
+  {{- end }}

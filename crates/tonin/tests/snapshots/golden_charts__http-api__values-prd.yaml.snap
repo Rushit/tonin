@@ -1,0 +1,117 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# prd-specific overrides — generated from the prd overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 2
+
+workload:
+  terminationGracePeriodSeconds: 45
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+
+image:
+  tag: "0.1.3"
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 2
+
+mesh: "cilium"
+
+mcp:
+  enabled: false
+  mode: none
+
+outboundProxy:
+  enabled: false
+
+ingress:
+  enabled: false
+  host: ""
+
+# Plain env vars from tonin.toml [env], merged with the [env.prd]
+# overlay and with {env} substituted for this environment.
+env:
+  IDENTITY_GRPC_ADDR: "http://identity.platform-prd.svc.cluster.local:50051"
+  PLATFORM_SERVER_PORT: "7001"
+  TELEMETRY_URL: "http://telemetry.telemetry-prd.svc.cluster.local:8080"
+
+# Databases and caches of the platform contract, resolved for prd.
+datastores:
+  - name: database
+    env: PLATFORM_DATABASE_URL
+    secret:
+      env: PLATFORM_DATABASE_URL
+      name: platform-api-pg-app
+      key: uri
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: platform-api-pg
+  - name: cache
+    env: PLATFORM_REDIS_URL
+    secret:
+      env: PLATFORM_REDIS_URL
+      name: platform-api-cache
+      key: uri
+    egress:
+      port: 6379
+      labels:
+        app.kubernetes.io/name: platform-api-cache
+
+secrets:
+  create: true
+  keys:
+    - TELEMETRY_SERVICE_TOKEN
+
+migrations:
+  mode: job
+
+# Pull secrets, placement, disruption budget and CronJobs for prd.
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints:
+- maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+podDisruptionBudget:
+  enabled: false
+cronjobs: []
+
+networkPolicy:
+  enabled: true
+  port: 7001
+  mcp: false
+  callers:
+  - name: cloudflared
+    namespace: edge
+    labels:
+      app.kubernetes.io/name: cloudflared
+  - name: web-shell
+    namespace: platform-prd
+  dependsOn:
+  - name: identity
+    namespace: platform-prd
+    ports:
+    - 50051
+  - name: telemetry
+    namespace: telemetry-prd
+    ports:
+    - 8080
+    - 8081
+    - 8082
+  egress:
+    fqdns:
+    - name: api.stripe.com
+      ports:
+      - 443
+    cidrs: []
+    kubeApiserver: true

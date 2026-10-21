@@ -1,0 +1,78 @@
+# Golden fixture: a plain Node.js server (Next.js standalone) with
+# `language = "node"`: no Rust command or RUST_LOG, the image's CMD (or an
+# explicit command) runs it, and no outbound proxy sidecar even with a
+# dependency. Read-only root filesystem with emptyDirs for the Next.js cache
+# and /tmp. Modelled on a web shell app.
+schema = "v1"
+
+[image]
+registry = "ghcr.io/example"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 1000
+run_as_group    = 1000
+fs_group        = 1000
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = true
+
+[security.container.capabilities]
+drop = ["ALL"]
+
+[security.container.seccomp_profile]
+type = "RuntimeDefault"
+
+[service]
+name     = "shell"
+version  = "0.1.1"
+type     = "http"
+language = "node"
+port     = 7002
+command  = ["node"]
+args     = ["apps/shell/server.js"]
+
+[service.health]
+path = "/api/health"
+port = 7002
+
+[deploy]
+namespace          = "platform-{env}"
+replicas           = 1
+image_pull_secrets = ["ghcr-read"]
+
+[deploy.prd]
+replicas = 2
+
+[resources.requests]
+cpu    = "100m"
+memory = "256Mi"
+
+[resources.limits]
+memory = "512Mi"
+
+[autoscale]
+max_replicas = 4
+
+[autoscale.dev]
+enabled = false
+
+[[volumes]]
+name       = "next-cache"
+type       = "empty-dir"
+mount_path = "/app/apps/shell/.next/cache"
+size_limit = "1Gi"
+
+[[volumes]]
+name       = "tmp"
+type       = "empty-dir"
+mount_path = "/tmp"
+medium     = "Memory"
+size_limit = "64Mi"
+
+[env]
+NODE_ENV = "production"
+
+[depends_on]
+platform-api = { namespace = "platform-{env}", port = 7001 }

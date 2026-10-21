@@ -32,7 +32,7 @@ Adding a new mesh today is a code change, not a pure template drop — the `Mesh
 
 ### `mesh = "cilium"`
 
-- `networkpolicy.yaml` — `CiliumNetworkPolicy` restricting ingress to the service's gRPC port from labelled callers.
+- `networkpolicy.yaml` — `CiliumNetworkPolicy`, default-deny both ways: ingress from `[callers]` (tonin services or pods by namespace + labels, each on its own ports), egress to DNS, the otel-collector, `[depends_on]`, the datastores and `[egress]` (FQDNs, CIDRs, the kube-apiserver). See [12-kubernetes-deploy.md](12-kubernetes-deploy.md#network-policy-callers-egress).
 - `pod-annotations.yaml` — pod-spec patch adding Cilium-specific labels and identity annotations.
 
 ### `mesh = "istio"`

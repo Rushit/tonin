@@ -1,0 +1,102 @@
+{{- /*
+Scheduled jobs ([[cronjobs]]). Each runs the service image with the service's
+env, Secret keys, datastores (env + CA mount), security context,
+ServiceAccount, pull secrets and placement. Pods carry `service.identity`, so
+the service's network policy (egress to its datastores and dependencies)
+applies, but not the Service selector label `app`.
+*/}}
+{{- range .Values.cronjobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "service.name" $ }}-{{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "service.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ .name }}
+spec:
+  schedule: {{ .schedule | quote }}
+  {{- with .timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: {{ .concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ .successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .failedJobsHistoryLimit }}
+  {{- with .startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ . }}
+  {{- end }}
+  suspend: {{ .suspend }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .backoffLimit }}
+      {{- with .activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ . }}
+      {{- end }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ include "service.name" $ }}
+            app.kubernetes.io/component: {{ .name }}
+            service.identity: {{ include "service.name" $ }}.{{ $.Release.Namespace }}
+        spec:
+          restartPolicy: Never
+          {{- include "service.podSpecCommon" (dict "root" $ "component" "cronjob") | nindent 10 }}
+          containers:
+            - name: {{ .name }}
+              image: {{ include "service.image" $ | quote }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              {{- with $.Values.containerSecurityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              {{- with (.command | default $.Values.command) }}
+              command:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              {{- with .args }}
+              args:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              env:
+                - name: OTEL_SERVICE_NAME
+                  value: "{{ include "service.name" $ }}-{{ .name }}"
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: {{ $.Values.observability.otlpEndpoint | quote }}
+                - name: OTEL_RESOURCE_ATTRIBUTES
+                  value: "service.namespace={{ $.Release.Namespace }},service.version={{ $.Values.image.tag }}"
+                {{- if $.Values.rustService }}
+                - name: RUST_LOG
+                  value: "info"
+                {{- end }}
+                # Secret-sourced vars first: datastore URLs may compose from
+                # them with $(VAR), and so may the plain env that follows.
+                {{- range $.Values.secrets.keys }}
+                - name: {{ . }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "service.name" $ }}-secrets
+                      key: {{ . }}
+                {{- end }}
+                {{- with include "service.datastoreEnv" $ | trim }}
+                {{- . | nindent 16 }}
+                {{- end }}
+                {{- /* The job's own env wins over the service's [env]. */}}
+                {{- range $k, $v := merge (dict) (.env | default dict) $.Values.env }}
+                - name: {{ $k }}
+                  value: {{ $v | quote }}
+                {{- end }}
+                {{- with $.Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              resources:
+                {{- toYaml (.resources | default $.Values.resources) | nindent 16 }}
+              {{- with include "service.volumeMounts" (dict "root" $ "pvc" false) | trim }}
+              volumeMounts:
+                {{- . | nindent 16 }}
+              {{- end }}
+          {{- with include "service.podVolumes" $ | trim }}
+          volumes:
+            {{- . | nindent 12 }}
+          {{- end }}
+{{- end }}

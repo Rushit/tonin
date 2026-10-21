@@ -1,5 +1,162 @@
 # Changelog
 
+## [0.15.0](https://github.com/Rushit/tonin/compare/v0.14.0...v0.15.0)
+
+**Charts that run in production.** Generated charts now render per environment from an
+env-neutral base, reference platform-managed databases and caches instead of deploying
+their own, and `tonin deploy` installs exactly the image digest in the lock.
+
+**Upgrading from 0.14: read the [0.14 → 0.15 migration guide](https://github.com/Rushit/tonin/blob/main/docs/MIGRATION-0.15.md)**,
+then run `tonin helm generate --env <env> ...` for every env and commit the regenerated
+chart.
+
+### Breaking changes
+
+* **`--env` is required** by `helm generate`, `helm check`, `affected` and `release`, and by
+  the `tonin helm` proxy commands (`upgrade`, `template`, `diff`, `status`, `rollback`,
+  `history`, `uninstall`) unless `TONIN_ENV` is set. There is no `dev`/`staging`/`prod`
+  default any more. Scripts and CI jobs that call these commands without `--env` fail.
+* **The base `values.yaml` is env-neutral.** Every env-specific key has a neutral default in
+  the base and is set in `values-<env>.yaml`. Always render with
+  `-f values.yaml -f values-<env>.yaml`; rendering with `values.yaml` alone gives no env vars,
+  no datastores and no network policy.
+* **`[database]` and `[cache]` are references to the platform contract.** tonin no longer
+  renders Postgres/Redis StatefulSets and Services. `DATABASE_URL` comes from Secret
+  `<svc>-pg-app` (key `uri`) and `REDIS_URL` from Secret `<svc>-cache`; egress targets the
+  contract pod labels. The platform (or the dev setup) must provide those Secrets.
+  * `size`, `shared`, `version`, `name` and a base-table `url` are rejected with an error that
+    names the replacement. Dev `url`s move under `[database.<env>]` / `[cache.<env>]`.
+  * `DATABASE_PASSWORD` is no longer added to the `[secrets]` keys.
+  * Two sections emitting the same env var fail with `DuplicateEnvVar` (for example
+    `PLATFORM_DATABASE_URL` both in `[secrets].required` and as `[database] env`).
+  * `helm generate` deletes `templates/db-statefulset.yaml`, `db-service.yaml`,
+    `cache-statefulset.yaml` and `cache-service.yaml`; `helm check` reports them.
+* **`[migrations] run_on` is rejected**; use `mode = "job" | "init-container" | "none"`
+  (per env). `boot`/`manual` become `mode = "none"`.
+* **Chart values:** `statefulEnv`, `database.*` and `cache.*` are replaced by `datastores`;
+  `migrations.enabled` is gone (`migrations.mode` is per env, `none` in the base).
+* **`tonin deploy`, `status` and `platform` use the release name `<service>`** (not
+  `<service>-<env>`), the same name `tonin helm upgrade` always used. Releases that
+  `tonin deploy` installed under the old name are not found; uninstall or migrate them first.
+* **Pods no longer get the `io.cilium/encryption` annotation.**
+* **`tonin-plugin` public API:** `DeployValues` gained `chart` and `values_files`;
+  `DatabaseSpec`/`CacheSpec` are reshaped; `EmittedEnv` holds `datastores` and `from_secret`;
+  `MigrationRunOn` is replaced by `MigrationMode`; new
+  `Error::{RemovedField, InvalidField, DuplicateEnvVar}`.
+* **Strict `tonin.toml` schema.** Every unknown key is an error naming its line, the key, the
+  table and the allowed keys (0.14 silently ignored typos). Overlay tables
+  (`[<section>.<env>]`) are checked against the section's overlay keys and must be named like
+  an environment. Unknown `[database]`/`[cache]` engines are rejected (0.14 treated them as
+  `none`). `tonin helm generate` warns about overlays for environments it is not rendering.
+* **`[autoscale] min_replicas` is honoured** (0.14 ignored it and used `[deploy] replicas`);
+  `[autoscale]` on a StatefulSet, `pvc` volumes on a Deployment and malformed resource
+  quantities are rejected.
+* **Network policy:** the otel-collector no longer gets ingress (it is push-only; egress to it
+  stays); a service with no `[callers]` gets a default-deny ingress rule; the service policy no
+  longer selects the migration Job's pods (they keep their hook policy). Non-service callers
+  such as cloudflared must be declared as label callers.
+* **Pods run as the chart's own ServiceAccount** `<svc>` with
+  `automountServiceAccountToken: false` (set `[service_account] automount_token = true` for API
+  access); the migration hook Job runs as a hook-scoped `<svc>-migrate` ServiceAccount.
+  Services with more than one replica get a hostname topology spread by default.
+* **Chart values:** new `workload`, `volumes`, `extraPorts`, `extraServices`, `args`,
+  `service.health.{livenessPath,readinessPath,startup}`, `serviceAccount`, `imagePullSecrets`,
+  `nodeSelector`, `tolerations`, `topologySpreadConstraints`, `pdb`, `cronjobs`;
+  `networkPolicy.dependsOn[].port` became `ports`, callers carry `labels`/`ports`, plus
+  `networkPolicy.egress`.
+* **`tonin-plugin` public API:** `DependencyRef.port` is `ports: Vec<u32>`; `Plan.callers` is
+  `Vec<Caller>`; `Plan` gained `egress`, `workload` and `pod`; new `Error::Schema`.
+* **`RECOMMENDED_CLI_MIN` is 0.15.0.**
+* **Python (`python/tonin`) requires `mcp>=2.3`**, and `build_default_server` returns an
+  `MCPServer` ([#130](https://github.com/Rushit/tonin/pull/130)).
+* **Scaffolded Rust services pin rmcp 3 and tonin 0.15**
+  ([#130](https://github.com/Rushit/tonin/pull/130)).
+* **The `tonin-proxy` image runs on Debian 13** (`rust:1.93-slim-trixie` build,
+  distroless `cc-debian13` runtime) ([#130](https://github.com/Rushit/tonin/pull/130)).
+
+### Features
+
+* **helm:** databases and caches reference the platform contract, with per-table and per-env
+  overrides (`env`, `cluster`, `secret`, `key`, `tls`, `ca_secret`, `labels`, `namespace`,
+  `port`, per-env `url`) and named variants (`[databases.<n>]`, `[caches.<n>]`)
+  ([#128](https://github.com/Rushit/tonin/pull/128))
+* **helm:** `tls = "verify-full"` mounts only `ca.crt` of `<svc>-pg-ca` and builds
+  `DATABASE_URL` with `sslmode=verify-full` ([#128](https://github.com/Rushit/tonin/pull/128))
+* **helm:** migrations `mode = "job"` renders a `pre-install,pre-upgrade` hook Job with the
+  server's image, datastore env, security contexts and resources, plus a hook
+  `CiliumNetworkPolicy <svc>-migrate` ([#128](https://github.com/Rushit/tonin/pull/128))
+* **helm:** `service.image` helper renders `repository@digest` when `image.digest` is set, for
+  the server, MCP sidecar and migration containers ([#125](https://github.com/Rushit/tonin/pull/125))
+* **helm:** `generate` deletes chart files tonin no longer ships (`OBSOLETE_FILES`) and
+  `helm check` reports them as drift ([#125](https://github.com/Rushit/tonin/pull/125))
+* **deploy:** `--affected --base <ref>` works, `--service <name>` is a repeatable filter,
+  `--dry-run` prints the exact helm argv ([#125](https://github.com/Rushit/tonin/pull/125))
+* **helm:** `[deploy] kind = "statefulset"` with a headless Service, `volumeClaimTemplates`
+  (default StorageClass), `pod_management_policy` and a staged rollout (`partition`);
+  `[deploy.strategy]` and `termination_grace_period_seconds`, per env ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[[volumes]]`: `empty-dir` (`size_limit`, `medium`) and `pvc` (StatefulSet),
+  mounted in the server, the migration initContainer, and (empty-dir) the Job and CronJobs;
+  `ephemeral_storage` requests/limits ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[[ports]]`: extra named ports on the main Service or extra `<svc>-<suffix>`
+  Services ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** separate liveness/readiness paths, `[service.health.startup]`;
+  `[resources.requests]` / `[resources.limits]` with an optional CPU limit ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[service] command` / `args`; `language = "node"` runs the image CMD with no MCP or
+  outbound-proxy sidecar; `[autoscale.<env>]` overlays, HPA only for Deployments ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[callers]` by service or by namespace + pod labels (e.g. cloudflared), each with
+  its own port list; non-service callers are skipped by `tonin affected` ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[depends_on]` port lists; `[egress]` (per env) with `fqdns` (`toFQDNs`, plus the
+  DNS L7 rule Cilium needs), `cidrs` (`toCIDRSet` with `except`) and `kube_apiserver` ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[deploy] image_pull_secrets` on every pod; chart-owned ServiceAccount with
+  optional projected, audience-bound tokens (`[service_account] tokens`) ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[placement]` (`node_selector`, `tolerations`, `topology_spread`) and `[pdb]` per
+  env; securityContext on every pod tonin renders; `[secrets.<env>] create` ([#131](https://github.com/Rushit/tonin/pull/131))
+* **helm:** `[[cronjobs]]` (schedule, command/args, concurrency policy, history limits,
+  deadlines) inheriting image, env, secrets, datastores, security, ServiceAccount, pull
+  secrets, placement and policy labels ([#131](https://github.com/Rushit/tonin/pull/131))
+* **schema:** strict `tonin.toml` validation with line numbers and allowed keys; overlays for
+  environments not being generated are reported; the `tonin new` scaffolds and every example
+  pass it ([#131](https://github.com/Rushit/tonin/pull/131))
+
+### Bug fixes
+
+* **deploy:** `tonin deploy` uses the absolute generated chart path, passes both values files,
+  pins the lock digest (no mutable tag), fails early with a hint when the chart or values file
+  is missing, and decides "already deployed" by comparing the running image with the lock
+  image instead of the chart `appVersion` ([#125](https://github.com/Rushit/tonin/pull/125))
+* **status:** `tonin status` looks releases up in each service's namespace
+  ([#125](https://github.com/Rushit/tonin/pull/125))
+* **helm:** a dev-only `[env.<env>]` key no longer leaks into other envs through the base
+  values ([#125](https://github.com/Rushit/tonin/pull/125))
+* **mcp-macros:** code generated by `#[mcp_expose]` referenced a type rmcp does not have; it
+  now emits `ContentBlock` tool results ([#130](https://github.com/Rushit/tonin/pull/130))
+* **ci:** the tonin-proxy smoke test uses a vendored grpc `health.proto` (v1.84.0)
+  ([#126](https://github.com/Rushit/tonin/pull/126))
+* **test:** git-using tests are isolated from the enclosing repo, so running them from a git
+  hook no longer rewrites `.git/config` ([#126](https://github.com/Rushit/tonin/pull/126))
+
+### Tests
+
+* Golden `helm template` snapshots for four fixture services and every env, validated with
+  `kubeconform -strict` against Kubernetes 1.34 (`just snapshots` re-records them)
+  ([#123](https://github.com/Rushit/tonin/pull/123)); fixtures for a StatefulSet with storage
+  and extra Services and for a plain Node.js app added with 0.15
+
+### Dependencies
+
+* Rust: rmcp 2.1.0. Python (`python/tonin`): mcp 1.30.0, urllib3 2.8.0, pyjwt 2.15.0,
+  anyio 4.14.2, cryptography 50.0.0. TypeScript (`ts/tonin-client`): @grpc/grpc-js 1.14.5,
+  vitest, source-map-js 1.2.2, postcss ([#124](https://github.com/Rushit/tonin/pull/124))
+* Rust: rmcp 3, OpenTelemetry 0.33, etcd-client 0.21, toml 1.1 (toml_edit 0.25),
+  jsonwebtoken 11, base64 0.23, convert_case 0.12, dialoguer 0.12, syn 3; examples and
+  TypeScript scaffolds on Node 24, React 19, Connect v2; CI actions updated
+  ([#130](https://github.com/Rushit/tonin/pull/130))
+
+## 0.8.3 – 0.14.0
+
+Release notes for these versions are on the
+[GitHub Releases](https://github.com/Rushit/tonin/releases) page.
+
 ## [0.8.2](https://github.com/Rushit/tonin/compare/v0.8.1...v0.8.2) (2026-06-25)
 
 

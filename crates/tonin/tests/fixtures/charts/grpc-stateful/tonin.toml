@@ -1,0 +1,120 @@
+# Golden fixture: gRPC Rust service with database, cache, secrets, migrations,
+# callers and depends_on on the cilium mesh. Modelled on an
+# `identity` service. Covers: contract Secret references (prd), Postgres
+# verify-full with the CA mount (prd), literal dev URLs, and migrations as an
+# initContainer (dev) and a hook Job (prd). Pod hygiene: pull secret, node
+# placement, a PDB (minAvailable 1 with 2 replicas), the default topology
+# spread and an externally managed Secret in prd only; projected
+# ServiceAccount tokens; two CronJobs (one prd-only) that replace identity's
+# hand-written ones.
+schema = "v1"
+
+[image]
+registry = "ghcr.io/example"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 65532
+run_as_group    = 65532
+fs_group        = 65532
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = true
+
+[security.container.capabilities]
+drop = ["ALL"]
+
+[security.container.seccomp_profile]
+type = "RuntimeDefault"
+
+[service]
+name    = "identity"
+version = "0.3.7"
+codec   = "prost"
+
+[deploy]
+replicas    = 2
+mesh        = "cilium"
+namespace   = "platform-{env}"
+mcp_sidecar = true
+
+[deploy.dev]
+replicas = 1
+
+[deploy.prd]
+image_pull_secrets = ["ghcr-read"]
+
+[placement.prd]
+node_selector = { "example.com/role" = "app" }
+
+[pdb.prd]
+min_available = 1
+
+[service_account]
+tokens = [
+  { audience = "audit-log" },
+  { audience = "vault", path = "/etc/vault/token", expiration_seconds = 7200 },
+]
+
+[resources]
+cpu    = "100m"
+memory = "128Mi"
+
+# HPA 2..8 in prd; dev runs one fixed replica.
+[autoscale]
+min_replicas = 2
+max_replicas = 8
+
+[autoscale.dev]
+enabled = false
+
+[database]
+engine = "postgres"
+
+[database.dev]
+url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+
+[database.prd]
+tls = "verify-full"
+
+[cache]
+engine = "redis"
+
+[cache.dev]
+url = "redis://redis.shared-dev.svc.cluster.local:6379"
+
+[secrets]
+required = ["JWT_SECRET"]
+
+[secrets.prd]
+create = false
+
+[migrations]
+tool    = "custom"
+mode    = "init-container"
+command = ["/usr/local/bin/identity", "migrate"]
+
+[migrations.prd]
+mode = "job"
+
+[callers]
+api-gateway = "platform-{env}"
+telemetry   = "telemetry-{env}"
+
+[depends_on]
+audit-log = "platform-{env}"
+
+[[cronjobs]]
+name     = "purge-expired"
+schedule = "0 2 * * *"
+command  = ["/usr/local/bin/identity-purge-expired"]
+
+[[cronjobs]]
+name                      = "close-impersonation"
+schedule                  = "0 * * * *"
+args                      = ["close-impersonation"]
+starting_deadline_seconds = 300
+resources                 = { cpu = "50m", memory = "64Mi" }
+env                       = { RUST_LOG_FORMAT = "json" }
+envs                      = ["prd"]

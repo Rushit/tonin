@@ -1,0 +1,146 @@
+# Golden fixture: gRPC Rust service run as a StatefulSet with per-pod storage.
+# Modelled on a trace-store service in prd: a PVC for its
+# data dir (default StorageClass), emptyDirs for the Parquet cache (nested in
+# the PVC mount) and /tmp, extra ports on extra Services (-ingest for OTLP/HTTP,
+# -internal for the query/admin gRPC ports), separate liveness/readiness paths
+# and a startup probe on the HTTP port, a staged rollout (partition) in prd,
+# and the CPU limit left out. Callers reach the extra ports by port list.
+# Pod hygiene: pull secret, prd placement, PDB, a projected SA token and a
+# CronJob alongside the StatefulSet.
+schema = "v1"
+
+[image]
+registry = "ghcr.io/example"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 65532
+run_as_group    = 65532
+fs_group        = 65532
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = true
+
+[security.container.capabilities]
+drop = ["ALL"]
+
+[security.container.seccomp_profile]
+type = "RuntimeDefault"
+
+[service]
+name    = "tracestore"
+version = "0.2.3"
+type    = "grpc"
+port    = 4317
+
+[service.http]
+port = 8080
+
+[service.health]
+port           = 8080
+liveness_path  = "/health/live"
+readiness_path = "/health/ready"
+
+[service.health.startup]
+path              = "/health"
+period_seconds    = 10
+failure_threshold = 30
+
+[deploy]
+kind                             = "statefulset"
+pod_management_policy            = "Parallel"
+namespace                        = "tracestore-{env}"
+replicas                         = 2
+mesh                             = "cilium"
+termination_grace_period_seconds = 60
+
+image_pull_secrets               = ["ghcr-read"]
+
+[deploy.dev]
+replicas = 1
+
+[deploy.prd.strategy]
+partition = 1
+
+# Pinned to the app nodes in prd; a PDB keeps one of the two pods up.
+[placement.prd]
+node_selector = { "example.com/role" = "app" }
+
+[pdb]
+
+[service_account]
+tokens = [{ audience = "identity" }]
+
+[resources.requests]
+cpu               = "200m"
+memory            = "1Gi"
+ephemeral_storage = "2Gi"
+
+[resources.limits]
+memory            = "1Gi"
+ephemeral_storage = "4Gi"
+
+[[volumes]]
+name       = "data"
+type       = "pvc"
+mount_path = "/home/nonroot/data"
+size       = "8Gi"
+
+[[volumes]]
+name       = "parquet-cache"
+type       = "empty-dir"
+mount_path = "/home/nonroot/data/parquet-cache"
+size_limit = "2Gi"
+
+[[volumes]]
+name       = "tmp"
+type       = "empty-dir"
+mount_path = "/tmp"
+size_limit = "256Mi"
+
+[[ports]]
+name    = "otlp-http"
+port    = 4318
+service = "ingest"
+
+[[ports]]
+name    = "query"
+port    = 8081
+service = "internal"
+
+[[ports]]
+name    = "admin"
+port    = 8082
+service = "internal"
+
+[database]
+engine = "postgres"
+
+[database.dev]
+url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/tracestore_dev"
+
+[env]
+IDENTITY_GRPC_URL = "http://identity.platform-{env}.svc.cluster.local:50051"
+TRACESTORE_DATA_DIR = "/home/nonroot/data"
+
+[secrets]
+required = ["TRACESTORE_SERVICE_TOKEN"]
+
+# OTLP/HTTP ingest only from cloudflared; the api reaches HTTP and the
+# internal query/admin ports.
+[callers]
+platform-api = { namespace = "platform-{env}", ports = [8080, 8081, 8082] }
+cloudflared  = { namespace = "edge", labels = { "app.kubernetes.io/name" = "cloudflared" }, ports = [4318] }
+
+[egress.prd]
+fqdns = [{ name = "s3.example.invalid", ports = [443] }]
+
+[depends_on]
+identity = "platform-{env}"
+
+# Runs with the service image, env, datastores and the empty-dir volumes.
+[[cronjobs]]
+name     = "compact"
+schedule = "30 3 * * *"
+args     = ["compact"]

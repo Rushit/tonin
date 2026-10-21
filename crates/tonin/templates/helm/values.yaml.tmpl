@@ -1,11 +1,28 @@
-# Base values — environment-independent defaults.
-# Override per-environment with values-<env>.yaml.
+# Base values — environment-independent settings only.
+# Keys that differ per environment (replicas, autoscaling, mesh, MCP, ingress,
+# env, stateful deps, secret keys, network policy) hold neutral defaults here;
+# values-<env>.yaml sets them. Deploy with both: -f values.yaml -f values-<env>.yaml.
 
 replicaCount: {{ replicas }}
+
+# Workload controller ([deploy] kind = "deployment" | "statefulset"). A
+# StatefulSet gets a headless Service (<name>-headless) and one
+# PersistentVolumeClaim per pod for each `pvc` volume. podManagementPolicy,
+# serviceName and volumeClaimTemplates cannot change after the first install.
+# terminationGracePeriodSeconds (0 = the Kubernetes default) and strategy
+# ({} = the controller's default) are set per environment.
+workload:
+  kind: {{ workload_kind }}
+  podManagementPolicy: "{{ pod_management_policy }}"
+  terminationGracePeriodSeconds: {{ termination_grace_period_seconds }}
+  {{ strategy_block }}
 
 image:
   repository: "{{ image_repository }}"
   tag: "{{ version }}"
+  # Set to pin the image by digest (e.g. "sha256:…"): the chart then renders
+  # repository@digest and ignores tag. `tonin deploy` sets it from the lock.
+  digest: ""
   pullPolicy: IfNotPresent
 
 service:
@@ -26,6 +43,29 @@ service:
     grpc: {% if health_grpc %}true{% else %}false{% endif %}
     path: "{{ health_path }}"
     port: {{ health_port }}
+    # httpGet paths per probe ([service.health] liveness_path / readiness_path;
+    # both default to `path`). Ignored by grpc probes.
+    livenessPath: "{{ liveness_path }}"
+    readinessPath: "{{ readiness_path }}"
+    # startupProbe ([service.health.startup]): liveness and readiness wait
+    # until it succeeds, for slow starts.
+    startup:
+      enabled: {% if startup_enabled %}true{% else %}false{% endif %}
+      path: "{{ startup_path }}"
+      periodSeconds: {{ startup_period_seconds }}
+      failureThreshold: {{ startup_failure_threshold }}
+
+# Extra named container ports ([[ports]]). `service` empty = on the main
+# Service; otherwise on the extra Service <name>-<service> (one per name in
+# extraServices).
+{{ extra_ports_block }}
+{{ extra_services_block }}
+
+# Volumes ([[volumes]]): `empty-dir` (pod-lifetime scratch, optional sizeLimit)
+# and `pvc` (StatefulSet only: a claim per pod from the default StorageClass
+# unless storageClass is set). Mounted in the server container (and the
+# migration initContainer); the migration Job gets the empty-dir ones.
+{{ volumes_block }}
 
 # MCP tool surface. Derived automatically from [service].language:
 #   in-process → same binary, two ports (Rust — default).
@@ -44,17 +84,14 @@ outboundProxy:
   port: {{ proxy_port }}
   image: "ghcr.io/rushit/tonin-proxy:latest"
 
-resources:
-  requests:
-    cpu: "{{ cpu }}"
-    memory: "{{ memory }}"
-  limits:
-    cpu: "{{ cpu }}"
-    memory: "{{ memory }}"
+# Container resources ([resources]: `cpu`/`memory` set requests = limits;
+# [resources.requests] / [resources.limits] set them apart, CPU limit optional).
+{{ resources_block }}
 
+# HorizontalPodAutoscaler ([autoscale], Deployments only).
 autoscaling:
   enabled: {% if has_autoscale %}true{% else %}false{% endif %}
-  minReplicas: {{ replicas }}
+  minReplicas: {{ min_replicas }}
   maxReplicas: {{ max_replicas }}
 
 {% if has_pod_security %}
@@ -75,9 +112,11 @@ mesh: "{{ mesh }}"
 observability:
   otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
 
-# Override the container entrypoint. Empty list = use the Docker image CMD.
-# Rust services default to /usr/local/bin/<name>; leave empty for all others.
-command: {% if is_rust %}["/usr/local/bin/{{ name }}"]{% else %}[]{% endif %}
+# Container command and args ([service] command / args). Empty command = the
+# image's ENTRYPOINT/CMD. Rust services default to /usr/local/bin/<name>;
+# every other language runs the image as built.
+command: {{ command_json }}
+args: {{ args_json }}
 
 # Gate RUST_LOG injection: only meaningful for Rust binaries.
 rustService: {% if is_rust %}true{% else %}false{% endif %}
@@ -89,55 +128,60 @@ env:{% if env_vars | length == 0 %} {}{% endif %}
   {{ kv.0 }}: "{{ kv.1 }}"
 {%- endfor %}
 
-# Pod annotations. Mesh-derived entries (e.g. cilium transparent encryption) are
-# generated here; add your own at deploy time via --set podAnnotations.key=value.
-podAnnotations:{% if pod_annotations | length == 0 %} {}{% endif %}
-{%- for kv in pod_annotations %}
-  {{ kv.0 }}: "{{ kv.1 }}"
-{%- endfor %}
+# ServiceAccount the service's pods run as (named after the service; the
+# migration Job uses its own hook-scoped `<service>-migrate`). The API token is
+# not mounted unless [service_account] automount_token = true. tokenVolumes:
+# projected, audience-bound tokens ([service_account] tokens), mounted read-only
+# into the server container and rotated by the kubelet.
+{{ service_account_block }}
+
+# Pod placement and disruption ([deploy] image_pull_secrets, [placement],
+# [pdb]; set per environment in values-<env>.yaml). Applied to every pod tonin
+# renders (Deployment, migration Job, CronJobs) through the
+# `service.podSpecCommon` helper; topology spread and the PDB only to the
+# service's own pods, and only with more than one replica.
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints: []
+podDisruptionBudget:
+  enabled: false
+
+# Scheduled jobs ([[cronjobs]]), per environment in values-<env>.yaml. Each
+# runs the service image with the service's env, datastores, security context,
+# ServiceAccount and placement, and carries `service.identity` so the service's
+# network policy applies.
+cronjobs: []
+
+# Pod annotations. tonin generates none; add your own at deploy time via
+# --set podAnnotations.key=value.
+podAnnotations: {}
 
 # Escape hatches — empty by design so `tonin helm generate` never clobbers them.
 # Supply at DEPLOY time, not by hand-editing this file:
 #   extraEnv:       --set-json 'extraEnv=[{"name":"X","value":"y"}]'  (server + initContainer)
 #   extraManifests: -f extra.yaml  (each entry is a YAML string, run through tpl)
-# For a durable per-service manifest (e.g. a CronJob), prefer a custom template
-# under chart/templates/ — those survive regeneration.
+# For a durable per-service manifest tonin does not model (CronJobs are
+# [[cronjobs]]), prefer a custom template under chart/templates/ — those
+# survive regeneration.
 extraEnv: []
 extraManifests: []
 
-# Resolved stateful env (DATABASE_URL, REDIS_URL, …) injected verbatim.
-# Populated from tonin.toml [database]/[cache]; overridden per-env.
-statefulEnv:{% if stateful_env_literals | length == 0 %} {}{% endif %}
-{%- for kv in stateful_env_literals %}
-  {{ kv.0 }}: "{{ kv.1 }}"
-{%- endfor %}
+# Databases and caches ([database]/[databases.<name>], [cache]/[caches.<name>]):
+# references to the platform contract, never rendered by this chart. Each entry
+# reads a connection URL from a Secret key (default `<service>-pg-app` /
+# `<service>-cache`, key `uri`; or a literal per-env `url`) into `env`, mounts
+# only `ca.crt` of the Postgres CA Secret for tls = "verify-full", and allows
+# network-policy egress to the datastore's pods. Resolved per environment in
+# values-<env>.yaml.
+datastores: []
 
-# Stateful dependencies — rendered when tonin.toml declares [database]/[cache].
-# `shared: true` points at an external instance and renders NO StatefulSet.
-database:
-  enabled: {{ db_enabled }}
-  shared: {% if db_shared %}true{% else %}false{% endif %}
-  engine: "{{ db_engine }}"
-  name: "{{ db_name }}"
-  namespace: "{{ db_namespace }}"
-  port: {{ db_port }}
-  image: "{{ db_image }}"
-  storage: "{{ db_size }}"
-
-cache:
-  enabled: {{ cache_enabled }}
-  shared: {% if cache_shared %}true{% else %}false{% endif %}
-  engine: "{{ cache_engine }}"
-  name: "{{ cache_name }}"
-  namespace: "{{ cache_namespace }}"
-  port: {{ cache_port }}
-  storage: "{{ cache_size }}"
-
-# Secrets the service requires (DATABASE_PASSWORD, JWT keys, …).
+# Secrets the service requires ([secrets].required: JWT keys, API tokens, …).
 # create=true templates a Secret from `values` — supply real values at deploy
 # time (`--set secrets.values.KEY=...` or a private values file); NEVER commit
 # them. create=false references an externally-managed Secret named
-# <release>-secrets (e.g. created by ExternalSecrets / Vault / kubectl).
+# <service>-secrets (e.g. a SealedSecret, ExternalSecrets, Vault). Set per
+# environment in values-<env>.yaml ([secrets.<env>] create = false).
 secrets:
   create: true
   keys:{% if secret_keys | length == 0 %} []{% endif %}
@@ -146,37 +190,31 @@ secrets:
 {%- endfor %}
   values: {}
 
-# DB migrations.
-#   mode: init-container  → runs before the server container in every pod
-#         (default; correct for an owned/in-chart DB and for dev).
-#   mode: job             → a pre-install/pre-upgrade hook Job that Helm gates
-#         the rollout on. Needs the DB + Secret to already exist (managed/shared
-#         DB + secrets.create=false), since pre-upgrade hooks run before the
-#         chart's own StatefulSet/Secret.
+# DB migrations ([migrations]). `mode` is set per environment in
+# values-<env>.yaml ([migrations.<env>] mode in tonin.toml):
+#   init-container → runs before the server container in every pod.
+#   job            → a pre-install/pre-upgrade hook Job that Helm gates the
+#                    rollout on. Hooks run before the chart's own resources
+#                    exist: the Job reads the database from the platform
+#                    contract Secrets and its network policy is a hook too.
+#   none           → nothing rendered.
 #   env: extra env for the migration step only (e.g. IDENTITY_MIGRATE_ONLY=1) —
-#         never reaches the server container.
+#        never reaches the server container.
 migrations:
-  enabled: {% if migrations_enabled %}true{% else %}false{% endif %}
-  mode: init-container
+  mode: none
   command:{% if migrations_command | length == 0 %} []{% endif %}
 {%- for c in migrations_command %}
     - "{{ c }}"
 {%- endfor %}
   env: {}
 
-# CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.
-networkPolicy:
-  enabled: {% if is_cilium %}true{% else %}false{% endif %}
-  port: {{ port }}
-  mcp: {% if mcp_enabled %}true{% else %}false{% endif %}
-  callers:{% if callers | length == 0 %} []{% endif %}
-{%- for c in callers %}
-    - name: {{ c.name }}
-      namespace: {{ c.namespace }}
-{%- endfor %}
-  dependsOn:{% if depends_on | length == 0 %} []{% endif %}
-{%- for d in depends_on %}
-    - name: {{ d.name }}
-      namespace: {{ d.namespace }}
-      port: {{ d.port }}
-{%- endfor %}
+# CiliumNetworkPolicy (mesh=cilium only), set per environment in values-<env>.yaml:
+#   callers:   ingress allowlist ([callers]). Service callers match
+#              `service.identity: <name>.<namespace>`; callers with `labels`
+#              match those pods (in `namespace`, else the release namespace).
+#              No `ports` = the default set (port, service.httpPort, MCP port).
+#   dependsOn: egress to tonin services ([depends_on]) on `ports`.
+#   egress:    fqdns (Cilium toFQDNs), cidrs (toCIDRSet), kubeApiserver
+#              (toEntities: kube-apiserver) from [egress].
+# DNS (kube-dns), the otel-collector (4317) and datastores are always allowed.
+{{ network_policy_block }}
