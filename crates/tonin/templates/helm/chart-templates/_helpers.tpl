@@ -25,3 +25,16 @@ Selector labels (stable subset — must not change after first deploy).
 {{- define "service.selectorLabels" -}}
 app: {{ include "service.name" . }}
 {{- end }}
+
+{{/*
+The service's container image: `repository@digest` when image.digest is set
+(an immutable, digest-pinned image, e.g. from a `tonin deploy` lock), else
+`repository:tag`. Every container that runs the service image uses this.
+*/}}
+{{- define "service.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (toString .Values.image.tag) -}}
+{{- end -}}
+{{- end }}

@@ -12,6 +12,9 @@ replicaCount: 1
 image:
   repository: "ghcr.io/example/platform-api"
   tag: "0.1.3"
+  # Set to pin the image by digest (e.g. "sha256:…"): the chart then renders
+  # repository@digest and ignores tag. `tonin deploy` sets it from the lock.
+  digest: ""
   pullPolicy: IfNotPresent
 
 service:

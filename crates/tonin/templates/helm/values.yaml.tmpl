@@ -8,6 +8,9 @@ replicaCount: {{ replicas }}
 image:
   repository: "{{ image_repository }}"
   tag: "{{ version }}"
+  # Set to pin the image by digest (e.g. "sha256:…"): the chart then renders
+  # repository@digest and ignores tag. `tonin deploy` sets it from the lock.
+  digest: ""
   pullPolicy: IfNotPresent
 
 service:
