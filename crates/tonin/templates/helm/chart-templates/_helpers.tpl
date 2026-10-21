@@ -118,3 +118,57 @@ the service's namespace unless `namespace` is set).
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Container volumeMounts: the datastore CA mounts, then every [[volumes]] entry
+(sorted by mount path, so a parent is mounted before a volume nested in it).
+Call with (dict "root" $ "pvc" true|false): pvc=false leaves out the `pvc`
+volumes (for pods outside the StatefulSet, e.g. the migration Job).
+*/}}
+{{- define "service.volumeMounts" -}}
+{{- include "service.datastoreVolumeMounts" .root }}
+{{- $pvc := .pvc }}
+{{- range .root.Values.volumes }}
+{{- if or $pvc (ne .type "pvc") }}
+- name: {{ .name }}
+  mountPath: {{ .mountPath }}
+  {{- if .readOnly }}
+  readOnly: true
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Pod volumes: the datastore CA Secrets and the `empty-dir` [[volumes]]
+(`pvc` volumes come from the StatefulSet's volumeClaimTemplates).
+*/}}
+{{- define "service.podVolumes" -}}
+{{- include "service.datastoreVolumes" . }}
+{{- range .Values.volumes }}
+{{- if eq .type "empty-dir" }}
+- name: {{ .name }}
+  {{- if .emptyDir }}
+  emptyDir:
+    {{- toYaml .emptyDir | nindent 4 }}
+  {{- else }}
+  emptyDir: {}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+An httpGet or grpc probe action. Call with (dict "root" $ "path" <path>).
+*/}}
+{{- define "service.probeAction" -}}
+{{- $h := .root.Values.service.health -}}
+{{- if $h.grpc -}}
+grpc:
+  port: {{ $h.port }}
+{{- else -}}
+httpGet:
+  path: {{ .path | quote }}
+  port: {{ $h.port }}
+{{- end -}}
+{{- end }}

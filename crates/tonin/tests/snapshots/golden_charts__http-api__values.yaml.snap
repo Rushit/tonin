@@ -9,6 +9,18 @@ expression: read(&chart.join(file))
 
 replicaCount: 1
 
+# Workload controller ([deploy] kind = "deployment" | "statefulset"). A
+# StatefulSet gets a headless Service (<name>-headless) and one
+# PersistentVolumeClaim per pod for each `pvc` volume. podManagementPolicy,
+# serviceName and volumeClaimTemplates cannot change after the first install.
+# terminationGracePeriodSeconds (0 = the Kubernetes default) and strategy
+# ({} = the controller's default) are set per environment.
+workload:
+  kind: Deployment
+  podManagementPolicy: ""
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
 image:
   repository: "ghcr.io/example/platform-api"
   tag: "0.1.3"
@@ -35,6 +47,34 @@ service:
     grpc: false
     path: "/health"
     port: 7001
+    # httpGet paths per probe ([service.health] liveness_path / readiness_path;
+    # both default to `path`). Ignored by grpc probes.
+    livenessPath: "/health/live"
+    readinessPath: "/health/ready"
+    # startupProbe ([service.health.startup]): liveness and readiness wait
+    # until it succeeds, for slow starts.
+    startup:
+      enabled: true
+      path: "/health/live"
+      periodSeconds: 5
+      failureThreshold: 60
+
+# Extra named container ports ([[ports]]). `service` empty = on the main
+# Service; otherwise on the extra Service <name>-<service> (one per name in
+# extraServices).
+extraPorts: []
+extraServices: []
+
+# Volumes ([[volumes]]): `empty-dir` (pod-lifetime scratch, optional sizeLimit)
+# and `pvc` (StatefulSet only: a claim per pod from the default StorageClass
+# unless storageClass is set). Mounted in the server container (and the
+# migration initContainer); the migration Job gets the empty-dir ones.
+volumes:
+  - name: tmp
+    type: empty-dir
+    mountPath: /tmp
+    emptyDir:
+      sizeLimit: 512Mi
 
 # MCP tool surface. Derived automatically from [service].language:
 #   in-process → same binary, two ports (Rust — default).
@@ -53,14 +93,18 @@ outboundProxy:
   port: 6565
   image: "ghcr.io/rushit/tonin-proxy:latest"
 
+# Container resources ([resources]: `cpu`/`memory` set requests = limits;
+# [resources.requests] / [resources.limits] set them apart, CPU limit optional).
 resources:
   requests:
     cpu: "250m"
+    ephemeral-storage: "256Mi"
     memory: "256Mi"
   limits:
-    cpu: "250m"
+    ephemeral-storage: "1Gi"
     memory: "256Mi"
 
+# HorizontalPodAutoscaler ([autoscale], Deployments only).
 autoscaling:
   enabled: false
   minReplicas: 1
@@ -93,9 +137,11 @@ mesh: "none"
 observability:
   otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
 
-# Override the container entrypoint. Empty list = use the Docker image CMD.
-# Rust services default to /usr/local/bin/<name>; leave empty for all others.
+# Container command and args ([service] command / args). Empty command = the
+# image's ENTRYPOINT/CMD. Rust services default to /usr/local/bin/<name>;
+# every other language runs the image as built.
 command: ["/usr/local/bin/platform-api"]
+args: []
 
 # Gate RUST_LOG injection: only meaningful for Rust binaries.
 rustService: true

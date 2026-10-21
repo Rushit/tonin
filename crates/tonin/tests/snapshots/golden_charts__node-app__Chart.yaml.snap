@@ -1,0 +1,10 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+apiVersion: v2
+name: shell
+description: "shell HTTP service (tonin)"
+type: application
+version: "0.1.1"
+appVersion: "0.1.1"

@@ -1,0 +1,194 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: rendered
+---
+---
+# Source: shell/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: shell
+  namespace: platform-prd
+  labels:
+    app: shell
+    app.kubernetes.io/name: shell
+    app.kubernetes.io/version: "0.1.1"
+    helm.sh/chart: shell-0.1.1
+spec:
+  type: ClusterIP
+  selector:
+    app: shell
+  ports:
+    - name: http
+      port: 7002
+      targetPort: 7002
+
+---
+# Source: shell/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shell
+  namespace: platform-prd
+  labels:
+    app: shell
+    app.kubernetes.io/name: shell
+    app.kubernetes.io/version: "0.1.1"
+    helm.sh/chart: shell-0.1.1
+spec:
+  selector:
+    matchLabels:
+      app: shell
+  template:
+    metadata:
+      labels:
+        app: shell
+        service.identity: shell.platform-prd
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: server
+          image: "ghcr.io/example/shell:0.1.1"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - node
+          args:
+            - apps/shell/server.js
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: "shell"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4317"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=platform-prd,service.version=0.1.1"
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
+            - name: NODE_ENV
+              value: "production"
+          ports:
+            - containerPort: 7002
+              name: http
+          livenessProbe:
+            httpGet:
+              path: "/api/health"
+              port: 7002
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: "/api/health"
+              port: 7002
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+            - name: next-cache
+              mountPath: /app/apps/shell/.next/cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: next-cache
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+
+---
+# Source: shell/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: shell
+  namespace: platform-prd
+  labels:
+    app: shell
+    app.kubernetes.io/name: shell
+    app.kubernetes.io/version: "0.1.1"
+    helm.sh/chart: shell-0.1.1
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: shell
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# Source: shell/templates/networkpolicy.yaml
+# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
+# (observability, declared dependencies, the platform contract's databases and
+# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: shell-ingress
+  namespace: platform-prd
+  labels:
+    app: shell
+    app.kubernetes.io/name: shell
+    app.kubernetes.io/version: "0.1.1"
+    helm.sh/chart: shell-0.1.1
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: shell.platform-prd
+  ingress:
+    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "7002", protocol: TCP }
+  egress:
+    # DNS (kube-dns). Any egress rule makes this policy default-deny for the
+    # pod, which would otherwise silently break service discovery.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            service.identity: platform-api.platform-prd
+      toPorts:
+        - ports:
+            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
+            - { port: "7001", protocol: TCP }

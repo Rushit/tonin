@@ -7,6 +7,10 @@ expression: read(&chart.join(file))
 
 replicaCount: 2
 
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
 image:
   tag: "0.3.7"
 

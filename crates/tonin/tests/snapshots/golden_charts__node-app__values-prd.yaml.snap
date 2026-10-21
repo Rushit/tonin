@@ -1,0 +1,57 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# prd-specific overrides — generated from the prd overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 2
+
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
+image:
+  tag: "0.1.1"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+
+mesh: "cilium"
+
+mcp:
+  enabled: false
+  mode: none
+
+outboundProxy:
+  enabled: false
+
+ingress:
+  enabled: false
+  host: ""
+
+# Plain env vars from tonin.toml [env], merged with the [env.prd]
+# overlay and with {env} substituted for this environment.
+env:
+  NODE_ENV: "production"
+
+# Databases and caches of the platform contract, resolved for prd.
+datastores: []
+
+secrets:
+  keys: []
+
+migrations:
+  mode: none
+
+networkPolicy:
+  enabled: true
+  port: 7002
+  mcp: false
+  callers: []
+  dependsOn:
+    - name: platform-api
+      namespace: platform-prd
+      port: 7001

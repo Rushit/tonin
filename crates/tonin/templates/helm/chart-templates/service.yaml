@@ -1,3 +1,26 @@
+{{- define "service.mainPorts" -}}
+- name: {{ .Values.service.portName }}
+  port: {{ .Values.service.port }}
+  targetPort: {{ .Values.service.port }}
+{{- if gt (int .Values.service.httpPort) 0 }}
+- name: http
+  port: {{ .Values.service.httpPort }}
+  targetPort: {{ .Values.service.httpPort }}
+{{- end }}
+{{- if .Values.mcp.enabled }}
+- name: mcp
+  port: {{ .Values.service.mcpPort }}
+  targetPort: {{ .Values.service.mcpPort }}
+{{- end }}
+{{- range .Values.extraPorts }}
+{{- if not .service }}
+- name: {{ .name }}
+  port: {{ .port }}
+  targetPort: {{ .name }}
+  protocol: {{ .protocol }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -10,16 +33,46 @@ spec:
   selector:
     {{- include "service.selectorLabels" . | nindent 4 }}
   ports:
-    - name: {{ .Values.service.portName }}
-      port: {{ .Values.service.port }}
-      targetPort: {{ .Values.service.port }}
-    {{- if gt (int .Values.service.httpPort) 0 }}
-    - name: http
-      port: {{ .Values.service.httpPort }}
-      targetPort: {{ .Values.service.httpPort }}
+    {{- include "service.mainPorts" . | nindent 4 }}
+{{- /* Extra named Services ([[ports]] service = "<suffix>"): <name>-<suffix>. */}}
+{{- range $suffix := .Values.extraServices }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "service.name" $ }}-{{ $suffix }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "service.labels" $ | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "service.selectorLabels" $ | nindent 4 }}
+  ports:
+    {{- range $.Values.extraPorts }}
+    {{- if eq .service $suffix }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .name }}
+      protocol: {{ .protocol }}
     {{- end }}
-    {{- if .Values.mcp.enabled }}
-    - name: mcp
-      port: {{ .Values.service.mcpPort }}
-      targetPort: {{ .Values.service.mcpPort }}
     {{- end }}
+{{- end }}
+{{- if eq .Values.workload.kind "StatefulSet" }}
+---
+# Headless Service governing the StatefulSet: stable per-pod DNS names
+# (<name>-<ordinal>.<name>-headless.<namespace>.svc).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "service.name" . }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "service.selectorLabels" . | nindent 4 }}
+  ports:
+    {{- include "service.mainPorts" . | nindent 4 }}
+{{- end }}

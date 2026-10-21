@@ -7,6 +7,14 @@ expression: read(&chart.join(file))
 
 replicaCount: 1
 
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
 image:
   tag: "0.1.3"
 

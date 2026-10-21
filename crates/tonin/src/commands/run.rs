@@ -300,6 +300,7 @@ mod tests {
             env_vars: vec![],
             selected_env: "dev".to_string(),
             client: Default::default(),
+            workload: Default::default(),
             path_rules: vec![],
         };
 
@@ -403,6 +404,7 @@ mod tests {
             env_vars: vec![],
             selected_env: "dev".to_string(),
             client: Default::default(),
+            workload: Default::default(),
             path_rules: vec![],
         }
     }

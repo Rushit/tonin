@@ -86,9 +86,9 @@ The renderer (`crates/tonin/src/codegen/render.rs`) maps `tonin.toml` fields to 
 
 | File | When |
 |---|---|
-| `deployment.yaml` | always |
-| `service.yaml` | always |
-| `hpa.yaml` | always (CPU-based; a `[deploy].hpa = false` opt-out is roadmapped, not yet implemented) |
+| `deployment.yaml` | always: a `Deployment`, or a `StatefulSet` for `[deploy] kind = "statefulset"` |
+| `service.yaml` | always: the Service, extra named Services from `[[ports]]`, and a headless Service for a StatefulSet |
+| `hpa.yaml` | `[autoscale]` with a range for the environment (Deployments only) |
 | `ingress.yaml` | `[deploy].expose = "ingress"` |
 | `migration-job.yaml` | `[migrations]` with `mode = "job"` for the environment (plus a hook CiliumNetworkPolicy under Cilium) |
 | `mesh/<engine>/*.yaml` | `[deploy].mesh = "cilium" \| "istio" \| "linkerd"` |
@@ -173,6 +173,151 @@ istioctl install --set profile=demo     # Istio
 `tonin helm upgrade` will succeed without the mesh installed, but the
 mesh-specific overlays (CiliumNetworkPolicy, PeerAuthentication, etc.)
 will sit dormant until the mesh CRDs exist.
+
+## Workloads, storage, ports, probes and resources
+
+### Deployment or StatefulSet
+
+```toml
+[deploy]
+kind                             = "statefulset"   # "deployment" (default) | "statefulset"
+pod_management_policy            = "Parallel"      # StatefulSet only: "OrderedReady" (default) | "Parallel"
+termination_grace_period_seconds = 60              # also per env: [deploy.<env>]
+replicas                         = 2
+
+[deploy.strategy]          # Deployment: type = "RollingUpdate" | "Recreate", max_surge, max_unavailable
+max_surge       = 1        #   (integers or "25%")
+max_unavailable = 0
+
+[deploy.prd.strategy]      # StatefulSet: type = "RollingUpdate" | "OnDelete", partition
+partition = 1              # stage a rollout: only pods with ordinal >= 1 update
+```
+
+A StatefulSet gets `serviceName: <name>-headless` and a headless Service of that name (stable
+pod DNS `<name>-<ordinal>.<name>-headless.<ns>.svc`), the regular ClusterIP Service, and one
+PersistentVolumeClaim per pod for each `pvc` volume. `podManagementPolicy`, `serviceName` and
+`volumeClaimTemplates` are immutable on a StatefulSet: changing them later needs the StatefulSet
+deleted (`kubectl delete sts <name> --cascade=orphan`) before the upgrade.
+
+`[deploy.<env>.strategy]` overrides `[deploy.strategy]` field by field. The overlay is rendered
+into `values-<env>.yaml` as `workload.strategy`, under `strategy` (Deployment) or `updateStrategy`
+(StatefulSet).
+
+### Autoscaling
+
+```toml
+[autoscale]
+min_replicas = 2    # default: [deploy] replicas
+max_replicas = 8
+
+[autoscale.dev]     # per env: enabled, min_replicas, max_replicas
+enabled = false
+```
+
+An HPA (CPU, 70 %) is rendered when the environment's range is wider than one replica count.
+`[autoscale]` on a StatefulSet is an error (it keeps a fixed replica count); so is
+`min_replicas > max_replicas`.
+
+### Volumes
+
+```toml
+[[volumes]]
+name       = "data"
+type       = "pvc"                 # StatefulSet only: one claim per pod
+mount_path = "/home/nonroot/data"
+size       = "8Gi"
+# storage_class = "fast"           # default: the cluster's default StorageClass (platform contract)
+# access_modes  = ["ReadWriteOnce"]
+
+[[volumes]]
+name       = "parquet-cache"
+type       = "empty-dir"           # pod-lifetime scratch space
+mount_path = "/home/nonroot/data/parquet-cache"
+size_limit = "2Gi"                 # optional; the kubelet evicts the pod above it
+# medium   = "Memory"              # tmpfs (counts against the memory limit)
+# read_only = true
+```
+
+Volumes are mounted in the server container in mount-path order (a volume nested inside another
+mount works) and in the migration initContainer; the migration Job, which is not part of the
+StatefulSet, gets the `empty-dir` volumes only. With a read-only root filesystem, every
+directory the app writes to (`/tmp`, caches) needs one. Names starting with `pg-ca` are reserved.
+
+### Extra ports and Services
+
+```toml
+[[ports]]
+name    = "otlp-http"   # Kubernetes port name: <= 15 chars, lowercase, at least one letter
+port    = 4318
+service = "ingest"      # on Service <name>-ingest; omit to put it on the main Service
+
+[[ports]]
+name     = "query"
+port     = 8081
+service  = "internal"   # several ports may share one extra Service
+# protocol = "TCP"      # "TCP" (default) | "UDP" | "SCTP"
+```
+
+Each port becomes a named `containerPort`, a Service port (`targetPort` by name), and is listed
+in the chart's `extraPorts` values. Names `grpc`, `http`, `mcp`, `proxy` and the ports tonin
+already uses (`[service].port`, `[service.http]`, MCP 50052, proxy 6565) are rejected.
+
+### Probes
+
+```toml
+[service.health]
+path           = "/health"         # default for both probes
+port           = 8080
+liveness_path  = "/health/live"
+readiness_path = "/health/ready"
+
+[service.health.startup]           # optional startupProbe; liveness/readiness wait for it
+path              = "/health"      # default: the liveness path
+period_seconds    = 10             # default 10
+failure_threshold = 30             # default 30 (up to 5 minutes to start)
+```
+
+A gRPC-only service is probed with native `grpc:` probes; path fields are then an error (add
+`[service.http]` to probe an HTTP endpoint). `[service.health.startup]` without fields still adds
+a grpc startupProbe.
+
+### Resources
+
+```toml
+[resources]          # shorthand: requests = limits
+cpu    = "100m"
+memory = "128Mi"
+```
+
+or, apart, with the CPU limit left out (no CPU throttling) and ephemeral storage:
+
+```toml
+[resources.requests]
+cpu               = "250m"
+memory            = "512Mi"
+ephemeral_storage = "1Gi"     # covers emptyDirs on node disk, logs and the writable layer
+
+[resources.limits]
+memory            = "512Mi"
+ephemeral_storage = "2Gi"
+```
+
+`requests.cpu` and `requests.memory` are required; limits are exactly what you write. Using both
+forms at once is an error. Quantities are validated (`"500m"`, `"256Mi"`, `"8Gi"`).
+
+### Command and language
+
+```toml
+[service]
+language = "node"                     # a plain Node.js server (e.g. Next.js standalone)
+command  = ["node"]                   # optional; [] or omitted = the image's ENTRYPOINT/CMD
+args     = ["apps/shell/server.js"]   # optional
+```
+
+Rust services default to `command = ["/usr/local/bin/<name>"]` and get `RUST_LOG`; every other
+language runs the image as built. `language = "node"` also means no tonin SDK in the image: no
+MCP sidecar and no outbound proxy sidecar, even with `[depends_on]` (use `"typescript"` for a
+tonin TypeScript service, which gets both).
 
 ## Commands
 
