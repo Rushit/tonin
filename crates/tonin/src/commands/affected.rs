@@ -81,10 +81,7 @@ pub struct AffectedPackage {
 }
 
 pub fn run(args: AffectedArgs) -> Result<()> {
-    let root = args
-        .workspace
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(args.workspace.clone())?;
 
     // 1. Get changed files from git
     let changed_paths = git_diff(&args.base, &args.head, &root)?;

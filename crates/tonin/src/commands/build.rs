@@ -36,10 +36,7 @@ pub struct BuildArgs {
 }
 
 pub fn run(args: BuildArgs) -> Result<()> {
-    let root = args
-        .workspace
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(args.workspace.clone())?;
 
     let backend: Box<dyn BuildBackend> = if args.dry_run {
         Box::new(BuildDryRunBackend)

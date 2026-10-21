@@ -129,6 +129,11 @@ labels    = { "app.kubernetes.io/name" = "postgres" }
 The URL is used as the env var's value (with `tls` set, the TLS parameters are appended and the
 CA is mounted, as above). Other environments keep reading the Secret.
 
+The `url` replaces only the Secret reference: without `namespace` and `labels` the network policy
+still allows egress only to the contract pods (`cnpg.io/cluster=<cluster>`) in the service's own
+namespace, and connections to an instance elsewhere are dropped. `tonin helm generate` warns
+when an environment with network policy (`mesh = "cilium"`) sets a `url` without either.
+
 ### Named databases
 
 `[databases.<name>]` takes the same fields. Defaults are prefixed with the name: env

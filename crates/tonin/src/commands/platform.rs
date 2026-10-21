@@ -42,8 +42,8 @@ pub enum PlatformCmd {
 
     /// Check the status of services in an environment.
     ///
-    /// Queries Kubernetes for running versions and cross-references
-    /// with the environment lock to detect drift.
+    /// Compares the image each release runs with the environment lock's
+    /// image (as `tonin deploy` does) to detect drift.
     ///
     ///   tonin platform status --env prod
     ///   tonin platform status --env staging --json
@@ -112,7 +112,7 @@ fn run_deploy(
     json: bool,
     dry_run: bool,
 ) -> Result<()> {
-    let root = workspace.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(workspace)?;
 
     // Load plans to find service and its wave
     let plans = Plan::load_workspace_with_env(&root, env)?;
@@ -164,7 +164,7 @@ fn run_deploy(
 }
 
 fn run_status(env: &str, workspace: Option<PathBuf>, json: bool) -> Result<()> {
-    let root = workspace.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(workspace)?;
 
     let orchestrator = CliOrchestrator::new(&root);
     let statuses = orchestrator.get_running_services(env)?;
@@ -193,7 +193,7 @@ fn run_status(env: &str, workspace: Option<PathBuf>, json: bool) -> Result<()> {
 }
 
 fn run_rollback(service: &str, env: &str, workspace: Option<PathBuf>) -> Result<()> {
-    let root = workspace.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(workspace)?;
 
     let orchestrator = CliOrchestrator::new(&root);
     orchestrator.rollback_service(service, env)?;

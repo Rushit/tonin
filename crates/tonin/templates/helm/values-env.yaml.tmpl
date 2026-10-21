@@ -32,7 +32,7 @@ ingress:
 # overlay and with {env} substituted for this environment.
 env:{% if env_vars | length == 0 %} {}{% endif %}
 {%- for kv in env_vars %}
-  {{ kv.0 }}: "{{ kv.1 }}"
+  {{ kv[0] }}: "{{ kv[1] }}"
 {%- endfor %}
 
 # Databases and caches of the platform contract, resolved for {{ env_name }}.

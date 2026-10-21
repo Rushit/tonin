@@ -103,7 +103,8 @@ command  = ["/usr/local/bin/orders-purge-expired"]
 Since 0.15, `tonin helm generate` renders one `CronJob` per `[[cronjobs]]`
 entry. It runs the service image with the service's env, secrets, datastores,
 security context, ServiceAccount, pull secrets and placement, and its pods are
-covered by the service's network policy. All fields (`args`,
+covered by the service's network policy. It gets the service's `empty-dir`
+volumes (fresh per run) but not the StatefulSet's `pvc` claims. All fields (`args`,
 `concurrency_policy`, history limits, `starting_deadline_seconds`, `resources`,
 `env`, `envs`, …) are in
 [12-kubernetes-deploy.md](12-kubernetes-deploy.md#pods-pull-secrets-serviceaccount-placement-disruption-cronjobs).

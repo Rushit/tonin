@@ -12,8 +12,9 @@ pub struct DeployValues {
     /// Image from the environment lock, normally pinned by digest:
     /// "ghcr.io/org/svc@sha256:...".
     pub image: String,
-    /// Service version from the lock. Used as the image tag only when `image`
-    /// carries neither a digest nor a tag.
+    /// Service version from the lock. Set as `image.version` (the
+    /// `app.kubernetes.io/version` label and OTEL `service.version`), and used
+    /// as the image tag when `image` carries neither a digest nor a tag.
     pub version: String,
     /// Helm release name: the service name (`plan.name`), the same release
     /// `tonin helm upgrade` manages.
@@ -53,6 +54,15 @@ impl DeployValues {
         }
     }
 
+    /// Whether a release running `running_image` (as
+    /// [`DeployBackend::running_image`] returns it) already runs this image.
+    /// Images are compared, not versions: a chart's appVersion comes from the
+    /// tonin.toml it was generated from and says nothing about the digest.
+    pub fn is_running(&self, running_image: Option<&str>) -> bool {
+        running_image
+            .is_some_and(|r| ImageRef::parse(r).to_string() == self.image_ref().to_string())
+    }
+
     /// The image the release should run, as the chart renders it.
     pub fn image_ref(&self) -> ImageRef {
         let mut image = ImageRef::parse(&self.image);
@@ -65,7 +75,8 @@ impl DeployValues {
     /// Arguments for `helm` (without the binary) that apply this upgrade.
     ///
     /// The image is set from the lock: `image.repository` plus `image.digest`
-    /// for a digest-pinned image (no mutable tag is set), else `image.tag`.
+    /// for a digest-pinned image (no mutable tag is set), else `image.tag`;
+    /// `image.version` is always the lock's version.
     pub fn helm_upgrade_args(&self) -> Vec<String> {
         let mut args: Vec<String> = vec![
             "upgrade".into(),
@@ -93,6 +104,10 @@ impl DeployValues {
             }
             (None, None) => {}
         }
+        args.extend([
+            "--set-string".into(),
+            format!("image.version={}", self.version),
+        ]);
 
         args.extend([
             "--wait".into(),
@@ -168,6 +183,12 @@ pub trait DeployBackend: Send + Sync {
     fn running_image(&self, _release: &str, _namespace: &str) -> Result<Option<String>> {
         Ok(None)
     }
+    /// Return the version the release's values report (`image.version`, set
+    /// by `tonin deploy` from the lock, else `image.tag`: what the chart's
+    /// `app.kubernetes.io/version` label shows), or None if not deployed.
+    fn running_release_version(&self, _release: &str, _namespace: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// Default backend: shells out to the `helm` binary on $PATH.
@@ -214,18 +235,39 @@ impl DeployBackend for HelmBackend {
     }
 
     fn running_image(&self, release: &str, namespace: &str) -> Result<Option<String>> {
-        let out = std::process::Command::new("helm")
-            .args(["get", "values", release, "--namespace", namespace])
-            .args(["--all", "--output", "json"])
-            .output()
-            .map_err(|e| anyhow::anyhow!("helm get values failed: {e}"))?;
-        if !out.status.success() {
-            // Not installed (or not reachable): treat as not deployed.
-            return Ok(None);
-        }
-        let values: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-        Ok(image_from_values(&values).map(|i| i.to_string()))
+        Ok(helm_release_values(release, namespace)?
+            .and_then(|values| image_from_values(&values))
+            .map(|i| i.to_string()))
     }
+
+    fn running_release_version(&self, release: &str, namespace: &str) -> Result<Option<String>> {
+        Ok(helm_release_values(release, namespace)?.and_then(|v| version_from_values(&v)))
+    }
+}
+
+/// `helm get values --all` of a release, or None when it is not installed
+/// (or not reachable).
+fn helm_release_values(release: &str, namespace: &str) -> Result<Option<serde_json::Value>> {
+    let out = std::process::Command::new("helm")
+        .args(["get", "values", release, "--namespace", namespace])
+        .args(["--all", "--output", "json"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("helm get values failed: {e}"))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_slice(&out.stdout)?))
+}
+
+/// The version a release's values report (see the chart's `service.version`).
+fn version_from_values(values: &serde_json::Value) -> Option<String> {
+    ["version", "tag"]
+        .iter()
+        .find_map(|key| match &values["image"][key] {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
 }
 
 /// The image a release's values render (see the chart's `service.image`).
@@ -362,6 +404,8 @@ mod tests {
                 "image.repository=ghcr.io/myorg/users-service",
                 "--set-string",
                 "image.digest=sha256:abc",
+                "--set-string",
+                "image.version=1.0.0",
                 "--wait",
                 "--timeout",
                 "300s",
@@ -370,6 +414,21 @@ mod tests {
             ]
         );
         assert!(!args.iter().any(|a| a.starts_with("image.tag")));
+    }
+
+    #[test]
+    fn upgrade_args_always_carry_the_lock_version() {
+        for image in [
+            "ghcr.io/myorg/users-service@sha256:abc",
+            "ghcr.io/myorg/users-service:latest",
+            "ghcr.io/myorg/users-service",
+        ] {
+            let args = values(image).helm_upgrade_args();
+            assert!(
+                args.contains(&"image.version=1.0.0".to_string()),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]
@@ -398,6 +457,28 @@ mod tests {
             "ghcr.io/o/s:0.9.0"
         );
         assert!(image_from_values(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn release_version_prefers_image_version_over_the_tag() {
+        let pinned = serde_json::json!({"image": {
+            "repository": "ghcr.io/o/s", "tag": "0.9.0", "version": "1.4.0",
+            "digest": "sha256:abc"}});
+        assert_eq!(version_from_values(&pinned).as_deref(), Some("1.4.0"));
+        let tagged = serde_json::json!({"image": {"tag": "0.9.0", "version": ""}});
+        assert_eq!(version_from_values(&tagged).as_deref(), Some("0.9.0"));
+        assert_eq!(version_from_values(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn is_running_compares_images_not_versions() {
+        let v = values("ghcr.io/myorg/users-service@sha256:abc");
+        assert!(v.is_running(Some("ghcr.io/myorg/users-service@sha256:abc")));
+        // A tag next to the digest does not matter: the digest is what runs.
+        assert!(v.is_running(Some("ghcr.io/myorg/users-service:0.9.0@sha256:abc")));
+        assert!(!v.is_running(Some("ghcr.io/myorg/users-service@sha256:fff")));
+        assert!(!v.is_running(Some("ghcr.io/myorg/users-service:1.0.0")));
+        assert!(!v.is_running(None));
     }
 
     #[test]

@@ -11,6 +11,7 @@ use serde::Serialize;
 use tonin_plugin::{
     Caller, CallerSource, DatastoreEnv, DependencyRef, EgressSpec, McpMode, MigrationMode, Plan,
     ResourcesSpec, SecuritySection, ServiceKind, VolumeSource, VolumeSpec, WorkloadSpec,
+    datastore_url_warnings,
 };
 
 static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
@@ -148,11 +149,23 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         "no environment given: pass --env <ENV> once per environment (e.g. --env dev --env prd)"
     );
 
-    // Chart.yaml and the base values.yaml only use env-independent fields
-    // (see `base_context`), so any env's plan yields the same output.
-    let base_plan = Plan::load_with_env(&toml_path, &args.envs[0])
-        .with_context(|| format!("loading {}", toml_path.display()))?;
+    // Chart.yaml and the base values.yaml come from the env-free plan, so
+    // they cannot depend on which environments are generated (or in which
+    // order). Every env is loaded before anything is written: an invalid env
+    // leaves the chart as it was.
+    let base_plan =
+        Plan::load_base(&toml_path).with_context(|| format!("loading {}", toml_path.display()))?;
+    let env_plans = args
+        .envs
+        .iter()
+        .map(|env_name| {
+            Plan::load_with_env(&toml_path, env_name)
+                .with_context(|| format!("loading plan for env '{env_name}'"))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
+    let toml_src = std::fs::read_to_string(&toml_path)
+        .with_context(|| format!("reading {}", toml_path.display()))?;
     for warning in unrendered_overlays(&toml_path, &args.envs)? {
         eprintln!("warning: {warning}");
     }
@@ -170,10 +183,15 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     render_tmpl("values.yaml.tmpl", &ctx, &chart_dir.join("values.yaml"))?;
 
     // --- values-<env>.yaml -------------------------------------------------
-    for env_name in &args.envs {
-        let env_plan = Plan::load_with_env(&toml_path, env_name)
-            .with_context(|| format!("loading plan for env '{env_name}'"))?;
-        let mut env_ctx = build_context(&env_plan);
+    for (env_name, env_plan) in args.envs.iter().zip(&env_plans) {
+        if env_plan.mesh.as_str() == "cilium" {
+            for warning in datastore_url_warnings(&toml_src, env_name)
+                .with_context(|| format!("reading {}", toml_path.display()))?
+            {
+                eprintln!("warning: {}: {warning}", toml_path.display());
+            }
+        }
+        let mut env_ctx = build_context(env_plan);
         env_ctx.insert("env_name", env_name);
         render_tmpl(
             "values-env.yaml.tmpl",
@@ -320,11 +338,10 @@ fn build_context(plan: &Plan) -> tera::Context {
     ctx
 }
 
-/// Context for `Chart.yaml` and the base `values.yaml`: env-independent
-/// fields of `plan` only. Every key whose value depends on the environment
-/// (an `[<section>.<env>]` overlay or an `{env}` placeholder) gets a neutral
-/// default here; `values-<env>.yaml` carries the real value. This keeps the
-/// base free of one environment's settings (e.g. dev's shared-instance URLs).
+/// Context for `Chart.yaml` and the base `values.yaml`, from the env-free
+/// plan ([`Plan::load_base`]). Every key `values-<env>.yaml` sets also gets a
+/// neutral default here (the base table's value would be one more place for
+/// an env's setting to leak from); `values-<env>.yaml` carries the real value.
 fn base_context(plan: &Plan) -> tera::Context {
     let mut ctx = build_context(plan);
     // [deploy] (+ overlays): replicas, autoscaling, mesh, MCP, ingress.
@@ -944,6 +961,77 @@ orders-service = "myapp-dev"
         assert!(prod_env.contains("mesh: \"cilium\""), "{prod_env}");
         assert!(prod_env.contains("mode: in-process"), "{prod_env}");
         assert!(prod_env.contains("name: identity-pg-app"), "{prod_env}");
+    }
+
+    #[test]
+    fn base_values_do_not_depend_on_env_order_and_a_bad_env_writes_nothing() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let render = |envs: &[&str], out: &str| {
+            let out = svc.path().join(out);
+            run(GenerateArgs {
+                path: Some(svc.path().to_path_buf()),
+                out: Some(out.clone()),
+                envs: envs.iter().map(|e| e.to_string()).collect(),
+            })
+            .map(|()| read(&out.join("values.yaml")))
+        };
+        let dev_first = render(&["dev", "prod"], "a").unwrap();
+        let prod_first = render(&["prod", "dev"], "b").unwrap();
+        assert_eq!(dev_first, prod_first);
+
+        // An env that fails to load fails before anything is written (here:
+        // a PDB that blocks every eviction with broken's 2 replicas).
+        let bad = format!(
+            "{RICH_TOML}\n[deploy.broken]\nreplicas = 2\n\n[pdb.broken]\nmin_available = 2\n"
+        );
+        write_service(svc.path(), &bad);
+        assert!(render(&["dev", "broken"], "c").is_err());
+        assert!(!svc.path().join("c").exists());
+    }
+
+    #[test]
+    fn ingress_host_renders_when_exposed_and_empty_otherwise() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(
+            svc.path(),
+            r#"
+[service]
+name    = "api"
+version = "1.0.0"
+type    = "http"
+
+[deploy]
+replicas  = 1
+namespace = "platform-{env}"
+
+[deploy.prd]
+expose = "api.example.com"
+
+[resources]
+cpu    = "100m"
+memory = "128Mi"
+"#,
+        );
+        let out = svc.path().join("chart");
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["dev".into(), "prd".into()],
+        })
+        .unwrap();
+        let prd = read(&out.join("values-prd.yaml"));
+        assert!(
+            prd.contains("ingress:\n  enabled: true\n  host: \"api.example.com\""),
+            "{prd}"
+        );
+        for file in ["values.yaml", "values-dev.yaml"] {
+            let values = read(&out.join(file));
+            assert!(
+                values.contains("ingress:\n  enabled: false\n  host: \"\""),
+                "{file}:\n{values}"
+            );
+        }
     }
 
     #[test]

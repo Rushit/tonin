@@ -337,7 +337,9 @@ fn camel_keys(val: &toml::Value) -> toml::Value {
 }
 
 /// A list of tables with camelCase keys, each key in `allowed` and every
-/// key of `required` present.
+/// key of `required` present. `Plan::load` reports these with line numbers
+/// first (the strict schema, `schema.rs`); this keeps the resolver correct
+/// on its own.
 fn object_list(
     field: &str,
     items: &[toml::Value],

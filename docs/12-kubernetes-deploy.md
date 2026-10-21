@@ -243,9 +243,11 @@ size_limit = "2Gi"                 # optional; the kubelet evicts the pod above 
 ```
 
 Volumes are mounted in the server container in mount-path order (a volume nested inside another
-mount works) and in the migration initContainer; the migration Job, which is not part of the
-StatefulSet, gets the `empty-dir` volumes only. With a read-only root filesystem, every
-directory the app writes to (`/tmp`, caches) needs one. Names starting with `pg-ca` are reserved.
+mount works) and in the migration initContainer. The migration Job and the `[[cronjobs]]`, which
+are not part of the StatefulSet, get the `empty-dir` volumes only (each pod its own, empty), never
+the StatefulSet's `pvc` claims: a CronJob cannot read or write a replica's persistent data. With a
+read-only root filesystem, every directory the app writes to (`/tmp`, caches) needs one. Names
+starting with `pg-ca` are reserved.
 
 ### Extra ports and Services
 
@@ -347,6 +349,10 @@ termination_grace_period_seconds, strategy, image_pull_secrets, [deploy.<env>] o
   `none`).
 - Free-form tables stay free-form: `[security.pod]` / `[security.container]`,
   `labels`, `node_selector`, `[secrets] map` and `[[cronjobs]] env`.
+- `[placement] tolerations` and `topology_spread` entries are checked the same way (since
+  0.16, with the line of the entry): their keys may be `snake_case` or `camelCase`, and a
+  spread constraint without `max_skew`, `topology_key` or `when_unsatisfiable` names the
+  missing key.
 - `[storage] kind` (written by `tonin new --with-storage`) is accepted; the chart does not
   read it.
 
@@ -404,7 +410,9 @@ Always render with both files: `-f values.yaml -f values-<env>.yaml`
 engine = "postgres"
 
 [database.dev]
-url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/app_dev"
+url       = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/app_dev"
+namespace = "shared-dev"                              # egress to the shared instance
+labels    = { "app.kubernetes.io/name" = "postgres" }
 
 [database.prd]
 tls = "verify-full"
@@ -639,8 +647,8 @@ envs                      = ["prd"]           # default: every environment
   network policy at `-5` and the Job at `0`), deleted with the Job, and never
   mounts an API token. The service's identity is never shared with the Job.
 - **Placement**: each field of `[placement.<env>]` replaces the base field.
-  Tolerations and spread constraints are checked for unknown keys
-  (`snake_case` or `camelCase`).
+  Tolerations and spread constraints are checked by the strict schema (see
+  above; `snake_case` or `camelCase` keys).
 - **Topology spread** is on by default: `maxSkew: 1` over
   `kubernetes.io/hostname`, `ScheduleAnyway`, selecting the service's pods.
   Constraints without a `label_selector` get the service's selector labels.
@@ -681,6 +689,7 @@ For each service it runs, with the chart at `<service dir>/chart` (absolute):
 helm upgrade --install <service> <service dir>/chart \
   -f values.yaml -f values-<ENV>.yaml --namespace <namespace> \
   --set-string image.repository=<repo> --set-string image.digest=sha256:… \
+  --set-string image.version=<lock version> \
   --wait --timeout <timeout> --atomic --cleanup-on-fail
 ```
 
@@ -689,6 +698,10 @@ helm upgrade --install <service> <service dir>/chart \
 - The image comes from the lock. A digest-pinned image sets `image.digest`, and
   the chart renders `repository@digest`; no mutable tag is set. `image.tag`
   is only set when the lock image has no digest.
+- `image.version` is the lock's version. The `app.kubernetes.io/version` label and
+  the OTEL `service.version` read it (falling back to `image.tag` when it is
+  empty, as with `tonin helm upgrade`), so a digest-pinned release reports the
+  version it runs, not the version the chart was generated at.
 - A service is skipped when its release already runs the lock image (compared
   by image, not chart version); `--converge` upgrades every selected service.
 - `--affected` uses the same computation as `tonin affected --env <ENV> --base <ref>`.

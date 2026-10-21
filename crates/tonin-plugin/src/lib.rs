@@ -55,7 +55,7 @@ pub use stateful::{
     CaMount, CacheEngine, CacheSpec, ConfigEngine, ConfigSpec, DatabaseEngine, DatabaseSpec,
     DatabaseTls, DatastoreEnv, DatastoreSource, EgressTarget, EmittedEnv, ExternalStore,
     MigrationMode, MigrationTool, MigrationsSpec, PG_CA_KEY, PG_CA_MOUNT_DIR, SecretEnvRef,
-    SecretProvider, SecretsSpec, select_env,
+    SecretProvider, SecretsSpec, datastore_url_warnings, select_env,
 };
 
 // Workload shape ([deploy] kind, volumes, ports, probes, resources)

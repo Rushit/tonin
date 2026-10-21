@@ -952,6 +952,25 @@ impl Plan {
     }
 
     pub fn load_with_env(toml_path: &Path, env: &str) -> Result<Self, Error> {
+        Self::load_scoped(toml_path, Some(env))
+    }
+
+    /// The env-free plan, for output that must not depend on an environment
+    /// (`Chart.yaml` and the base `values.yaml`). Only the base tables apply:
+    /// no `[<section>.<env>]` overlay, and the sections that only make sense
+    /// for one environment are left empty — `[depends_on]`, `[callers]`,
+    /// `[egress]`, `[env]`, databases and caches, `[autoscale]`, `[placement]`,
+    /// `[pdb]` and `[[cronjobs]]`. `namespace` and `selected_env` are empty.
+    pub fn load_base(toml_path: &Path) -> Result<Self, Error> {
+        Self::load_scoped(toml_path, None)
+    }
+
+    /// Load for `env`, or env-free ([`Self::load_base`]) when `None`.
+    fn load_scoped(toml_path: &Path, scope: Option<&str>) -> Result<Self, Error> {
+        // Env-free: an empty env name never matches an overlay (overlay keys
+        // are environment names) and the env-only sections are skipped below.
+        let env = scope.unwrap_or("");
+        let base = scope.is_none();
         let raw_str = std::fs::read_to_string(toml_path)
             .map_err(|e| Error::Io(toml_path.to_path_buf(), e))?;
         crate::schema::validate(&raw_str, &crate::schema::TONIN_TOML)
@@ -970,17 +989,24 @@ impl Plan {
             });
         }
 
-        let depends_on = resolve_depends_on(raw.depends_on, env)?;
-        let env_vars = resolve_env_vars(&raw.env, env)?;
+        let (depends_on, env_vars, explicit_callers, egress) = if base {
+            (Vec::new(), Vec::new(), Vec::new(), EgressSpec::default())
+        } else {
+            (
+                resolve_depends_on(raw.depends_on, env)?,
+                resolve_env_vars(&raw.env, env)?,
+                network::resolve_callers(&raw.callers, env)?,
+                network::resolve_egress(&raw.egress, env)?,
+            )
+        };
 
-        let explicit_callers = network::resolve_callers(&raw.callers, env)?;
-        let egress = network::resolve_egress(&raw.egress, env)?;
-
-        let deploy_overlay = raw.deploy.envs.get(env);
+        let deploy_overlay = scope.and_then(|e| raw.deploy.envs.get(e));
         let deploy_replicas = deploy_overlay
             .and_then(|o| o.replicas)
             .unwrap_or(raw.deploy.replicas);
-        let deploy_namespace = {
+        let deploy_namespace = if base {
+            String::new()
+        } else {
             let raw_ns = deploy_overlay
                 .and_then(|o| o.namespace.clone())
                 .unwrap_or_else(|| raw.deploy.namespace.clone());
@@ -1117,24 +1143,26 @@ impl Plan {
             !is_rust && !is_node && !depends_on.is_empty() && proxy_override != Some(false);
 
         let svc_name = raw.service.name.clone();
-        let database = match &raw.database {
-            Some(r) => stateful::resolve_database(r, env, &svc_name, None)?,
-            None => None,
-        };
+        let mut database = None;
         let mut named_databases: Vec<(String, DatabaseSpec)> = Vec::new();
-        for (name, r) in &raw.databases {
-            if let Some(spec) = stateful::resolve_database(r, env, &svc_name, Some(name))? {
-                named_databases.push((name.clone(), spec));
-            }
-        }
-        let cache = match &raw.cache {
-            Some(r) => stateful::resolve_cache(r, env, &svc_name, None)?,
-            None => None,
-        };
+        let mut cache = None;
         let mut named_caches: Vec<(String, CacheSpec)> = Vec::new();
-        for (name, r) in &raw.caches {
-            if let Some(spec) = stateful::resolve_cache(r, env, &svc_name, Some(name))? {
-                named_caches.push((name.clone(), spec));
+        if !base {
+            if let Some(r) = &raw.database {
+                database = stateful::resolve_database(r, env, &svc_name, None)?;
+            }
+            for (name, r) in &raw.databases {
+                if let Some(spec) = stateful::resolve_database(r, env, &svc_name, Some(name))? {
+                    named_databases.push((name.clone(), spec));
+                }
+            }
+            if let Some(r) = &raw.cache {
+                cache = stateful::resolve_cache(r, env, &svc_name, None)?;
+            }
+            for (name, r) in &raw.caches {
+                if let Some(spec) = stateful::resolve_cache(r, env, &svc_name, Some(name))? {
+                    named_caches.push((name.clone(), spec));
+                }
             }
         }
         let secrets = raw
@@ -1217,7 +1245,7 @@ impl Plan {
             &raw.deploy,
             deploy_overlay,
             &raw.resources,
-            raw.autoscale.as_ref(),
+            raw.autoscale.as_ref().filter(|_| !base),
             &raw.volumes,
             &raw.ports,
             WorkloadContext {
@@ -1247,7 +1275,11 @@ impl Plan {
             .cloned()
             .unwrap_or_default();
 
-        let cronjobs = pod::resolve_cronjobs(&raw.cronjobs, &raw.service.name, env)?;
+        let cronjobs = if base {
+            Vec::new()
+        } else {
+            pod::resolve_cronjobs(&raw.cronjobs, &raw.service.name, env)?
+        };
         for job in &cronjobs {
             for key in job.env.keys() {
                 if let Some((_, origin)) = declared.iter().find(|(k, _)| k == key) {
@@ -1260,8 +1292,8 @@ impl Plan {
         }
         let pod = PodSettings {
             image_pull_secrets,
-            placement: pod::resolve_placement(raw.placement.as_ref(), env)?,
-            pdb: pod::resolve_pdb(raw.pdb.as_ref(), env, deploy_replicas)?,
+            placement: pod::resolve_placement(raw.placement.as_ref().filter(|_| !base), env)?,
+            pdb: pod::resolve_pdb(raw.pdb.as_ref().filter(|_| !base), env, deploy_replicas)?,
             service_account: pod::resolve_service_account(raw.service_account.as_ref())?,
             cronjobs,
         };
@@ -1445,6 +1477,69 @@ mod tests {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     const BASE: &str = "\n[deploy]\nreplicas = 1\nnamespace = \"demo\"\n\n[resources]\ncpu = \"100m\"\nmemory = \"128Mi\"\n";
+
+    #[test]
+    fn load_base_applies_no_overlay_and_no_env_only_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tonin.toml");
+        std::fs::write(
+            &path,
+            r#"
+[service]
+name = "api"
+version = "1.2.0"
+
+[deploy]
+replicas  = 1
+namespace = "platform-{env}"
+mesh      = "none"
+
+[deploy.prd]
+replicas = 3
+mesh     = "cilium"
+
+[resources]
+cpu    = "100m"
+memory = "128Mi"
+
+[database.dev]                 # engine only per env: not valid on its own
+engine = "postgres"
+url    = "postgresql://u:p@postgres.shared-dev:5432/api"
+
+[env]
+LOG = "{env}"
+
+[placement.prd]
+node_selector = { pool = "app" }
+
+[callers]
+web = "platform-{env}"
+
+[[cronjobs]]
+name     = "purge"
+schedule = "0 2 * * *"
+args     = ["purge"]
+"#,
+        )
+        .unwrap();
+        let base = Plan::load_base(&path).unwrap();
+        assert_eq!(base.replicas, 1);
+        assert_eq!(base.mesh.as_str(), "none");
+        assert_eq!(base.namespace, "");
+        assert_eq!(base.selected_env, "");
+        assert!(base.database.is_none());
+        assert!(base.env_vars.is_empty());
+        assert!(base.callers.is_empty());
+        assert!(base.pod.cronjobs.is_empty());
+        assert!(base.pod.placement.node_selector.is_empty());
+        assert_eq!(base.version, "1.2.0");
+
+        let prd = Plan::load_with_env(&path, "prd");
+        assert!(prd.is_err(), "[database] has no engine for prd");
+        let dev = Plan::load_with_env(&path, "dev").unwrap();
+        assert_eq!(dev.namespace, "platform-dev");
+        assert!(dev.database.is_some());
+    }
 
     /// Write `<service block> + BASE` to a temp tonin.toml and load it.
     fn load(service: &str) -> Plan {

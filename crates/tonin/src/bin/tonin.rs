@@ -233,10 +233,10 @@ enum TopCmd {
 
     /// [removed] Kubernetes manifest generation has moved to `tonin helm`.
     ///
-    /// Install tonin-helm and use:
-    ///   tonin helm generate    — render Helm chart from tonin.toml
-    ///   tonin helm diff        — show pending cluster changes
-    ///   tonin helm upgrade     — deploy / upgrade
+    /// Use the built-in `tonin helm`:
+    ///   tonin helm generate --env <env>  — render Helm chart from tonin.toml
+    ///   tonin helm diff --env <env>      — show pending cluster changes
+    ///   tonin helm upgrade --env <env>   — deploy / upgrade
     #[command(hide = true)]
     K8s {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -291,7 +291,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             eprintln!("error: `tonin k8s` has been removed.");
             eprintln!();
             eprintln!("  Kubernetes manifest generation is now `tonin helm` (built-in):");
-            eprintln!("    tonin helm generate              # was: tonin k8s generate");
+            eprintln!("    tonin helm generate --env prod   # was: tonin k8s generate");
             eprintln!("    tonin helm diff --env prod       # was: tonin k8s diff");
             eprintln!("    tonin helm upgrade --env prod    # was: tonin k8s apply");
             std::process::exit(1);

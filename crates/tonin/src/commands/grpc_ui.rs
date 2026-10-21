@@ -32,10 +32,7 @@ pub struct GrpcUiArgs {
 }
 
 pub fn run(args: GrpcUiArgs) -> Result<()> {
-    let root = args
-        .workspace
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(args.workspace.clone())?;
 
     // Resolve the service port from tonin.toml if not explicitly provided
     let service_port = if let Some(port) = args.port {

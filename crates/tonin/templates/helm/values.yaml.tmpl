@@ -23,6 +23,10 @@ image:
   # Set to pin the image by digest (e.g. "sha256:…"): the chart then renders
   # repository@digest and ignores tag. `tonin deploy` sets it from the lock.
   digest: ""
+  # Version the release runs: the app.kubernetes.io/version label and the OTEL
+  # service.version (empty = tag). `tonin deploy` sets it from the lock, since
+  # a digest-pinned image carries no tag the chart could read it from.
+  version: ""
   pullPolicy: IfNotPresent
 
 service:
@@ -64,7 +68,8 @@ service:
 # Volumes ([[volumes]]): `empty-dir` (pod-lifetime scratch, optional sizeLimit)
 # and `pvc` (StatefulSet only: a claim per pod from the default StorageClass
 # unless storageClass is set). Mounted in the server container (and the
-# migration initContainer); the migration Job gets the empty-dir ones.
+# migration initContainer); the migration Job and CronJobs get the empty-dir
+# ones only, never the StatefulSet's claims.
 {{ volumes_block }}
 
 # MCP tool surface. Derived automatically from [service].language:
@@ -125,7 +130,7 @@ rustService: {% if is_rust %}true{% else %}false{% endif %}
 # overlays, {env} substituted). Injected verbatim into the server container.
 env:{% if env_vars | length == 0 %} {}{% endif %}
 {%- for kv in env_vars %}
-  {{ kv.0 }}: "{{ kv.1 }}"
+  {{ kv[0] }}: "{{ kv[1] }}"
 {%- endfor %}
 
 # ServiceAccount the service's pods run as (named after the service; the

@@ -109,8 +109,8 @@ pub trait PlatformOrchestrator: Send + Sync {
 
     /// Get the current status of all running services in an environment.
     ///
-    /// Queries Kubernetes (via helm) for running versions and cross-references
-    /// with the environment lock file to detect drift.
+    /// Queries Kubernetes (via helm) for the image each release runs and
+    /// compares it with the environment lock's image to detect drift.
     ///
     /// # Arguments
     /// * `env` — Environment name
@@ -222,7 +222,7 @@ impl PlatformOrchestrator for CliOrchestrator {
     }
 
     fn get_running_services(&self, env: &str) -> Result<Vec<ServiceStatus>> {
-        use crate::deploy_backend::{DeployBackend, HelmBackend};
+        use crate::deploy_backend::HelmBackend;
         use crate::lock::{GitLockStore, LockStore};
 
         let backend = HelmBackend;
@@ -235,40 +235,10 @@ impl PlatformOrchestrator for CliOrchestrator {
             .unwrap_or_default()
             .as_secs();
 
-        let mut statuses = Vec::new();
-
-        for plan in plans {
-            let desired_version = lock.services.get(&plan.name).map(|s| s.version.clone());
-
-            let running_version = backend
-                .running_version(&plan.name, &plan.namespace)
-                .ok()
-                .flatten();
-
-            let digest = lock
-                .services
-                .get(&plan.name)
-                .and_then(|s| s.image.split('@').nth(1).map(|d| d.to_string()));
-
-            let health = match (&running_version, &desired_version) {
-                (None, None) => "not_deployed".to_string(),
-                (None, Some(_)) => "unhealthy".to_string(),
-                (Some(running), Some(desired)) if running == desired => "healthy".to_string(),
-                _ => "degraded".to_string(),
-            };
-
-            statuses.push(ServiceStatus {
-                service: plan.name.clone(),
-                env: env.to_string(),
-                running_version,
-                desired_version,
-                digest,
-                health,
-                timestamp: now,
-            });
-        }
-
-        Ok(statuses)
+        Ok(plans
+            .iter()
+            .map(|plan| service_status(&backend, plan, lock.services.get(&plan.name), env, now))
+            .collect())
     }
 
     fn rollback_service(&self, service: &str, env: &str) -> Result<()> {
@@ -295,9 +265,142 @@ impl PlatformOrchestrator for CliOrchestrator {
     }
 }
 
+/// Status of `plan`'s release against its lock entry. Like `tonin deploy`,
+/// it compares the image the release runs with the lock's image (digest), not
+/// chart versions: a chart's appVersion is the tonin.toml version it was
+/// generated from and says nothing about the deployed image.
+fn service_status(
+    backend: &dyn crate::deploy_backend::DeployBackend,
+    plan: &Plan,
+    desired: Option<&crate::lock::ServiceLock>,
+    env: &str,
+    now: u64,
+) -> ServiceStatus {
+    use crate::deploy_backend::{DeployValues, ImageRef};
+
+    let running_image = backend
+        .running_image(&plan.name, &plan.namespace)
+        .ok()
+        .flatten();
+    let running_version = running_image.as_ref().and_then(|_| {
+        backend
+            .running_release_version(&plan.name, &plan.namespace)
+            .ok()
+            .flatten()
+    });
+    let desired_values = desired.map(|lock| {
+        DeployValues::for_plan(
+            plan,
+            env,
+            lock.image.clone(),
+            lock.version.clone(),
+            std::time::Duration::from_secs(300),
+        )
+    });
+    let health = match (&running_image, &desired_values) {
+        (None, None) => "not_deployed",
+        (None, Some(_)) => "unhealthy",
+        (Some(running), Some(want)) if want.is_running(Some(running)) => "healthy",
+        _ => "degraded",
+    };
+    ServiceStatus {
+        service: plan.name.clone(),
+        env: env.to_string(),
+        running_version,
+        desired_version: desired.map(|s| s.version.clone()),
+        digest: desired.and_then(|s| ImageRef::parse(&s.image).digest),
+        health: health.to_string(),
+        timestamp: now,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deploy_backend::{DeployBackend, DeployValues};
+    use crate::lock::ServiceLock;
+
+    /// A cluster where the release runs `image` with `version` in its values.
+    struct Running {
+        image: Option<&'static str>,
+        version: Option<&'static str>,
+        app_version: &'static str,
+    }
+
+    impl DeployBackend for Running {
+        fn upgrade(&self, _: &DeployValues) -> Result<()> {
+            Ok(())
+        }
+        fn rollback(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn running_version(&self, _: &str, _: &str) -> Result<Option<String>> {
+            Ok(Some(self.app_version.to_string()))
+        }
+        fn running_image(&self, _: &str, _: &str) -> Result<Option<String>> {
+            Ok(self.image.map(str::to_string))
+        }
+        fn running_release_version(&self, _: &str, _: &str) -> Result<Option<String>> {
+            Ok(self.version.map(str::to_string))
+        }
+    }
+
+    fn plan() -> Plan {
+        let dir = tempfile::tempdir().unwrap();
+        let toml = dir.path().join("tonin.toml");
+        std::fs::write(
+            &toml,
+            "[service]\nname = \"api\"\nversion = \"0.1.0\"\n\n[deploy]\nreplicas = 1\nnamespace = \"platform-{env}\"\n\n[resources]\ncpu = \"100m\"\nmemory = \"128Mi\"\n",
+        )
+        .unwrap();
+        Plan::load_with_env(&toml, "prd").unwrap()
+    }
+
+    #[test]
+    fn status_compares_the_running_image_with_the_lock() {
+        let plan = plan();
+        let lock = ServiceLock {
+            version: "1.4.0".into(),
+            image: "ghcr.io/org/api@sha256:aaa".into(),
+            git_sha: "abc".into(),
+        };
+        // Same digest: healthy, although the chart's appVersion (0.1.0, the
+        // tonin.toml version it was generated from) differs from the lock.
+        let same = Running {
+            image: Some("ghcr.io/org/api@sha256:aaa"),
+            version: Some("1.4.0"),
+            app_version: "0.1.0",
+        };
+        let status = service_status(&same, &plan, Some(&lock), "prd", 0);
+        assert_eq!(status.health, "healthy");
+        assert_eq!(status.running_version.as_deref(), Some("1.4.0"));
+        assert_eq!(status.desired_version.as_deref(), Some("1.4.0"));
+        assert_eq!(status.digest.as_deref(), Some("sha256:aaa"));
+
+        // Same chart version, other digest: drift.
+        let other = Running {
+            image: Some("ghcr.io/org/api@sha256:bbb"),
+            version: Some("1.4.0"),
+            app_version: "1.4.0",
+        };
+        assert_eq!(
+            service_status(&other, &plan, Some(&lock), "prd", 0).health,
+            "degraded"
+        );
+
+        let none = Running {
+            image: None,
+            version: None,
+            app_version: "",
+        };
+        let status = service_status(&none, &plan, Some(&lock), "prd", 0);
+        assert_eq!(status.health, "unhealthy");
+        assert_eq!(status.running_version, None);
+        assert_eq!(
+            service_status(&none, &plan, None, "prd", 0).health,
+            "not_deployed"
+        );
+    }
 
     #[test]
     fn deployment_status_as_str() {

@@ -11,7 +11,7 @@ license = { text = "Apache-2.0" }
 dependencies = [
   "tonin-client",        # shared AuthCtx, RetryPolicy, CircuitBreaker
   "grpcio>=1.81",          # gRPC runtime
-  "pyjwt[crypto]>=2.13",   # JWT signature + claim validation
+  "pyjwt[crypto]>=2.15",   # JWT signature + claim validation
   "httpx>=0.28",           # async HTTP for JWKS fetch + minter
   "asyncpg>=0.31",         # async Postgres pool
   "redis>=8.0",            # redis.asyncio
@@ -24,8 +24,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-  "pytest>=8",
-  "pytest-asyncio>=0.23",
+  "pytest>=9.0.3",
+  "pytest-asyncio>=1.0",
 ]
 
 [tool.pytest.ini_options]

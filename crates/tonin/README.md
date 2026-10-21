@@ -68,9 +68,9 @@ This crate is **dual-purpose** — library + binary. `cargo install tonin`
 installs the `tonin` command (scaffold services, run codegen, and manage Helm-based deployments).
 
 ```bash
-tonin service new greeter       # scaffold a new service
-tonin helm generate             # render Helm chart from tonin.toml
-tonin helm upgrade --env prod   # deploy to production using Helm
+tonin service new greeter                 # scaffold a new service
+tonin helm generate --env dev --env prod  # render Helm chart from tonin.toml
+tonin helm upgrade --env prod             # deploy to production using Helm
 ```
 
 The CLI deps live behind the `cli` feature (default-on), so

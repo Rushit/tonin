@@ -48,7 +48,7 @@ cargo test -p tonin-sdk
 # Run the CLI (binary `tonin`, built from the umbrella crate `crates/tonin`)
 cargo run -p tonin -- service new greeter
 cargo run -p tonin -- proto generate
-cargo run -p tonin -- helm generate --path examples/greeter
+cargo run -p tonin -- helm generate --path examples/greeter --env dev --env prd
 ```
 
 The CLI binary is named `tonin` and ships from the `crates/tonin` package. The package at `crates/tonin` produces `target/debug/tonin`. Helm chart generation is built into the `tonin` binary (`crates/tonin/src/commands/helm/`); templates live at `crates/tonin/templates/helm/`.

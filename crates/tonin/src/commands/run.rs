@@ -81,10 +81,7 @@ fn wait_for_service_health(plan: &Plan, timeout_secs: u64) -> Result<()> {
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
-    let root = args
-        .workspace
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = super::workspace_or_cwd(args.workspace.clone())?;
 
     let backend: Box<dyn RunBackend> = if args.dry_run {
         Box::new(RunDryRunBackend)
