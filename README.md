@@ -208,12 +208,12 @@ tonin proto generate
 
 Render Helm charts from `tonin.toml`:
 ```bash
-tonin helm generate
+tonin helm generate --env dev --env prd
 ```
 
 Detect drift between `tonin.toml` and rendered charts:
 ```bash
-tonin helm check
+tonin helm check --env dev --env prd
 ```
 
 The CLI binary is `tonin`. See `tonin --help` for the full surface.

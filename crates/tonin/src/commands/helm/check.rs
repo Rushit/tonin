@@ -25,9 +25,9 @@ pub struct CheckArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Environments to check `values-<env>.yaml` for.
-    /// Defaults to: dev, staging, prod.
-    #[arg(long = "env", value_name = "ENV")]
+    /// Environment to check `values-<env>.yaml` for. Repeat for each
+    /// environment, matching the `--env` list given to `generate`. Required.
+    #[arg(long = "env", value_name = "ENV", required = true)]
     pub envs: Vec<String>,
 }
 

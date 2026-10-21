@@ -21,8 +21,8 @@ pub struct AffectedArgs {
     #[arg(long)]
     pub workspace: Option<PathBuf>,
 
-    /// Environment overlay to use when loading tonin.toml files.
-    #[arg(long, default_value = "staging")]
+    /// Environment overlay to use when loading tonin.toml files (required).
+    #[arg(long)]
     pub env: String,
 
     /// Output format.
@@ -493,7 +493,7 @@ mod tests {
             config: None,
             emitted_env: Default::default(),
             env_vars: Vec::new(),
-            selected_env: "staging".to_string(),
+            selected_env: "dev".to_string(),
             client: ClientSpec::default(),
             path_rules,
         }
@@ -810,7 +810,7 @@ packages = ["auth-server"]
             .unwrap();
 
         // 5. Run the affected logic using compute_affected
-        let plans = Plan::load_workspace_with_env(repo_path, "staging").unwrap();
+        let plans = Plan::load_workspace_with_env(repo_path, "dev").unwrap();
         let result = compute_affected(
             git_diff("HEAD~1", "HEAD", repo_path).unwrap(),
             &plans,

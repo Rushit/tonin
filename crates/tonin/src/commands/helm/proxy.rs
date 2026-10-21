@@ -20,10 +20,10 @@ pub struct CommonArgs {
     #[arg(long)]
     pub path: Option<PathBuf>,
 
-    /// Overlay environment to use for namespace / replica / values resolution.
-    /// Defaults to `$TONIN_ENV`, then `"dev"`.
-    #[arg(long)]
-    pub env: Option<String>,
+    /// Environment: selects the namespace, overlay and `values-<ENV>.yaml`.
+    /// Required; `$TONIN_ENV` is accepted in place of the flag.
+    #[arg(long, env = "TONIN_ENV")]
+    pub env: String,
 
     /// Chart directory. Defaults to `<path>/chart`.
     #[arg(long)]
@@ -171,7 +171,7 @@ pub fn run_raw(extra: Vec<String>) -> Result<()> {
 
 fn resolve_context(common: &CommonArgs) -> Result<(Plan, String, PathBuf)> {
     let service_dir = resolve_service_dir(common.path.as_deref())?;
-    let env = tonin_plugin::select_env(common.env.as_deref());
+    let env = common.env.clone();
     let plan = Plan::load_with_env(&service_dir.join("tonin.toml"), &env)
         .with_context(|| format!("loading tonin.toml in {}", service_dir.display()))?;
     let chart_dir = common

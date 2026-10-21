@@ -73,7 +73,7 @@ install-hooks:
 # Re-render examples/greeter Helm chart and confirm it builds
 gen-example:
     {{ cargo }} build -p greeter
-    {{ cargo }} run -p tonin -- helm generate --path examples/greeter
+    {{ cargo }} run -p tonin -- helm generate --path examples/greeter --env dev --env prd
     @echo "gen-example: greeter builds and Helm chart renders"
 
 # Remove cargo build artifacts

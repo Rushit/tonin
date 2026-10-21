@@ -32,8 +32,8 @@ pub struct ReleaseArgs {
     #[arg(long)]
     pub registry: Option<String>,
 
-    /// Environment lock to update (default: staging).
-    #[arg(long, default_value = "staging")]
+    /// Environment lock to update (`environments/<ENV>/lock.toml`). Required.
+    #[arg(long)]
     pub env: String,
 
     /// Workspace root containing environments/.

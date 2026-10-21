@@ -11,7 +11,7 @@ One `tonin.toml` renders every manifest your service needs to ship.
   - A Redis `StatefulSet` + `Service` when `[cache]` is set
   - Mesh-specific overlays (Cilium `CiliumNetworkPolicy`, Istio `PeerAuthentication`, Linkerd annotations) when `[deploy].mesh` is set
 - **`tonin helm generate`** writes them as a complete Helm chart inside the `./chart/` directory. **`tonin helm upgrade`** ships them. No hand-edited YAML, ever — the next `generate` would overwrite it.
-- **Multi-env overlays.** The same `tonin.toml` describes `dev`, `staging`, and `prod` — `--env` picks the right block.
+- **Multi-env overlays.** The same `tonin.toml` describes every environment (`dev`, `prd`, …) — `--env` picks the right block. `--env` is required: tonin has no default environment.
 - **Workspace mode.** One command walks every `tonin.toml` under a directory and renders the cross-service dependency graph.
 
 ## Complete `tonin.toml` example
@@ -180,21 +180,27 @@ will sit dormant until the mesh CRDs exist.
 ## Commands
 
 ```bash
-# Render Helm chart to ./chart/
-tonin helm generate
+# Render Helm chart to ./chart/: values.yaml + one values-<env>.yaml per --env
+tonin helm generate --env dev --env prd
+
+# Fail (exit 1) if ./chart/ differs from what generate would write
+tonin helm check --env dev --env prd
 
 # Render templates locally to stdout (dry-run)
-tonin helm template
+tonin helm template --env dev
 
 # Show the diff vs. what's currently deployed (requires helm-diff plugin)
-tonin helm diff --env prod
+tonin helm diff --env prd
 
 # Deploy to the cluster (helm upgrade --install)
-tonin helm upgrade --env prod
-
-# Pick the [database.staging] / [cache.staging] overlay during chart generation
-tonin helm generate --env staging
+tonin helm upgrade --env prd
 ```
+
+`--env` is required by `helm generate`, `helm check`, `affected`, `release` and
+`deploy`; there is no default environment, so a chart or lock is never written
+for an environment you did not name. The `tonin helm` cluster commands
+(`upgrade`, `template`, `diff`, `status`, `rollback`, `history`, `uninstall`)
+also accept `TONIN_ENV` in place of `--env`.
 
 ## Multi-env overlays
 
@@ -204,17 +210,15 @@ The base block is the default. Nested `[<section>.<env>]` blocks override fields
 [database]
 engine = "postgres"
 
-[database.staging]
+[database.dev]
 size = "5Gi"
 
-[database.prod]
+[database.prd]
 size = "100Gi"
 ```
 
 ```bash
-tonin helm generate --env prod      # renders with size = "100Gi"
-tonin helm generate --env staging   # renders with size = "5Gi"
-tonin helm generate                 # uses TONIN_ENV, then defaults to dev
+tonin helm generate --env dev --env prd   # values-dev.yaml: 5Gi, values-prd.yaml: 100Gi
 ```
 
 The same pattern works for `[cache.<env>]`, and for any field that differs between environments (replicas, resources, mesh choice).
@@ -227,7 +231,7 @@ single declaration covers every environment:
 
 ```toml
 [deploy]
-namespace = "myapp-{env}"          # → myapp-dev / myapp-staging / myapp-prod
+namespace = "myapp-{env}"          # → myapp-dev / myapp-prd
 
 [depends_on]
 users-service     = "myapp-{env}"      # egress target follows the same convention

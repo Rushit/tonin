@@ -99,9 +99,6 @@ fn snake_to_camel(key: &str) -> String {
     first + &rest
 }
 
-/// Default environments rendered unless `--envs` overrides.
-const DEFAULT_ENVS: &[&str] = &["dev", "staging", "prod"];
-
 #[derive(clap::Args)]
 pub struct GenerateArgs {
     /// Path to the service directory containing `tonin.toml`.
@@ -114,9 +111,9 @@ pub struct GenerateArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Environments to generate `values-<env>.yaml` for.
-    /// Defaults to: dev, staging, prod.
-    #[arg(long = "env", value_name = "ENV")]
+    /// Environment to generate `values-<env>.yaml` for. Repeat for each
+    /// environment (`--env dev --env prd`). Required: there is no default set.
+    #[arg(long = "env", value_name = "ENV", required = true)]
     pub envs: Vec<String>,
 }
 
@@ -140,13 +137,12 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     render_tmpl("values.yaml.tmpl", &ctx, &chart_dir.join("values.yaml"))?;
 
     // --- values-<env>.yaml -------------------------------------------------
-    let env_names: Vec<String> = if args.envs.is_empty() {
-        DEFAULT_ENVS.iter().map(|s| s.to_string()).collect()
-    } else {
-        args.envs
-    };
+    anyhow::ensure!(
+        !args.envs.is_empty(),
+        "no environment given: pass --env <ENV> once per environment (e.g. --env dev --env prd)"
+    );
 
-    for env_name in &env_names {
+    for env_name in &args.envs {
         let env_plan = Plan::load_with_env(&toml_path, env_name)
             .with_context(|| format!("loading plan for env '{env_name}'"))?;
         let mut env_ctx = build_context(&env_plan);
