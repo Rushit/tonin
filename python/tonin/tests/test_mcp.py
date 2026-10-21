@@ -1,4 +1,4 @@
-"""Integration tests for the FastMCP-backed in-process MCP listener.
+"""Integration tests for the MCPServer-backed in-process MCP listener.
 
 Boots the listener on a random localhost port, opens a real MCP client
 over streamable HTTP, calls `tools/list` + `tools/call`, asserts the
@@ -12,7 +12,7 @@ import socket
 
 import pytest
 from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from tonin.mcp import McpConfig, build_default_server, spawn
 
@@ -27,7 +27,7 @@ def _free_port() -> int:
 
 @pytest.mark.asyncio
 async def test_default_server_has_health_tool() -> None:
-    """The default FastMCP instance from build_default_server includes `health`."""
+    """The default MCPServer instance from build_default_server includes `health`."""
     cfg = McpConfig(host="127.0.0.1", port=8000)
     mcp = build_default_server(cfg)
     tools = await mcp.list_tools()
@@ -46,7 +46,7 @@ async def test_mcp_lists_health_and_calls_it_over_streamable_http() -> None:
         await asyncio.sleep(0.5)
 
         url = f"http://127.0.0.1:{port}/mcp"
-        async with streamablehttp_client(url) as (read, write, _get_session_id):
+        async with streamable_http_client(url) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools = await session.list_tools()
