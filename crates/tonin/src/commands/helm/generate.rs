@@ -268,6 +268,8 @@ fn build_context(plan: &Plan) -> tera::Context {
     ctx.insert("env_name", &plan.selected_env);
 
     plan.security.as_ref().contribute(&mut ctx);
+    // ---- Pull secrets, placement, PDB, ServiceAccount, CronJobs, secrets.create.
+    super::pod_values::contribute(plan, &mut ctx);
 
     ctx
 }
@@ -834,9 +836,15 @@ type = "RuntimeDefault"
         assert!(values.contains("type: RuntimeDefault"), "{values}");
 
         let deployment = read(&out.join("templates").join("deployment.yaml"));
+        // The pod securityContext comes from the shared pod-spec helper.
         assert!(
-            deployment.contains("with .Values.podSecurityContext"),
+            deployment.contains(r#"include "service.podSpecCommon""#),
             "{deployment}"
+        );
+        let helpers = read(&out.join("templates").join("_helpers.tpl"));
+        assert!(
+            helpers.contains("with $root.Values.podSecurityContext"),
+            "{helpers}"
         );
         assert!(
             deployment.contains("with .Values.containerSecurityContext"),

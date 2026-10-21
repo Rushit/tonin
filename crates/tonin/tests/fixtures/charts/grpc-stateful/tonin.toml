@@ -2,7 +2,11 @@
 # callers and depends_on on the cilium mesh. Modelled on the zvectorlabs
 # `identity` service. Covers: contract Secret references (prd), Postgres
 # verify-full with the CA mount (prd), literal dev URLs, and migrations as an
-# initContainer (dev) and a hook Job (prd).
+# initContainer (dev) and a hook Job (prd). Pod hygiene: pull secret, node
+# placement, a PDB (minAvailable 1 with 2 replicas), the default topology
+# spread and an externally managed Secret in prd only; projected
+# ServiceAccount tokens; two CronJobs (one prd-only) that replace identity's
+# hand-written ones.
 schema = "v1"
 
 [image]
@@ -38,6 +42,21 @@ mcp_sidecar = true
 [deploy.dev]
 replicas = 1
 
+[deploy.prd]
+image_pull_secrets = ["ghcr-read"]
+
+[placement.prd]
+node_selector = { "zvl.io/role" = "app" }
+
+[pdb.prd]
+min_available = 1
+
+[service_account]
+tokens = [
+  { audience = "audit-log" },
+  { audience = "vault", path = "/etc/vault/token", expiration_seconds = 7200 },
+]
+
 [resources]
 cpu    = "100m"
 memory = "128Mi"
@@ -65,6 +84,9 @@ url = "redis://redis.shared-dev.svc.cluster.local:6379"
 [secrets]
 required = ["JWT_SECRET"]
 
+[secrets.prd]
+create = false
+
 [migrations]
 tool    = "custom"
 mode    = "init-container"
@@ -79,3 +101,17 @@ telemetry   = "telemetry-{env}"
 
 [depends_on]
 audit-log = "platform-{env}"
+
+[[cronjobs]]
+name     = "purge-expired"
+schedule = "0 2 * * *"
+command  = ["/usr/local/bin/identity-purge-expired"]
+
+[[cronjobs]]
+name                      = "close-impersonation"
+schedule                  = "0 * * * *"
+args                      = ["close-impersonation"]
+starting_deadline_seconds = 300
+resources                 = { cpu = "50m", memory = "64Mi" }
+env                       = { RUST_LOG_FORMAT = "json" }
+envs                      = ["prd"]

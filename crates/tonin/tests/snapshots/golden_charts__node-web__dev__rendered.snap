@@ -3,6 +3,20 @@ source: crates/tonin/tests/golden_charts.rs
 expression: rendered
 ---
 ---
+# Source: web-shell/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web-shell
+  namespace: platform-dev
+  labels:
+    app: web-shell
+    app.kubernetes.io/name: web-shell
+    app.kubernetes.io/version: "0.1.1"
+    helm.sh/chart: web-shell-0.1.1
+automountServiceAccountToken: false
+
+---
 # Source: web-shell/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -46,6 +60,8 @@ spec:
         app: web-shell
         service.identity: web-shell.platform-dev
     spec:
+      serviceAccountName: web-shell
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 1000
         runAsGroup: 1000

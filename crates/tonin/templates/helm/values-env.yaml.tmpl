@@ -35,6 +35,7 @@ env:{% if env_vars | length == 0 %} {}{% endif %}
 {{ datastores_block }}
 
 secrets:
+  create: {% if secrets_create %}true{% else %}false{% endif %}
   keys:{% if secret_keys | length == 0 %} []{% endif %}
 {%- for key in secret_keys %}
     - {{ key }}
@@ -42,6 +43,9 @@ secrets:
 
 migrations:
   mode: {{ migrations_mode }}
+
+# Pull secrets, placement, disruption budget and CronJobs for {{ env_name }}.
+{{ pod_block }}
 
 networkPolicy:
   enabled: {% if is_cilium %}true{% else %}false{% endif %}

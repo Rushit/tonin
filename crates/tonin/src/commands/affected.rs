@@ -507,6 +507,7 @@ mod tests {
             selected_env: "dev".to_string(),
             client: ClientSpec::default(),
             path_rules,
+            pod: Default::default(),
         }
     }
 

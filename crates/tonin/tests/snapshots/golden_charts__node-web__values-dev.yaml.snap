@@ -36,10 +36,23 @@ env: {}
 datastores: []
 
 secrets:
+  create: true
   keys: []
 
 migrations:
   mode: none
+
+# Pull secrets, placement, disruption budget and CronJobs for dev.
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints:
+- maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+podDisruptionBudget:
+  enabled: false
+cronjobs: []
 
 networkPolicy:
   enabled: true

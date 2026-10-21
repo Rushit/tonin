@@ -104,6 +104,33 @@ rustService: true
 # overlays, {env} substituted). Injected verbatim into the server container.
 env: {}
 
+# ServiceAccount the service's pods run as (named after the service; the
+# migration Job uses its own hook-scoped `<service>-migrate`). The API token is
+# not mounted unless [service_account] automount_token = true. tokenVolumes:
+# projected, audience-bound tokens ([service_account] tokens), mounted read-only
+# into the server container and rotated by the kubelet.
+serviceAccount:
+  automountToken: false
+  tokenVolumes: []
+
+# Pod placement and disruption ([deploy] image_pull_secrets, [placement],
+# [pdb]; set per environment in values-<env>.yaml). Applied to every pod tonin
+# renders (Deployment, migration Job, CronJobs) through the
+# `service.podSpecCommon` helper; topology spread and the PDB only to the
+# service's own pods, and only with more than one replica.
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+topologySpreadConstraints: []
+podDisruptionBudget:
+  enabled: false
+
+# Scheduled jobs ([[cronjobs]]), per environment in values-<env>.yaml. Each
+# runs the service image with the service's env, datastores, security context,
+# ServiceAccount and placement, and carries `service.identity` so the service's
+# network policy applies.
+cronjobs: []
+
 # Pod annotations. tonin generates none; add your own at deploy time via
 # --set podAnnotations.key=value.
 podAnnotations: {}
@@ -112,8 +139,9 @@ podAnnotations: {}
 # Supply at DEPLOY time, not by hand-editing this file:
 #   extraEnv:       --set-json 'extraEnv=[{"name":"X","value":"y"}]'  (server + initContainer)
 #   extraManifests: -f extra.yaml  (each entry is a YAML string, run through tpl)
-# For a durable per-service manifest (e.g. a CronJob), prefer a custom template
-# under chart/templates/ — those survive regeneration.
+# For a durable per-service manifest tonin does not model (CronJobs are
+# [[cronjobs]]), prefer a custom template under chart/templates/ — those
+# survive regeneration.
 extraEnv: []
 extraManifests: []
 
@@ -130,7 +158,8 @@ datastores: []
 # create=true templates a Secret from `values` — supply real values at deploy
 # time (`--set secrets.values.KEY=...` or a private values file); NEVER commit
 # them. create=false references an externally-managed Secret named
-# <release>-secrets (e.g. created by ExternalSecrets / Vault / kubectl).
+# <service>-secrets (e.g. a SealedSecret, ExternalSecrets, Vault). Set per
+# environment in values-<env>.yaml ([secrets.<env>] create = false).
 secrets:
   create: true
   keys: []

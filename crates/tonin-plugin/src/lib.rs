@@ -30,6 +30,7 @@ pub mod lock;
 pub mod observe_backend;
 pub mod plan;
 pub mod platform;
+pub mod pod;
 pub mod run_backend;
 pub(crate) mod stateful;
 
@@ -49,6 +50,12 @@ pub use stateful::{
     DatabaseTls, DatastoreEnv, DatastoreSource, EgressTarget, EmittedEnv, ExternalStore,
     MigrationMode, MigrationTool, MigrationsSpec, PG_CA_KEY, PG_CA_MOUNT_DIR, SecretEnvRef,
     SecretProvider, SecretsSpec, select_env,
+};
+
+// Pod hygiene: pull secrets, placement, PDB, ServiceAccount, CronJobs
+pub use pod::{
+    CpuMemory, CronJobSpec, CronResources, IntOrPercent, PdbSpec, PlacementSpec, PodSettings,
+    SaToken, ServiceAccountSpec, TokenSource, TokenVolume,
 };
 
 // Lock store types

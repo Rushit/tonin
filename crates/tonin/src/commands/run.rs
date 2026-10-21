@@ -301,6 +301,7 @@ mod tests {
             selected_env: "dev".to_string(),
             client: Default::default(),
             path_rules: vec![],
+            pod: Default::default(),
         };
 
         let plans = vec![plan.clone()];
@@ -404,6 +405,7 @@ mod tests {
             selected_env: "dev".to_string(),
             client: Default::default(),
             path_rules: vec![],
+            pod: Default::default(),
         }
     }
 

@@ -1,7 +1,9 @@
 # Golden fixture: gRPC service that also serves HTTP (health on the HTTP
 # port), cilium mesh, database + cache (dev: shared instances by URL, with
 # egress overridden to them), a named database, per-env env, and an autoscale
-# range.
+# range. Pod hygiene: a PDB from the [pdb] defaults (maxUnavailable 1) in prd,
+# tolerations for a dedicated node and a custom zone spread, and placement
+# turned off again in dev.
 # Modelled on the zvectorlabs `zradar-platform` service.
 schema = "v1"
 
@@ -44,6 +46,23 @@ mesh      = "cilium"
 
 [deploy.dev]
 replicas = 1
+
+[placement]
+node_selector = { "zvl.io/role" = "db" }
+tolerations   = [{ key = "zvl.io/db", operator = "Equal", value = "telemetry", effect = "NoSchedule" }]
+topology_spread = [
+  { max_skew = 1, topology_key = "topology.kubernetes.io/zone", when_unsatisfiable = "DoNotSchedule", min_domains = 2 },
+]
+
+[placement.dev]
+node_selector   = {}
+tolerations     = []
+topology_spread = false
+
+[pdb]
+
+[pdb.dev]
+enabled = false
 
 [resources]
 cpu    = "200m"

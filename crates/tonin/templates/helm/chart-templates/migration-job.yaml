@@ -14,7 +14,11 @@ Hooks run BEFORE the chart's own resources exist (on install) or are updated
     (secrets.create=true), only from the first upgrade on;
   - its CiliumNetworkPolicy is a hook too, with a lower weight, so egress to
     the database is allowed before the Job starts;
-  - it runs as the namespace's default ServiceAccount.
+  - it runs as `<service>-migrate`, a hook ServiceAccount with a lower weight
+    still (serviceaccount.yaml), deleted with the Job: the chart's own
+    ServiceAccount is a regular resource and does not exist yet on a first
+    install. The Job never mounts an API token;
+  - pull secrets, security context and placement are values, so they apply.
 The Job's pods carry their own labels: the Service selector (`app`) does not
 match them, `service.identity` does, so the service's policies apply.
 */}}
@@ -80,22 +84,7 @@ spec:
         service.identity: {{ include "service.name" . }}.{{ .Release.Namespace }}
     spec:
       restartPolicy: Never
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.podSecurityContext }}
-      securityContext:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "service.podSpecCommon" (dict "root" . "component" "migrate") | nindent 6 }}
       containers:
         - name: migrate
           image: {{ include "service.image" . | quote }}

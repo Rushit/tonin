@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::pod::{self, PodSettings, RawCronJob, RawPdb, RawPlacement, RawServiceAccount};
 use crate::stateful::{
     self, CacheSpec, ConfigSpec, DatabaseSpec, EmittedEnv, MigrationsSpec, RawCache, RawCallers,
     RawConfigBlock, RawDatabase, RawMigrations, RawSecrets, SecretsSpec,
@@ -418,6 +419,14 @@ struct RawConfig {
     security: Option<RawSecurity>,
     #[serde(default)]
     path_rules: Vec<RawPathRule>,
+    #[serde(default)]
+    placement: Option<RawPlacement>,
+    #[serde(default)]
+    pdb: Option<RawPdb>,
+    #[serde(default)]
+    service_account: Option<RawServiceAccount>,
+    #[serde(default)]
+    cronjobs: Vec<RawCronJob>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -473,6 +482,9 @@ struct RawDeploy {
     namespace: String,
     #[serde(default)]
     expose: Option<String>,
+    /// Secret names for `imagePullSecrets` on every pod.
+    #[serde(default)]
+    image_pull_secrets: Option<Vec<String>>,
     #[serde(default, flatten)]
     envs: std::collections::BTreeMap<String, RawDeployEnv>,
 }
@@ -489,6 +501,8 @@ struct RawDeployEnv {
     mcp_sidecar: Option<bool>,
     #[serde(default)]
     expose: Option<String>,
+    #[serde(default)]
+    image_pull_secrets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -700,6 +714,9 @@ pub struct Plan {
     pub selected_env: String,
     pub client: ClientSpec,
     pub path_rules: Vec<PathRule>,
+    /// Pull secrets, placement, PDB, ServiceAccount and CronJobs, resolved
+    /// for `selected_env`.
+    pub pod: PodSettings,
 }
 
 impl Plan {
@@ -752,6 +769,20 @@ impl Plan {
         let deploy_expose = deploy_overlay
             .and_then(|o| o.expose.clone())
             .or(raw.deploy.expose);
+        pod::validate_pull_secrets(
+            "[deploy]",
+            raw.deploy.image_pull_secrets.as_deref().unwrap_or_default(),
+        )?;
+        for (e, o) in &raw.deploy.envs {
+            pod::validate_pull_secrets(
+                &format!("[deploy.{e}]"),
+                o.image_pull_secrets.as_deref().unwrap_or_default(),
+            )?;
+        }
+        let image_pull_secrets = deploy_overlay
+            .and_then(|o| o.image_pull_secrets.clone())
+            .or_else(|| raw.deploy.image_pull_secrets.clone())
+            .unwrap_or_default();
 
         let max_replicas = raw
             .autoscale
@@ -878,7 +909,10 @@ impl Plan {
                 named_caches.push((name.clone(), spec));
             }
         }
-        let secrets = raw.secrets.as_ref().map(stateful::resolve_secrets);
+        let secrets = raw
+            .secrets
+            .as_ref()
+            .map(|s| stateful::resolve_secrets(s, env));
         let migrations = raw
             .migrations
             .as_ref()
@@ -950,6 +984,25 @@ impl Plan {
             }
         }
 
+        let cronjobs = pod::resolve_cronjobs(&raw.cronjobs, &raw.service.name, env)?;
+        for job in &cronjobs {
+            for key in job.env.keys() {
+                if let Some((_, origin)) = declared.iter().find(|(k, _)| k == key) {
+                    return Err(Error::InvalidField {
+                        field: format!("[[cronjobs]] {}.env.{key}", job.name),
+                        reason: format!("collides with the {origin} env var tonin already emits"),
+                    });
+                }
+            }
+        }
+        let pod = PodSettings {
+            image_pull_secrets,
+            placement: pod::resolve_placement(raw.placement.as_ref(), env)?,
+            pdb: pod::resolve_pdb(raw.pdb.as_ref(), env, deploy_replicas)?,
+            service_account: pod::resolve_service_account(raw.service_account.as_ref())?,
+            cronjobs,
+        };
+
         Ok(Plan {
             name: raw.service.name,
             version: raw.service.version,
@@ -996,6 +1049,7 @@ impl Plan {
                     build_order: r.build_order,
                 })
                 .collect(),
+            pod,
         })
     }
 
@@ -1775,6 +1829,7 @@ allowPrivilegeEscalation = false
             selected_env: "prod".to_string(),
             client: ClientSpec::default(),
             path_rules: Vec::new(),
+            pod: Default::default(),
         }
     }
 

@@ -22,10 +22,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      {{- with .Values.podSecurityContext }}
-      securityContext:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "service.podSpecCommon" (dict "root" . "component" "server") | nindent 6 }}
       {{- if eq .Values.migrations.mode "init-container" }}
       # DB migrations run to completion before the server starts. For the
       # pre-upgrade Job alternative, set migrations.mode=job (see migration-job.yaml).
@@ -149,7 +146,7 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with include "service.datastoreVolumeMounts" . | trim }}
+          {{- with include "service.serverVolumeMounts" . | trim }}
           volumeMounts:
             {{- . | nindent 12 }}
           {{- end }}
@@ -204,7 +201,7 @@ spec:
             requests: { cpu: "50m",  memory: "64Mi"  }
             limits:   { cpu: "200m", memory: "128Mi" }
         {{- end }}
-      {{- with include "service.datastoreVolumes" . | trim }}
+      {{- with include "service.serverVolumes" . | trim }}
       volumes:
         {{- . | nindent 8 }}
       {{- end }}

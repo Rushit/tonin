@@ -146,6 +146,19 @@ pub(crate) struct RawSecrets {
     pub map: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub external_store: Option<RawExternalStore>,
+    /// Whether the chart templates the `<service>-secrets` Secret (default
+    /// `true`); `false` references one managed elsewhere (sealed secrets, ESO).
+    #[serde(default)]
+    pub create: Option<bool>,
+    /// `[secrets.<env>]` overlays.
+    #[serde(flatten)]
+    pub envs: BTreeMap<String, RawSecretsEnv>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub(crate) struct RawSecretsEnv {
+    #[serde(default)]
+    pub create: Option<bool>,
 }
 
 fn default_secret_provider() -> String {
@@ -312,6 +325,9 @@ pub struct CacheSpec {
 
 #[derive(Clone, Debug)]
 pub struct SecretsSpec {
+    /// Whether the chart templates the `<service>-secrets` Secret in the
+    /// selected env (`[secrets] create`, `[secrets.<env>] create`).
+    pub create: bool,
     pub provider: SecretProvider,
     pub required: Vec<String>,
     pub map: std::collections::BTreeMap<String, String>,
@@ -799,8 +815,15 @@ pub(crate) fn resolve_cache(
     }))
 }
 
-pub(crate) fn resolve_secrets(raw: &RawSecrets) -> SecretsSpec {
+pub(crate) fn resolve_secrets(raw: &RawSecrets, env: &str) -> SecretsSpec {
+    let create = raw
+        .envs
+        .get(env)
+        .and_then(|o| o.create)
+        .or(raw.create)
+        .unwrap_or(true);
     SecretsSpec {
+        create,
         provider: SecretProvider::parse(&raw.provider),
         required: raw.required.clone(),
         map: raw.map.clone(),
@@ -1508,14 +1531,29 @@ mod tests {
     }
 
     #[test]
+    fn secrets_create_is_per_env() {
+        let raw: RawSecrets =
+            toml::from_str("required = [\"K\"]\n[prd]\ncreate = false\n").unwrap();
+        assert!(resolve_secrets(&raw, "dev").create);
+        assert!(!resolve_secrets(&raw, "prd").create);
+
+        let raw: RawSecrets = toml::from_str("create = false\n[dev]\ncreate = true\n").unwrap();
+        assert!(resolve_secrets(&raw, "dev").create);
+        assert!(!resolve_secrets(&raw, "prd").create);
+    }
+
+    #[test]
     fn secrets_default_provider_is_k8s() {
         let raw = RawSecrets {
             provider: default_secret_provider(),
             required: vec!["JWT_SIGNING_KEY".into()],
             map: Default::default(),
             external_store: None,
+            create: None,
+            envs: Default::default(),
         };
-        let spec = resolve_secrets(&raw);
+        let spec = resolve_secrets(&raw, "prd");
+        assert!(spec.create);
         assert_eq!(spec.provider, SecretProvider::K8s);
         assert_eq!(spec.required, vec!["JWT_SIGNING_KEY".to_string()]);
     }

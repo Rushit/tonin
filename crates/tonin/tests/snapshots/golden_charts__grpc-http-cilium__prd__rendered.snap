@@ -3,6 +3,39 @@ source: crates/tonin/tests/golden_charts.rs
 expression: rendered
 ---
 ---
+# Source: telemetry/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: telemetry
+
+---
+# Source: telemetry/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+automountServiceAccountToken: false
+
+---
 # Source: telemetry/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -51,11 +84,28 @@ spec:
         app: telemetry
         service.identity: telemetry.telemetry-prd
     spec:
+      serviceAccountName: telemetry
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 65532
         runAsGroup: 65532
         runAsNonRoot: true
         runAsUser: 65532
+      nodeSelector:
+        zvl.io/role: db
+      tolerations:
+        - effect: NoSchedule
+          key: zvl.io/db
+          operator: Equal
+          value: telemetry
+      topologySpreadConstraints:
+        - labelSelector:
+            matchLabels:
+              app: telemetry
+          maxSkew: 1
+          minDomains: 2
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
       containers:
         - name: server
           image: "ghcr.io/example/telemetry:0.2.3"
