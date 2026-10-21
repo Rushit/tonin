@@ -143,9 +143,11 @@ enum TopCmd {
     /// Reads environments/<env>/lock.toml, computes which services need updating,
     /// and runs helm upgrade in dependency-wave order. Use --dry-run to preview.
     ///
-    ///   tonin deploy --env staging           # reconcile staging
-    ///   tonin deploy --env staging --dry-run # preview only
-    ///   tonin deploy --env prod --converge   # force all services
+    ///   tonin deploy --env prd                           # reconcile prd
+    ///   tonin deploy --env prd --dry-run                 # print helm commands only
+    ///   tonin deploy --env prd --service identity        # one service
+    ///   tonin deploy --env prd --affected --base v1.2.0  # changed since a ref
+    ///   tonin deploy --env prd --converge                # force all services
     Deploy(commands::deploy::DeployArgs),
 
     /// Build and optionally push Docker images for services.

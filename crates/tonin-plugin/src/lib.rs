@@ -60,7 +60,7 @@ pub use build_backend::{
 
 // Deploy backend types
 pub use deploy_backend::{
-    DeployBackend, DeployEvent, DeployStatus, DeployValues, DryRunBackend, HelmBackend,
+    DeployBackend, DeployEvent, DeployStatus, DeployValues, DryRunBackend, HelmBackend, ImageRef,
     NoopReporter, TelemetryReporter,
 };
 
