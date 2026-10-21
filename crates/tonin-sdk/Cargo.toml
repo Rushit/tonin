@@ -50,9 +50,9 @@ schemars    = "1"
 hyper-util  = { version = "0.1", features = ["server-auto", "tokio", "service"] }
 
 # Auth defaults — JWT validation + JWKS fetch.
-jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
 reqwest      = { workspace = true, features = ["rustls", "json"] }
-base64       = "0.22"
+base64       = "0.23"
 
 # Pre-wired state: postgres + redis. Lazy — connections only open if
 # DATABASE_URL / REDIS_URL are present at boot. See src/state.rs.
