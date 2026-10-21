@@ -1,5 +1,7 @@
-# Base values — environment-independent defaults.
-# Override per-environment with values-<env>.yaml.
+# Base values — environment-independent settings only.
+# Keys that differ per environment (replicas, autoscaling, mesh, MCP, ingress,
+# env, stateful deps, secret keys, network policy) hold neutral defaults here;
+# values-<env>.yaml sets them. Deploy with both: -f values.yaml -f values-<env>.yaml.
 
 replicaCount: {{ replicas }}
 

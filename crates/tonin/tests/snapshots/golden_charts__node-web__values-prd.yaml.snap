@@ -15,6 +15,22 @@ autoscaling:
   minReplicas: 1
   maxReplicas: 1
 
+mesh: "cilium"
+
+mcp:
+  enabled: false
+  mode: none
+
+outboundProxy:
+  enabled: true
+
+ingress:
+  enabled: false
+  host: ""
+
+podAnnotations:
+  io.cilium/encryption: "enabled"
+
 # Stateful env resolves per-env (e.g. dev points at a shared instance URL).
 statefulEnv: {}
 

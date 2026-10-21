@@ -2,8 +2,10 @@
 source: crates/tonin/tests/golden_charts.rs
 expression: read(&chart.join(file))
 ---
-# Base values — environment-independent defaults.
-# Override per-environment with values-<env>.yaml.
+# Base values — environment-independent settings only.
+# Keys that differ per environment (replicas, autoscaling, mesh, MCP, ingress,
+# env, stateful deps, secret keys, network policy) hold neutral defaults here;
+# values-<env>.yaml sets them. Deploy with both: -f values.yaml -f values-<env>.yaml.
 
 replicaCount: 1
 
@@ -44,7 +46,7 @@ mcp:
 # non-empty. Handles singleflight coalescing, TTL cache, retry, and circuit breaking
 # across all worker processes. Override: [client] proxy = false in tonin.toml.
 outboundProxy:
-  enabled: true
+  enabled: false
   port: 6565
   image: "ghcr.io/rushit/tonin-proxy:latest"
 
@@ -83,7 +85,7 @@ ingress:
   enabled: false
   host: ""
 
-mesh: "cilium"
+mesh: "none"
 
 observability:
   otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
@@ -101,8 +103,7 @@ env: {}
 
 # Pod annotations. Mesh-derived entries (e.g. cilium transparent encryption) are
 # generated here; add your own at deploy time via --set podAnnotations.key=value.
-podAnnotations:
-  io.cilium/encryption: "enabled"
+podAnnotations: {}
 
 # Escape hatches — empty by design so `tonin helm generate` never clobbers them.
 # Supply at DEPLOY time, not by hand-editing this file:
@@ -165,11 +166,8 @@ migrations:
 
 # CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.
 networkPolicy:
-  enabled: true
+  enabled: false
   port: 7002
   mcp: false
   callers: []
-  dependsOn:
-    - name: platform-api
-      namespace: platform-dev
-      port: 7001
+  dependsOn: []

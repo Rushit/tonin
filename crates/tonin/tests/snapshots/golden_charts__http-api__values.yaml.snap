@@ -2,8 +2,10 @@
 source: crates/tonin/tests/golden_charts.rs
 expression: read(&chart.join(file))
 ---
-# Base values — environment-independent defaults.
-# Override per-environment with values-<env>.yaml.
+# Base values — environment-independent settings only.
+# Keys that differ per environment (replicas, autoscaling, mesh, MCP, ingress,
+# env, stateful deps, secret keys, network policy) hold neutral defaults here;
+# values-<env>.yaml sets them. Deploy with both: -f values.yaml -f values-<env>.yaml.
 
 replicaCount: 1
 
@@ -83,7 +85,7 @@ ingress:
   enabled: false
   host: ""
 
-mesh: "cilium"
+mesh: "none"
 
 observability:
   otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
@@ -97,17 +99,11 @@ rustService: true
 
 # Plain (non-secret) runtime env vars from tonin.toml [env] (+ [env.<env>]
 # overlays, {env} substituted). Injected verbatim into the server container.
-env:
-  IDENTITY_GRPC_ADDR: "http://identity.platform-dev.svc.cluster.local:50051"
-  PLATFORM_REDIS_URL: "redis://redis.shared-dev.svc.cluster.local:6379"
-  PLATFORM_SERVER_ALLOWED_ORIGINS: "http://localhost:7002"
-  PLATFORM_SERVER_PORT: "7001"
-  TELEMETRY_URL: "http://telemetry.telemetry-dev.svc.cluster.local:8080"
+env: {}
 
 # Pod annotations. Mesh-derived entries (e.g. cilium transparent encryption) are
 # generated here; add your own at deploy time via --set podAnnotations.key=value.
-podAnnotations:
-  io.cilium/encryption: "enabled"
+podAnnotations: {}
 
 # Escape hatches — empty by design so `tonin helm generate` never clobbers them.
 # Supply at DEPLOY time, not by hand-editing this file:
@@ -150,9 +146,7 @@ cache:
 # <release>-secrets (e.g. created by ExternalSecrets / Vault / kubectl).
 secrets:
   create: true
-  keys:
-    - PLATFORM_DATABASE_URL
-    - TELEMETRY_SERVICE_TOKEN
+  keys: []
   values: {}
 
 # DB migrations.
@@ -172,14 +166,8 @@ migrations:
 
 # CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.
 networkPolicy:
-  enabled: true
+  enabled: false
   port: 7001
   mcp: false
   callers: []
-  dependsOn:
-    - name: identity
-      namespace: platform-dev
-      port: 50051
-    - name: telemetry
-      namespace: telemetry-dev
-      port: 8080
+  dependsOn: []

@@ -204,7 +204,20 @@ also accept `TONIN_ENV` in place of `--env`.
 
 ## Multi-env overlays
 
-The base block is the default. Nested `[<section>.<env>]` blocks override fields per environment without duplicating the rest:
+The base block is the default. Nested `[<section>.<env>]` blocks override fields per environment without duplicating the rest.
+
+The chart splits along the same line:
+
+- `values.yaml` holds only environment-independent settings (image repository,
+  ports, probes, resources, security context, migrations command). Every key
+  that can differ per environment (replicas, autoscaling, mesh, MCP mode,
+  ingress, `[env]`, `[database]`/`[cache]`, secret keys, callers and
+  dependencies) has a neutral default there (`replicaCount: 1`, `mesh: "none"`,
+  `env: {}`, …), so one environment's settings never leak into another.
+- `values-<env>.yaml` sets all of those keys for that environment.
+
+Always render with both files: `-f values.yaml -f values-<env>.yaml`
+(`tonin helm upgrade|template|diff` and `tonin deploy` do this for you).
 
 ```toml
 [database]
@@ -221,7 +234,7 @@ size = "100Gi"
 tonin helm generate --env dev --env prd   # values-dev.yaml: 5Gi, values-prd.yaml: 100Gi
 ```
 
-The same pattern works for `[cache.<env>]`, and for any field that differs between environments (replicas, resources, mesh choice).
+The same pattern works for `[cache.<env>]`, and for the `[deploy]` fields that differ between environments (replicas, namespace, mesh, `mcp_sidecar`, `expose`).
 
 ### Per-environment namespaces and dependencies
 
@@ -288,8 +301,8 @@ LOG_FORMAT = "pretty"        # merged over the base for dev only
   container env names are last-one-wins in Kubernetes, so a collision would
   silently override the resolved value.
 
-The table renders into the chart's `env:` map in `values.yaml` and each
-`values-<env>.yaml`, so it survives regeneration — unlike hand-edits to the
+The table renders into the chart's `env:` map in each `values-<env>.yaml`
+(the base `values.yaml` keeps `env: {}`), so it survives regeneration — unlike hand-edits to the
 `extraEnv: []` deploy-time escape hatch, which `tonin helm generate`
 intentionally leaves empty.
 

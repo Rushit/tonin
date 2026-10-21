@@ -121,8 +121,15 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     let service_dir = resolve_service_dir(args.path.as_deref())?;
     let toml_path = service_dir.join("tonin.toml");
 
-    let base_plan =
-        Plan::load(&toml_path).with_context(|| format!("loading {}", toml_path.display()))?;
+    anyhow::ensure!(
+        !args.envs.is_empty(),
+        "no environment given: pass --env <ENV> once per environment (e.g. --env dev --env prd)"
+    );
+
+    // Chart.yaml and the base values.yaml only use env-independent fields
+    // (see `base_context`), so any env's plan yields the same output.
+    let base_plan = Plan::load_with_env(&toml_path, &args.envs[0])
+        .with_context(|| format!("loading {}", toml_path.display()))?;
 
     let chart_dir = args.out.unwrap_or_else(|| service_dir.join("chart"));
     let templates_dir = chart_dir.join("templates");
@@ -130,18 +137,13 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         .with_context(|| format!("creating {}", templates_dir.display()))?;
 
     // --- Chart.yaml --------------------------------------------------------
-    let ctx = build_context(&base_plan);
+    let ctx = base_context(&base_plan);
     render_tmpl("Chart.yaml.tmpl", &ctx, &chart_dir.join("Chart.yaml"))?;
 
     // --- values.yaml (base) ------------------------------------------------
     render_tmpl("values.yaml.tmpl", &ctx, &chart_dir.join("values.yaml"))?;
 
     // --- values-<env>.yaml -------------------------------------------------
-    anyhow::ensure!(
-        !args.envs.is_empty(),
-        "no environment given: pass --env <ENV> once per environment (e.g. --env dev --env prd)"
-    );
-
     for env_name in &args.envs {
         let env_plan = Plan::load_with_env(&toml_path, env_name)
             .with_context(|| format!("loading plan for env '{env_name}'"))?;
@@ -235,15 +237,7 @@ fn build_context(plan: &Plan) -> tera::Context {
             ctx.insert("db_image", &db.image());
             ctx.insert("db_size", &db.size);
         }
-        None => {
-            ctx.insert("db_engine", "none");
-            ctx.insert("db_shared", &false);
-            ctx.insert("db_name", "");
-            ctx.insert("db_namespace", "");
-            ctx.insert("db_port", &5432_u32);
-            ctx.insert("db_image", "");
-            ctx.insert("db_size", "2Gi");
-        }
+        None => insert_no_database(&mut ctx),
     }
 
     // ---- Cache. Same always-insert discipline.
@@ -261,14 +255,7 @@ fn build_context(plan: &Plan) -> tera::Context {
             ctx.insert("cache_port", &c.port());
             ctx.insert("cache_size", &c.size);
         }
-        None => {
-            ctx.insert("cache_engine", "none");
-            ctx.insert("cache_shared", &false);
-            ctx.insert("cache_name", "");
-            ctx.insert("cache_namespace", "");
-            ctx.insert("cache_port", &6379_u32);
-            ctx.insert("cache_size", "1Gi");
-        }
+        None => insert_no_cache(&mut ctx),
     }
 
     // ---- Stateful env + secret keys. `emitted_env` already resolves
@@ -307,6 +294,59 @@ fn build_context(plan: &Plan) -> tera::Context {
     plan.security.as_ref().contribute(&mut ctx);
 
     ctx
+}
+
+/// Context for `Chart.yaml` and the base `values.yaml`: env-independent
+/// fields of `plan` only. Every key whose value depends on the environment
+/// (an `[<section>.<env>]` overlay or an `{env}` placeholder) gets a neutral
+/// default here; `values-<env>.yaml` carries the real value. This keeps the
+/// base free of one environment's settings (e.g. dev's shared-instance URLs).
+fn base_context(plan: &Plan) -> tera::Context {
+    let mut ctx = build_context(plan);
+    // [deploy] (+ overlays): replicas, autoscaling, mesh, MCP, ingress.
+    ctx.insert("replicas", &1_u32);
+    ctx.insert("max_replicas", &1_u32);
+    ctx.insert("has_autoscale", &false);
+    ctx.insert("namespace", "");
+    ctx.insert("mesh", "none");
+    ctx.insert("is_cilium", &false);
+    ctx.insert("expose", &Option::<String>::None);
+    ctx.insert("mcp_enabled", &false);
+    ctx.insert("mcp_mode", McpMode::None.as_str());
+    // Derived from [depends_on].
+    ctx.insert("needs_proxy", &false);
+    ctx.insert("pod_annotations", &Vec::<(String, String)>::new());
+    // [database] / [cache] / [secrets] / [env] / [callers] / [depends_on].
+    ctx.insert("db_enabled", &false);
+    insert_no_database(&mut ctx);
+    ctx.insert("cache_enabled", &false);
+    insert_no_cache(&mut ctx);
+    ctx.insert("stateful_env_literals", &Vec::<(String, String)>::new());
+    ctx.insert("secret_keys", &Vec::<String>::new());
+    ctx.insert("env_vars", &Vec::<(String, String)>::new());
+    ctx.insert("callers", &Vec::<tonin_plugin::ServiceRef>::new());
+    ctx.insert("depends_on", &Vec::<tonin_plugin::DependencyRef>::new());
+    ctx.insert("env_name", "");
+    ctx
+}
+
+fn insert_no_database(ctx: &mut tera::Context) {
+    ctx.insert("db_engine", "none");
+    ctx.insert("db_shared", &false);
+    ctx.insert("db_name", "");
+    ctx.insert("db_namespace", "");
+    ctx.insert("db_port", &5432_u32);
+    ctx.insert("db_image", "");
+    ctx.insert("db_size", "2Gi");
+}
+
+fn insert_no_cache(ctx: &mut tera::Context) {
+    ctx.insert("cache_engine", "none");
+    ctx.insert("cache_shared", &false);
+    ctx.insert("cache_name", "");
+    ctx.insert("cache_namespace", "");
+    ctx.insert("cache_port", &6379_u32);
+    ctx.insert("cache_size", "1Gi");
 }
 
 fn render_tmpl(tmpl_name: &str, ctx: &tera::Context, out_path: &Path) -> Result<()> {
@@ -467,6 +507,52 @@ orders-service = "myapp-dev"
         assert!(out.join("values.yaml").exists());
         assert!(out.join("values-dev.yaml").exists());
         assert!(out.join("values-prod.yaml").exists());
+    }
+
+    #[test]
+    fn base_values_are_identical_for_every_env() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let render = |env: &str| {
+            let out = svc.path().join(format!("chart-{env}"));
+            run(GenerateArgs {
+                path: Some(svc.path().to_path_buf()),
+                out: Some(out.clone()),
+                envs: vec![env.into()],
+            })
+            .unwrap();
+            (
+                read(&out.join("values.yaml")),
+                read(&out.join("Chart.yaml")),
+            )
+        };
+        let (dev, dev_chart) = render("dev");
+        let (prod, prod_chart) = render("prod");
+        assert_eq!(dev, prod, "base values.yaml must not depend on --env");
+        assert_eq!(dev_chart, prod_chart);
+
+        // Nothing from any overlay or env-resolved section leaks into the base.
+        for leaked in [
+            "shared-dev",
+            "myapp-dev",
+            "orders-service",
+            "- DATABASE_PASSWORD",
+            "JWT_SIGNING_KEY",
+            "io.cilium",
+        ] {
+            assert!(!dev.contains(leaked), "base leaks {leaked:?}:\n{dev}");
+        }
+        assert!(dev.contains("replicaCount: 1"), "{dev}");
+        assert!(dev.contains("mesh: \"none\""), "{dev}");
+        assert!(dev.contains("database:\n  enabled: false"), "{dev}");
+        assert!(dev.contains("networkPolicy:\n  enabled: false"), "{dev}");
+
+        // values-<env>.yaml carries the env-specific settings instead.
+        let prod_env = read(&svc.path().join("chart-prod/values-prod.yaml"));
+        assert!(prod_env.contains("replicaCount: 2"), "{prod_env}");
+        assert!(prod_env.contains("mesh: \"cilium\""), "{prod_env}");
+        assert!(prod_env.contains("mode: in-process"), "{prod_env}");
+        assert!(prod_env.contains("DATABASE_PASSWORD"), "{prod_env}");
     }
 
     #[test]
@@ -757,7 +843,7 @@ registry = "ghcr.io/myorg"
             envs: vec!["prod".into()],
         })
         .unwrap();
-        let values = read(&out.join("values.yaml"));
+        let values = read(&out.join("values-prod.yaml"));
         // RICH_TOML enables mcp_sidecar; the chart defaults to in-process (same
         // binary, two ports) — not a separate <name>-mcp sidecar container.
         assert!(values.contains("mode: in-process"));
@@ -780,7 +866,7 @@ registry = "ghcr.io/myorg"
 
         let values = read(&out.join("values.yaml"));
         // Cilium transparent encryption is generated, not hand-edited.
-        assert!(values.contains("io.cilium/encryption"));
+        assert!(read(&out.join("values-prod.yaml")).contains("io.cilium/encryption"));
         // Escape hatches default empty so regeneration never clobbers them.
         assert!(values.contains("extraEnv: []"));
         assert!(values.contains("extraManifests: []"));
@@ -1165,10 +1251,11 @@ LOG_FORMAT = "pretty"
             "{prod}"
         );
         assert!(prod.contains("LOG_FORMAT: \"json\""), "{prod}");
-        // Base values.yaml carries the map too, and the deployment template
-        // injects .Values.env into the server container.
+        // The base values.yaml is env-neutral: [env] is per-env only. The
+        // deployment template injects .Values.env into the server container.
         let base = read(&out.join("values.yaml"));
-        assert!(base.contains("IDENTITY_GRPC_URL:"), "{base}");
+        assert!(!base.contains("IDENTITY_GRPC_URL"), "{base}");
+        assert!(base.contains("\nenv: {}"), "{base}");
         let deployment = read(&out.join("templates").join("deployment.yaml"));
         assert!(deployment.contains(".Values.env"), "{deployment}");
     }
@@ -1279,19 +1366,16 @@ orders = "shop"
         })
         .unwrap();
 
-        let values = read(&out.join("values.yaml"));
+        let base = read(&out.join("values.yaml"));
+        assert!(
+            base.contains("port: 6565"),
+            "proxy port must be 6565: {base}"
+        );
+        let values = read(&out.join("values-prod.yaml"));
         // Proxy injected — Python + depends_on
         assert!(
-            values.contains("outboundProxy:"),
-            "outboundProxy section must be present: {values}"
-        );
-        assert!(
-            values.contains("enabled: true"),
+            values.contains("outboundProxy:\n  enabled: true"),
             "proxy must be enabled: {values}"
-        );
-        assert!(
-            values.contains("port: 6565"),
-            "proxy port must be 6565: {values}"
         );
         // MCP is sidecar for Python
         assert!(
@@ -1323,14 +1407,10 @@ orders = "shop"
         })
         .unwrap();
 
-        let values = read(&out.join("values.yaml"));
+        let values = read(&out.join("values-prod.yaml"));
         // Rust never gets the proxy even though RICH_TOML has depends_on
         assert!(
-            values.contains("outboundProxy:"),
-            "outboundProxy section present: {values}"
-        );
-        assert!(
-            values.contains("enabled: false"),
+            values.contains("outboundProxy:\n  enabled: false"),
             "proxy must be disabled for Rust: {values}"
         );
         assert!(
