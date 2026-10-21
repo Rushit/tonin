@@ -1,0 +1,403 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: rendered
+---
+---
+# Source: telemetry/templates/cache-service.yaml
+# Headless Service for the cache StatefulSet. Its name is the DNS host the
+# server resolves to via REDIS_URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-cache
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  clusterIP: None
+  selector:
+    app: telemetry-cache
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+
+---
+# Source: telemetry/templates/db-service.yaml
+# Headless Service for the database StatefulSet. Its name is the DNS host the
+# server resolves to via DATABASE_URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-db
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  clusterIP: None
+  selector:
+    app: telemetry-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# Source: telemetry/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  type: ClusterIP
+  selector:
+    app: telemetry
+  ports:
+    - name: grpc
+      port: 4317
+      targetPort: 4317
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: mcp
+      port: 50052
+      targetPort: 50052
+
+---
+# Source: telemetry/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  selector:
+    matchLabels:
+      app: telemetry
+  template:
+    metadata:
+      labels:
+        app: telemetry
+        service.identity: telemetry.telemetry-prd
+      annotations:
+        io.cilium/encryption: enabled
+    spec:
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: server
+          image: "ghcr.io/example/telemetry:0.2.3"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /usr/local/bin/telemetry
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: "telemetry"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4317"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=telemetry-prd,service.version=0.2.3"
+            - name: RUST_LOG
+              value: "info"
+            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
+            # inside the DATABASE_URL literal that follows.
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-secrets
+                  key: DATABASE_PASSWORD
+            - name: TELEMETRY_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-secrets
+                  key: TELEMETRY_SERVICE_TOKEN
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: DATABASE_URL
+              value: "postgres://telemetry:$(DATABASE_PASSWORD)@telemetry-db.telemetry-prd.svc.cluster.local:5432/telemetry"
+            - name: REDIS_URL
+              value: "redis://telemetry-cache.telemetry-prd.svc.cluster.local:6379"
+            - name: IDENTITY_GRPC_URL
+              value: "http://identity.platform-prd.svc.cluster.local:50051"
+            - name: S3_BUCKET
+              value: "example-prd-telemetry"
+            - name: S3_ENDPOINT
+              value: "https://s3.example.invalid"
+          ports:
+            - containerPort: 4317
+              name: grpc
+            - containerPort: 8080
+              name: http
+            # In-process MCP: the same server process also serves MCP on this port.
+            - containerPort: 50052
+              name: mcp
+          livenessProbe:
+            httpGet:
+              path: "/health"
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: "/health"
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 200m
+              memory: 512Mi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+
+---
+# Source: telemetry/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: telemetry
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: telemetry
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# Source: telemetry/templates/cache-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: telemetry-cache
+  namespace: telemetry-prd
+  labels:
+    app: telemetry-cache
+    service.identity: telemetry-cache.telemetry-prd
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  serviceName: telemetry-cache
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telemetry-cache
+  template:
+    metadata:
+      labels:
+        app: telemetry-cache
+        service.identity: telemetry-cache.telemetry-prd
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          # Persist for restart-survivability; drop if the cache is ephemeral.
+          args: ["--save", "60", "1", "--loglevel", "warning"]
+          ports:
+            - containerPort: 6379
+              name: redis
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "500m", memory: "512Mi" }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+# Source: telemetry/templates/db-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: telemetry-db
+  namespace: telemetry-prd
+  labels:
+    app: telemetry-db
+    service.identity: telemetry-db.telemetry-prd
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  serviceName: telemetry-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telemetry-db
+  template:
+    metadata:
+      labels:
+        app: telemetry-db
+        service.identity: telemetry-db.telemetry-prd
+    spec:
+      containers:
+        - name: postgres
+          image: "postgres:18"
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              value: "telemetry"
+            - name: POSTGRES_USER
+              value: "telemetry"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-secrets
+                  key: DATABASE_PASSWORD
+            # Postgres expects PGDATA on a subpath so lost+found doesn't trip initdb.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "1",    memory: "1Gi"   }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # storageClassName omitted — uses the cluster default.
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+
+---
+# Source: telemetry/templates/networkpolicy.yaml
+# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
+# (observability, declared dependencies, own DB/cache). mTLS, retries, and
+# circuit breaking stay with the mesh, not this policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: telemetry-ingress
+  namespace: telemetry-prd
+  labels:
+    app: telemetry
+    app.kubernetes.io/name: telemetry
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: telemetry-0.2.3
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: telemetry.telemetry-prd
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: platform-api.platform-prd
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+            - { port: "8080", protocol: TCP }
+            - { port: "50052", protocol: TCP }
+    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+            - { port: "8080", protocol: TCP }
+            - { port: "50052", protocol: TCP }
+  egress:
+    # DNS (kube-dns). Any egress rule makes this policy default-deny for the
+    # pod, which would otherwise silently break service discovery.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            service.identity: identity.platform-prd
+      toPorts:
+        - ports:
+            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
+            - { port: "50051", protocol: TCP }
+    # Database egress (shared or owned).
+    - toEndpoints:
+        - matchLabels:
+            service.identity: telemetry-db.telemetry-prd
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # Cache egress (shared or owned).
+    - toEndpoints:
+        - matchLabels:
+            service.identity: telemetry-cache.telemetry-prd
+      toPorts:
+        - ports:
+            - { port: "6379", protocol: TCP }

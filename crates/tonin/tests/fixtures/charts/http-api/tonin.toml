@@ -1,0 +1,61 @@
+# Golden fixture: HTTP Rust service with a health path, plain env per env,
+# secrets, and structured depends_on, no mesh. Modelled on the zvectorlabs
+# `zvectorlabs-api` service.
+schema = "v1"
+
+[image]
+registry = "ghcr.io/example"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 65532
+run_as_group    = 65532
+fs_group        = 65532
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = true
+
+[security.container.capabilities]
+drop = ["ALL"]
+
+[security.container.seccomp_profile]
+type = "RuntimeDefault"
+
+[service]
+name    = "platform-api"
+version = "0.1.3"
+type    = "http"
+port    = 7001
+
+[service.health]
+path = "/health"
+port = 7001
+
+[deploy]
+namespace   = "platform-{env}"
+replicas    = 1
+mcp_sidecar = false
+
+[deploy.prd]
+replicas = 2
+
+[resources]
+cpu    = "250m"
+memory = "256Mi"
+
+[secrets]
+required = ["PLATFORM_DATABASE_URL", "TELEMETRY_SERVICE_TOKEN"]
+
+[env]
+PLATFORM_SERVER_PORT = "7001"
+IDENTITY_GRPC_ADDR   = "http://identity.platform-{env}.svc.cluster.local:50051"
+PLATFORM_REDIS_URL   = "redis://redis.shared-{env}.svc.cluster.local:6379"
+TELEMETRY_URL        = "http://telemetry.telemetry-{env}.svc.cluster.local:8080"
+
+[env.dev]
+PLATFORM_SERVER_ALLOWED_ORIGINS = "http://localhost:7002"
+
+[depends_on]
+identity  = "platform-{env}"
+telemetry = { namespace = "telemetry-{env}", port = 8080 }

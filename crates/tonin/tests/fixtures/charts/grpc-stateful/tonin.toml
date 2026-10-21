@@ -1,0 +1,75 @@
+# Golden fixture: gRPC Rust service with database, cache, secrets, migrations,
+# callers and depends_on on the cilium mesh. Modelled on the zvectorlabs
+# `identity` service.
+schema = "v1"
+
+[image]
+registry = "ghcr.io/example"
+
+[security.pod]
+run_as_non_root = true
+run_as_user     = 65532
+run_as_group    = 65532
+fs_group        = 65532
+
+[security.container]
+allow_privilege_escalation = false
+read_only_root_filesystem  = true
+
+[security.container.capabilities]
+drop = ["ALL"]
+
+[security.container.seccomp_profile]
+type = "RuntimeDefault"
+
+[service]
+name    = "identity"
+version = "0.3.7"
+codec   = "prost"
+
+[deploy]
+replicas    = 2
+mesh        = "cilium"
+namespace   = "platform-{env}"
+mcp_sidecar = true
+
+[deploy.dev]
+replicas = 1
+
+[resources]
+cpu    = "100m"
+memory = "128Mi"
+
+# min_replicas is ignored by tonin 0.14 (T3 adds it); kept to capture that.
+[autoscale]
+min_replicas = 2
+max_replicas = 8
+
+[database]
+engine = "postgres"
+
+[database.dev]
+shared = true
+url    = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+
+[cache]
+engine = "redis"
+
+[cache.dev]
+shared = true
+url    = "redis://redis.shared-dev.svc.cluster.local:6379"
+
+[secrets]
+required = ["JWT_SECRET"]
+
+[migrations]
+tool    = "custom"
+run_on  = "init-container"
+command = ["/usr/local/bin/identity", "migrate"]
+
+[callers]
+api-gateway = "platform-{env}"
+telemetry   = "telemetry-{env}"
+
+[depends_on]
+audit-log = "platform-{env}"

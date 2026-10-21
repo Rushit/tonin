@@ -1,0 +1,70 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# prd-specific overrides — generated from the prd overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 2
+
+image:
+  tag: "0.1.3"
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 2
+
+# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
+statefulEnv: {}
+
+# Plain env vars from tonin.toml [env], merged with the [env.prd]
+# overlay and with {env} substituted for this environment.
+env:
+  IDENTITY_GRPC_ADDR: "http://identity.platform-prd.svc.cluster.local:50051"
+  PLATFORM_REDIS_URL: "redis://redis.shared-prd.svc.cluster.local:6379"
+  PLATFORM_SERVER_PORT: "7001"
+  TELEMETRY_URL: "http://telemetry.telemetry-prd.svc.cluster.local:8080"
+
+database:
+  enabled: false
+  shared: false
+  engine: "none"
+  name: ""
+  namespace: ""
+  port: 5432
+  image: ""
+  storage: "2Gi"
+
+cache:
+  enabled: false
+  shared: false
+  engine: "none"
+  name: ""
+  namespace: ""
+  port: 6379
+  storage: "1Gi"
+
+secrets:
+  keys:
+    - PLATFORM_DATABASE_URL
+    - TELEMETRY_SERVICE_TOKEN
+
+migrations:
+  enabled: false
+  mode: init-container
+  command: []
+  env: {}
+
+networkPolicy:
+  enabled: true
+  port: 7001
+  mcp: false
+  callers: []
+  dependsOn:
+    - name: identity
+      namespace: platform-prd
+      port: 50051
+    - name: telemetry
+      namespace: telemetry-prd
+      port: 8080

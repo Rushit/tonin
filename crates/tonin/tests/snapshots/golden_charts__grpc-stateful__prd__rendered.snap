@@ -1,0 +1,419 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: rendered
+---
+---
+# Source: identity/templates/cache-service.yaml
+# Headless Service for the cache StatefulSet. Its name is the DNS host the
+# server resolves to via REDIS_URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-cache
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  clusterIP: None
+  selector:
+    app: identity-cache
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+
+---
+# Source: identity/templates/db-service.yaml
+# Headless Service for the database StatefulSet. Its name is the DNS host the
+# server resolves to via DATABASE_URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-db
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  clusterIP: None
+  selector:
+    app: identity-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# Source: identity/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  type: ClusterIP
+  selector:
+    app: identity
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+    - name: mcp
+      port: 50052
+      targetPort: 50052
+
+---
+# Source: identity/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  selector:
+    matchLabels:
+      app: identity
+  template:
+    metadata:
+      labels:
+        app: identity
+        service.identity: identity.platform-prd
+      annotations:
+        io.cilium/encryption: enabled
+    spec:
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      # DB migrations run to completion before the server starts. For the
+      # pre-upgrade Job alternative, set migrations.mode=job (see migration-job.yaml).
+      initContainers:
+        - name: migrate
+          image: "ghcr.io/example/identity:0.3.7"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - "/usr/local/bin/identity"
+            - "migrate"
+          env:
+            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
+            # inside the DATABASE_URL literal that follows.
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: identity-secrets
+                  key: DATABASE_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: identity-secrets
+                  key: JWT_SECRET
+            - name: DATABASE_URL
+              value: "postgres://identity:$(DATABASE_PASSWORD)@identity-db.platform-prd.svc.cluster.local:5432/identity"
+            - name: REDIS_URL
+              value: "redis://identity-cache.platform-prd.svc.cluster.local:6379"
+      containers:
+        - name: server
+          image: "ghcr.io/example/identity:0.3.7"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /usr/local/bin/identity
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: "identity"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4317"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=platform-prd,service.version=0.3.7"
+            - name: RUST_LOG
+              value: "info"
+            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
+            # inside the DATABASE_URL literal that follows.
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: identity-secrets
+                  key: DATABASE_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: identity-secrets
+                  key: JWT_SECRET
+            - name: DATABASE_URL
+              value: "postgres://identity:$(DATABASE_PASSWORD)@identity-db.platform-prd.svc.cluster.local:5432/identity"
+            - name: REDIS_URL
+              value: "redis://identity-cache.platform-prd.svc.cluster.local:6379"
+          ports:
+            - containerPort: 50051
+              name: grpc
+            # In-process MCP: the same server process also serves MCP on this port.
+            - containerPort: 50052
+              name: mcp
+          livenessProbe:
+            grpc:
+              port: 50051
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            grpc:
+              port: 50051
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+
+---
+# Source: identity/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: identity
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: identity
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# Source: identity/templates/cache-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: identity-cache
+  namespace: platform-prd
+  labels:
+    app: identity-cache
+    service.identity: identity-cache.platform-prd
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  serviceName: identity-cache
+  replicas: 1
+  selector:
+    matchLabels:
+      app: identity-cache
+  template:
+    metadata:
+      labels:
+        app: identity-cache
+        service.identity: identity-cache.platform-prd
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          # Persist for restart-survivability; drop if the cache is ephemeral.
+          args: ["--save", "60", "1", "--loglevel", "warning"]
+          ports:
+            - containerPort: 6379
+              name: redis
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "500m", memory: "512Mi" }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+# Source: identity/templates/db-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: identity-db
+  namespace: platform-prd
+  labels:
+    app: identity-db
+    service.identity: identity-db.platform-prd
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  serviceName: identity-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: identity-db
+  template:
+    metadata:
+      labels:
+        app: identity-db
+        service.identity: identity-db.platform-prd
+    spec:
+      containers:
+        - name: postgres
+          image: "postgres:18"
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              value: "identity"
+            - name: POSTGRES_USER
+              value: "identity"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: identity-secrets
+                  key: DATABASE_PASSWORD
+            # Postgres expects PGDATA on a subpath so lost+found doesn't trip initdb.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "1",    memory: "1Gi"   }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # storageClassName omitted — uses the cluster default.
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+
+---
+# Source: identity/templates/networkpolicy.yaml
+# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
+# (observability, declared dependencies, own DB/cache). mTLS, retries, and
+# circuit breaking stay with the mesh, not this policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: identity-ingress
+  namespace: platform-prd
+  labels:
+    app: identity
+    app.kubernetes.io/name: identity
+    app.kubernetes.io/version: "0.3.7"
+    helm.sh/chart: identity-0.3.7
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: identity.platform-prd
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: api-gateway.platform-prd
+      toPorts:
+        - ports:
+            - { port: "50051", protocol: TCP }
+            - { port: "50052", protocol: TCP }
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: telemetry.telemetry-prd
+      toPorts:
+        - ports:
+            - { port: "50051", protocol: TCP }
+            - { port: "50052", protocol: TCP }
+    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "50051", protocol: TCP }
+            - { port: "50052", protocol: TCP }
+  egress:
+    # DNS (kube-dns). Any egress rule makes this policy default-deny for the
+    # pod, which would otherwise silently break service discovery.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            service.identity: audit-log.platform-prd
+      toPorts:
+        - ports:
+            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
+            - { port: "50051", protocol: TCP }
+    # Database egress (shared or owned).
+    - toEndpoints:
+        - matchLabels:
+            service.identity: identity-db.platform-prd
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # Cache egress (shared or owned).
+    - toEndpoints:
+        - matchLabels:
+            service.identity: identity-cache.platform-prd
+      toPorts:
+        - ports:
+            - { port: "6379", protocol: TCP }

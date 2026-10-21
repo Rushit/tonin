@@ -1,0 +1,10 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+apiVersion: v2
+name: telemetry
+description: "telemetry gRPC service (tonin)"
+type: application
+version: "0.2.3"
+appVersion: "0.2.3"

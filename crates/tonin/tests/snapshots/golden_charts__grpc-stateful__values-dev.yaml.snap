@@ -1,0 +1,70 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# dev-specific overrides — generated from the dev overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 1
+
+image:
+  tag: "0.3.7"
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 8
+
+# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
+statefulEnv:
+  DATABASE_URL: "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+  REDIS_URL: "redis://redis.shared-dev.svc.cluster.local:6379"
+
+# Plain env vars from tonin.toml [env], merged with the [env.dev]
+# overlay and with {env} substituted for this environment.
+env: {}
+
+database:
+  enabled: true
+  shared: true
+  engine: "postgres"
+  name: "identity-db"
+  namespace: "platform-dev"
+  port: 5432
+  image: "postgres:18"
+  storage: "2Gi"
+
+cache:
+  enabled: true
+  shared: true
+  engine: "redis"
+  name: "identity-cache"
+  namespace: "platform-dev"
+  port: 6379
+  storage: "1Gi"
+
+secrets:
+  keys:
+    - JWT_SECRET
+
+migrations:
+  enabled: true
+  mode: init-container
+  command:
+    - "/usr/local/bin/identity"
+    - "migrate"
+  env: {}
+
+networkPolicy:
+  enabled: true
+  port: 50051
+  mcp: true
+  callers:
+    - name: api-gateway
+      namespace: platform-dev
+    - name: telemetry
+      namespace: telemetry-dev
+  dependsOn:
+    - name: audit-log
+      namespace: platform-dev
+      port: 50051

@@ -1,0 +1,71 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# prd-specific overrides — generated from the prd overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 2
+
+image:
+  tag: "0.3.7"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+
+# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
+statefulEnv:
+  DATABASE_URL: "postgres://identity:$(DATABASE_PASSWORD)@identity-db.platform-prd.svc.cluster.local:5432/identity"
+  REDIS_URL: "redis://identity-cache.platform-prd.svc.cluster.local:6379"
+
+# Plain env vars from tonin.toml [env], merged with the [env.prd]
+# overlay and with {env} substituted for this environment.
+env: {}
+
+database:
+  enabled: true
+  shared: false
+  engine: "postgres"
+  name: "identity-db"
+  namespace: "platform-prd"
+  port: 5432
+  image: "postgres:18"
+  storage: "2Gi"
+
+cache:
+  enabled: true
+  shared: false
+  engine: "redis"
+  name: "identity-cache"
+  namespace: "platform-prd"
+  port: 6379
+  storage: "1Gi"
+
+secrets:
+  keys:
+    - DATABASE_PASSWORD
+    - JWT_SECRET
+
+migrations:
+  enabled: true
+  mode: init-container
+  command:
+    - "/usr/local/bin/identity"
+    - "migrate"
+  env: {}
+
+networkPolicy:
+  enabled: true
+  port: 50051
+  mcp: true
+  callers:
+    - name: api-gateway
+      namespace: platform-prd
+    - name: telemetry
+      namespace: telemetry-prd
+  dependsOn:
+    - name: audit-log
+      namespace: platform-prd
+      port: 50051

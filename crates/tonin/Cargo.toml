@@ -88,3 +88,9 @@ reqwest      = { workspace = true, optional = true }
 flate2       = { workspace = true, optional = true }
 tar          = { workspace = true, optional = true }
 regex        = { version = "1", optional = true }
+
+[dev-dependencies]
+# Golden chart tests (tests/golden_charts.rs).
+insta      = "1.47"
+serde_json = { workspace = true }
+tempfile   = "3"

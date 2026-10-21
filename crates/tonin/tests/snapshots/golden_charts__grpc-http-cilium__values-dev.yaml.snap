@@ -1,0 +1,69 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# dev-specific overrides — generated from the dev overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 1
+
+image:
+  tag: "0.2.3"
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 4
+
+# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
+statefulEnv:
+  DATABASE_URL: "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/telemetry_dev"
+  REDIS_URL: "redis://redis.shared-dev.svc.cluster.local:6379"
+
+# Plain env vars from tonin.toml [env], merged with the [env.dev]
+# overlay and with {env} substituted for this environment.
+env:
+  IDENTITY_GRPC_URL: "http://identity.platform-dev.svc.cluster.local:50051"
+
+database:
+  enabled: true
+  shared: true
+  engine: "postgres"
+  name: "telemetry-db"
+  namespace: "telemetry-dev"
+  port: 5432
+  image: "postgres:18"
+  storage: "2Gi"
+
+cache:
+  enabled: true
+  shared: true
+  engine: "redis"
+  name: "telemetry-cache"
+  namespace: "telemetry-dev"
+  port: 6379
+  storage: "1Gi"
+
+secrets:
+  keys:
+    - TELEMETRY_SERVICE_TOKEN
+    - AWS_ACCESS_KEY_ID
+    - AWS_SECRET_ACCESS_KEY
+
+migrations:
+  enabled: false
+  mode: init-container
+  command: []
+  env: {}
+
+networkPolicy:
+  enabled: true
+  port: 4317
+  mcp: true
+  callers:
+    - name: platform-api
+      namespace: platform-dev
+  dependsOn:
+    - name: identity
+      namespace: platform-dev
+      port: 50051
