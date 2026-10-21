@@ -42,8 +42,8 @@ pub enum PlatformCmd {
 
     /// Check the status of services in an environment.
     ///
-    /// Queries Kubernetes for running versions and cross-references
-    /// with the environment lock to detect drift.
+    /// Compares the image each release runs with the environment lock's
+    /// image (as `tonin deploy` does) to detect drift.
     ///
     ///   tonin platform status --env prod
     ///   tonin platform status --env staging --json

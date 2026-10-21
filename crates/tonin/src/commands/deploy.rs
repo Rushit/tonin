@@ -5,8 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use tonin_plugin::deploy_backend::{
-    DeployBackend, DeployValues, DryRunBackend, HelmBackend, ImageRef, NoopReporter,
-    TelemetryReporter,
+    DeployBackend, DeployValues, DryRunBackend, HelmBackend, NoopReporter, TelemetryReporter,
 };
 use tonin_plugin::lock::{EnvLock, GitLockStore, LockStore};
 use tonin_plugin::{Plan, wave_groups};
@@ -151,11 +150,9 @@ pub fn run(args: DeployArgs) -> Result<()> {
 }
 
 /// Whether a release running `running` (the image its values render, from
-/// [`DeployBackend::running_image`]) already runs the lock's image. Images are
-/// compared, not versions: the chart's appVersion comes from the checked-out
-/// tonin.toml and says nothing about the deployed digest.
+/// [`DeployBackend::running_image`]) already runs the lock's image.
 fn in_sync(running: Option<&str>, values: &DeployValues) -> bool {
-    running.is_some_and(|r| ImageRef::parse(r).to_string() == values.image_ref().to_string())
+    values.is_running(running)
 }
 
 /// The services to deploy: the `--service` names (validated against the

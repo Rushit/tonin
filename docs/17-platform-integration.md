@@ -113,6 +113,13 @@ tonin platform status --env staging --json
 ]
 ```
 
+`health` compares the image the release runs with the lock's image (digest), the same
+check `tonin deploy` uses to skip services already in sync: `healthy` when they match,
+`degraded` when the release runs another image, `unhealthy` when it is not installed,
+`not_deployed` when it is neither installed nor in the lock. `running_version` is the
+release's `image.version` (set by `tonin deploy` from the lock), else its `image.tag`;
+`digest` is the lock's.
+
 #### 3. Rollback a Service
 
 ```bash
