@@ -265,7 +265,18 @@ pub fn compute_affected(
 }
 
 pub(crate) fn git_diff(base: &str, head: &str, root: &std::path::Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
+    git_diff_with(Command::new("git"), base, head, root)
+}
+
+/// [`git_diff`] with a caller-supplied base `git` command, so tests can pass
+/// one isolated from the enclosing repository's environment.
+fn git_diff_with(
+    mut git: Command,
+    base: &str,
+    head: &str,
+    root: &std::path::Path,
+) -> Result<Vec<String>> {
+    let output = git
         .args(["diff", "--name-only", &format!("{}..{}", base, head)])
         .current_dir(root)
         .output()
@@ -731,30 +742,155 @@ mod tests {
         ));
     }
 
+    /// Is `key` an env var that makes `git` look somewhere other than its
+    /// working directory for the repo, index, or config? A git hook (e.g. the
+    /// pre-commit hook running the test suite) exports these, and a child
+    /// `git` inheriting them acts on the *enclosing* repo instead of the
+    /// tempdir under test.
+    fn is_git_location_env(key: &std::ffi::OsStr) -> bool {
+        const VARS: &[&str] = &[
+            "GIT_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_WORK_TREE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        ];
+        key.to_str()
+            .is_some_and(|k| k.starts_with("GIT_CONFIG") || VARS.contains(&k))
+    }
+
+    /// A `git` command for tests, isolated from the enclosing repo and the
+    /// user's config: inherited repo-location / config env is dropped, global
+    /// config is an empty file under `home`, system config is off, and the
+    /// commit identity comes from env (no `git config` writes).
+    fn isolated_git(home: &std::path::Path) -> Command {
+        isolated_git_from(home, std::env::vars_os())
+    }
+
+    /// [`isolated_git`] with an explicit inherited environment (for testing
+    /// the isolation itself without mutating the process env).
+    fn isolated_git_from(
+        home: &std::path::Path,
+        inherited: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> Command {
+        let global_config = home.join(".gitconfig");
+        if !global_config.exists() {
+            std::fs::write(&global_config, "").unwrap();
+        }
+        let mut cmd = Command::new("git");
+        cmd.env_clear();
+        for (key, value) in inherited {
+            if !is_git_location_env(&key) {
+                cmd.env(key, value);
+            }
+        }
+        cmd.env("HOME", home)
+            .env("XDG_CONFIG_HOME", home)
+            .env("GIT_CONFIG_GLOBAL", &global_config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "Test User")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test User")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .args([
+                "-c",
+                "init.defaultBranch=main",
+                "-c",
+                "commit.gpgsign=false",
+            ]);
+        cmd
+    }
+
+    /// Run an isolated `git <args>` in `dir`, asserting success; returns stdout.
+    fn run_git(home: &std::path::Path, dir: &std::path::Path, args: &[&str]) -> String {
+        let out = isolated_git(home)
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// Regression: tests run from a git hook inherit GIT_DIR / GIT_WORK_TREE /
+    /// GIT_INDEX_FILE pointing at the real repo; `git init` + commits in the
+    /// test then rewrote that repo's config (core.bare=true, [user]). The
+    /// isolated command must ignore them and act on its working directory.
+    #[test]
+    fn isolated_git_ignores_enclosing_repo_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let decoy = tmp.path().join("decoy");
+        let target = tmp.path().join("target");
+        for d in [&home, &decoy, &target] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        run_git(&home, &decoy, &["init", "-q"]);
+        let decoy_config = decoy.join(".git").join("config");
+        let decoy_config_before = std::fs::read_to_string(&decoy_config).unwrap();
+
+        // Env as a pre-commit hook in the decoy repo would export it.
+        let hook_env = std::env::vars_os().chain([
+            ("GIT_DIR".into(), decoy.join(".git").into_os_string()),
+            ("GIT_WORK_TREE".into(), decoy.clone().into_os_string()),
+            (
+                "GIT_INDEX_FILE".into(),
+                decoy.join(".git").join("index").into_os_string(),
+            ),
+            ("GIT_CONFIG_PARAMETERS".into(), "'core.bare'='true'".into()),
+        ]);
+        let hook_env: Vec<_> = hook_env.collect();
+        let git = |args: &[&str]| {
+            let out = isolated_git_from(&home, hook_env.clone())
+                .args(args)
+                .current_dir(&target)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap()
+        };
+
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        let toplevel = git(&["rev-parse", "--show-toplevel"]);
+        assert_eq!(
+            std::path::Path::new(toplevel.trim())
+                .canonicalize()
+                .unwrap(),
+            target.canonicalize().unwrap(),
+            "git acted on the repo from inherited GIT_DIR, not its working dir"
+        );
+        assert_eq!(git(&["config", "--local", "core.bare"]).trim(), "false");
+        assert_eq!(
+            std::fs::read_to_string(&decoy_config).unwrap(),
+            decoy_config_before,
+            "decoy repo config was modified"
+        );
+    }
+
     #[test]
     fn cli_integration_affected_service() {
         let tmp = tempfile::tempdir().unwrap();
-        let repo_path = tmp.path();
+        let home = tmp.path().join("home");
+        let repo_path = &tmp.path().join("repo");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(repo_path).unwrap();
 
-        // 1. Initialize git repo
-        let status = Command::new("git")
-            .arg("init")
-            .current_dir(repo_path)
-            .status()
-            .unwrap();
-        assert!(status.success());
-
-        // Configure dummy user for commits
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(repo_path)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(repo_path)
-            .status()
-            .unwrap();
+        // 1. Initialize git repo (identity comes from the isolated env)
+        run_git(&home, repo_path, &["init", "-q"]);
 
         // 2. Create subdirectories and tonin.toml files
         let auth_dir = repo_path.join("auth-service");
@@ -780,39 +916,21 @@ packages = ["auth-server"]
         std::fs::write(auth_dir.join("tonin.toml"), auth_toml).unwrap();
 
         // 3. Commit initial files
-        Command::new("git")
-            .arg("add")
-            .arg(".")
-            .current_dir(repo_path)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "initial commit"])
-            .current_dir(repo_path)
-            .status()
-            .unwrap();
+        run_git(&home, repo_path, &["add", "."]);
+        run_git(&home, repo_path, &["commit", "-q", "-m", "initial commit"]);
 
         // 4. Create a modification
         let src_dir = auth_dir.join("src");
         std::fs::create_dir_all(&src_dir).unwrap();
         std::fs::write(src_dir.join("main.rs"), "fn main() {}").unwrap();
 
-        Command::new("git")
-            .arg("add")
-            .arg(".")
-            .current_dir(repo_path)
-            .status()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "modify src"])
-            .current_dir(repo_path)
-            .status()
-            .unwrap();
+        run_git(&home, repo_path, &["add", "."]);
+        run_git(&home, repo_path, &["commit", "-q", "-m", "modify src"]);
 
         // 5. Run the affected logic using compute_affected
         let plans = Plan::load_workspace_with_env(repo_path, "dev").unwrap();
         let result = compute_affected(
-            git_diff("HEAD~1", "HEAD", repo_path).unwrap(),
+            git_diff_with(isolated_git(&home), "HEAD~1", "HEAD", repo_path).unwrap(),
             &plans,
             Granularity::Package,
             "HEAD~1".to_string(),
