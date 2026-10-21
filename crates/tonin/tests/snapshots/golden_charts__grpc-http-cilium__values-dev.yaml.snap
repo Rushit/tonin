@@ -28,34 +28,35 @@ ingress:
   enabled: false
   host: ""
 
-# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
-statefulEnv:
-  DATABASE_URL: "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/telemetry_dev"
-  REDIS_URL: "redis://redis.shared-dev.svc.cluster.local:6379"
-
 # Plain env vars from tonin.toml [env], merged with the [env.dev]
 # overlay and with {env} substituted for this environment.
 env:
   IDENTITY_GRPC_URL: "http://identity.platform-dev.svc.cluster.local:50051"
 
-database:
-  enabled: true
-  shared: true
-  engine: "postgres"
-  name: "telemetry-db"
-  namespace: "telemetry-dev"
-  port: 5432
-  image: "postgres:18"
-  storage: "2Gi"
-
-cache:
-  enabled: true
-  shared: true
-  engine: "redis"
-  name: "telemetry-cache"
-  namespace: "telemetry-dev"
-  port: 6379
-  storage: "1Gi"
+# Databases and caches of the platform contract, resolved for dev.
+datastores:
+  - name: database
+    env: DATABASE_URL
+    value: postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/telemetry_dev
+    egress:
+      port: 5432
+      namespace: shared-dev
+      labels:
+        app.kubernetes.io/name: postgres
+  - name: databases.analytics
+    env: ANALYTICS_DATABASE_URL
+    value: postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/analytics_dev
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: telemetry-analytics-pg
+  - name: cache
+    env: REDIS_URL
+    value: redis://redis.shared-dev.svc.cluster.local:6379
+    egress:
+      port: 6379
+      labels:
+        app.kubernetes.io/name: telemetry-cache
 
 secrets:
   keys:
@@ -64,10 +65,7 @@ secrets:
     - AWS_SECRET_ACCESS_KEY
 
 migrations:
-  enabled: false
-  mode: init-container
-  command: []
-  env: {}
+  mode: none
 
 networkPolicy:
   enabled: true

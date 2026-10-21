@@ -117,32 +117,16 @@ podAnnotations: {}
 extraEnv: []
 extraManifests: []
 
-# Resolved stateful env (DATABASE_URL, REDIS_URL, …) injected verbatim.
-# Populated from tonin.toml [database]/[cache]; overridden per-env.
-statefulEnv: {}
+# Databases and caches ([database]/[databases.<name>], [cache]/[caches.<name>]):
+# references to the platform contract, never rendered by this chart. Each entry
+# reads a connection URL from a Secret key (default `<service>-pg-app` /
+# `<service>-cache`, key `uri`; or a literal per-env `url`) into `env`, mounts
+# only `ca.crt` of the Postgres CA Secret for tls = "verify-full", and allows
+# network-policy egress to the datastore's pods. Resolved per environment in
+# values-<env>.yaml.
+datastores: []
 
-# Stateful dependencies — rendered when tonin.toml declares [database]/[cache].
-# `shared: true` points at an external instance and renders NO StatefulSet.
-database:
-  enabled: false
-  shared: false
-  engine: "none"
-  name: ""
-  namespace: ""
-  port: 5432
-  image: ""
-  storage: "2Gi"
-
-cache:
-  enabled: false
-  shared: false
-  engine: "none"
-  name: ""
-  namespace: ""
-  port: 6379
-  storage: "1Gi"
-
-# Secrets the service requires (DATABASE_PASSWORD, JWT keys, …).
+# Secrets the service requires ([secrets].required: JWT keys, API tokens, …).
 # create=true templates a Secret from `values` — supply real values at deploy
 # time (`--set secrets.values.KEY=...` or a private values file); NEVER commit
 # them. create=false references an externally-managed Secret named
@@ -152,19 +136,21 @@ secrets:
   keys: []
   values: {}
 
-# DB migrations.
-#   mode: init-container  → runs before the server container in every pod
-#         (default; correct for an owned/in-chart DB and for dev).
-#   mode: job             → a pre-install/pre-upgrade hook Job that Helm gates
-#         the rollout on. Needs the DB + Secret to already exist (managed/shared
-#         DB + secrets.create=false), since pre-upgrade hooks run before the
-#         chart's own StatefulSet/Secret.
+# DB migrations ([migrations]). `mode` is set per environment in
+# values-<env>.yaml ([migrations.<env>] mode in tonin.toml):
+#   init-container → runs before the server container in every pod.
+#   job            → a pre-install/pre-upgrade hook Job that Helm gates the
+#                    rollout on. Hooks run before the chart's own resources
+#                    exist: the Job reads the database from the platform
+#                    contract Secrets and its network policy is a hook too.
+#   none           → nothing rendered.
 #   env: extra env for the migration step only (e.g. IDENTITY_MIGRATE_ONLY=1) —
-#         never reaches the server container.
+#        never reaches the server container.
 migrations:
-  enabled: false
-  mode: init-container
-  command: []
+  mode: none
+  command:
+    - "/usr/local/bin/platform-api"
+    - "migrate"
   env: {}
 
 # CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.

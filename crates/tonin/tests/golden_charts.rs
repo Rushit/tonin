@@ -36,53 +36,7 @@ const CRD_SCHEMA_LOCATION: &str = "https://raw.githubusercontent.com/datreeio/CR
 /// Rendered resources that fail kubeconform today, as
 /// `(fixture, env, kind, name, reason)`. Each entry must still fail (a fixed
 /// resource has to be removed from this list), and nothing else may fail.
-const KNOWN_INVALID: &[(&str, &str, &str, &str, &str)] = &[
-    // TODO(tonin 0.15 T2): T2 stops rendering Postgres/Redis StatefulSets.
-    // db-/cache-statefulset.yaml set `app: <db|cache name>` and then include
-    // `service.labels`, which sets `app` again: duplicate YAML key.
-    (
-        "grpc-stateful",
-        "prd",
-        "StatefulSet",
-        "identity-db",
-        "duplicate `app` label key",
-    ),
-    (
-        "grpc-stateful",
-        "prd",
-        "StatefulSet",
-        "identity-cache",
-        "duplicate `app` label key",
-    ),
-    (
-        "grpc-http-cilium",
-        "prd",
-        "StatefulSet",
-        "telemetry-db",
-        "duplicate `app` label key",
-    ),
-    (
-        "grpc-http-cilium",
-        "prd",
-        "StatefulSet",
-        "telemetry-cache",
-        "duplicate `app` label key",
-    ),
-    (
-        "grpc-stateful",
-        "prd-digest",
-        "StatefulSet",
-        "identity-db",
-        "duplicate `app` label key",
-    ),
-    (
-        "grpc-stateful",
-        "prd-digest",
-        "StatefulSet",
-        "identity-cache",
-        "duplicate `app` label key",
-    ),
-];
+const KNOWN_INVALID: &[(&str, &str, &str, &str, &str)] = &[];
 
 /// A digest-pinned image (as `tonin deploy` sets it from the lock).
 const PINNED_DIGEST: &str =
@@ -104,6 +58,7 @@ golden_fixture!(node_web, "node-web");
 
 /// `image.digest` set: every container running the service image (server,
 /// MCP sidecar, migration initContainer and Job) uses `repository@digest`.
+/// Renders prd with both migration modes (prd's own mode is `job`).
 #[test]
 fn grpc_stateful_digest_pinned() {
     let fixture = "grpc-stateful";

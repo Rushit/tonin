@@ -3,52 +3,6 @@ source: crates/tonin/tests/golden_charts.rs
 expression: rendered
 ---
 ---
-# Source: telemetry/templates/cache-service.yaml
-# Headless Service for the cache StatefulSet. Its name is the DNS host the
-# server resolves to via REDIS_URL.
-apiVersion: v1
-kind: Service
-metadata:
-  name: telemetry-cache
-  namespace: telemetry-prd
-  labels:
-    app: telemetry
-    app.kubernetes.io/name: telemetry
-    app.kubernetes.io/version: "0.2.3"
-    helm.sh/chart: telemetry-0.2.3
-spec:
-  clusterIP: None
-  selector:
-    app: telemetry-cache
-  ports:
-    - name: redis
-      port: 6379
-      targetPort: 6379
-
----
-# Source: telemetry/templates/db-service.yaml
-# Headless Service for the database StatefulSet. Its name is the DNS host the
-# server resolves to via DATABASE_URL.
-apiVersion: v1
-kind: Service
-metadata:
-  name: telemetry-db
-  namespace: telemetry-prd
-  labels:
-    app: telemetry
-    app.kubernetes.io/name: telemetry
-    app.kubernetes.io/version: "0.2.3"
-    helm.sh/chart: telemetry-0.2.3
-spec:
-  clusterIP: None
-  selector:
-    app: telemetry-db
-  ports:
-    - name: postgres
-      port: 5432
-      targetPort: 5432
-
----
 # Source: telemetry/templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -125,13 +79,8 @@ spec:
               value: "service.namespace=telemetry-prd,service.version=0.2.3"
             - name: RUST_LOG
               value: "info"
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
-            - name: DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: telemetry-secrets
-                  key: DATABASE_PASSWORD
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             - name: TELEMETRY_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -148,9 +97,20 @@ spec:
                   name: telemetry-secrets
                   key: AWS_SECRET_ACCESS_KEY
             - name: DATABASE_URL
-              value: "postgres://telemetry:$(DATABASE_PASSWORD)@telemetry-db.telemetry-prd.svc.cluster.local:5432/telemetry"
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-pg-app
+                  key: uri
+            - name: ANALYTICS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-analytics-pg-app
+                  key: uri
             - name: REDIS_URL
-              value: "redis://telemetry-cache.telemetry-prd.svc.cluster.local:6379"
+              valueFrom:
+                secretKeyRef:
+                  name: telemetry-cache
+                  key: uri
             - name: IDENTITY_GRPC_URL
               value: "http://identity.platform-prd.svc.cluster.local:50051"
             - name: S3_BUCKET
@@ -213,120 +173,10 @@ spec:
           averageUtilization: 70
 
 ---
-# Source: telemetry/templates/cache-statefulset.yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: telemetry-cache
-  namespace: telemetry-prd
-  labels:
-    app: telemetry-cache
-    service.identity: telemetry-cache.telemetry-prd
-    app: telemetry
-    app.kubernetes.io/name: telemetry
-    app.kubernetes.io/version: "0.2.3"
-    helm.sh/chart: telemetry-0.2.3
-spec:
-  serviceName: telemetry-cache
-  replicas: 1
-  selector:
-    matchLabels:
-      app: telemetry-cache
-  template:
-    metadata:
-      labels:
-        app: telemetry-cache
-        service.identity: telemetry-cache.telemetry-prd
-    spec:
-      containers:
-        - name: redis
-          image: redis:7
-          # Persist for restart-survivability; drop if the cache is ephemeral.
-          args: ["--save", "60", "1", "--loglevel", "warning"]
-          ports:
-            - containerPort: 6379
-              name: redis
-          volumeMounts:
-            - name: data
-              mountPath: /data
-          resources:
-            requests: { cpu: "50m",  memory: "64Mi"  }
-            limits:   { cpu: "500m", memory: "512Mi" }
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
-
----
-# Source: telemetry/templates/db-statefulset.yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: telemetry-db
-  namespace: telemetry-prd
-  labels:
-    app: telemetry-db
-    service.identity: telemetry-db.telemetry-prd
-    app: telemetry
-    app.kubernetes.io/name: telemetry
-    app.kubernetes.io/version: "0.2.3"
-    helm.sh/chart: telemetry-0.2.3
-spec:
-  serviceName: telemetry-db
-  replicas: 1
-  selector:
-    matchLabels:
-      app: telemetry-db
-  template:
-    metadata:
-      labels:
-        app: telemetry-db
-        service.identity: telemetry-db.telemetry-prd
-    spec:
-      containers:
-        - name: postgres
-          image: "postgres:18"
-          ports:
-            - containerPort: 5432
-              name: postgres
-          env:
-            - name: POSTGRES_DB
-              value: "telemetry"
-            - name: POSTGRES_USER
-              value: "telemetry"
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: telemetry-secrets
-                  key: DATABASE_PASSWORD
-            # Postgres expects PGDATA on a subpath so lost+found doesn't trip initdb.
-            - name: PGDATA
-              value: /var/lib/postgresql/data/pgdata
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
-          resources:
-            requests: { cpu: "100m", memory: "256Mi" }
-            limits:   { cpu: "1",    memory: "1Gi"   }
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        # storageClassName omitted — uses the cluster default.
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 2Gi
-
----
 # Source: telemetry/templates/networkpolicy.yaml
 # CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, own DB/cache). mTLS, retries, and
-# circuit breaking stay with the mesh, not this policy.
+# (observability, declared dependencies, the platform contract's databases and
+# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -385,17 +235,24 @@ spec:
         - ports:
             # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
-    # Database egress (shared or owned).
+    # [database] (platform contract)
     - toEndpoints:
         - matchLabels:
-            service.identity: telemetry-db.telemetry-prd
+            cnpg.io/cluster: "telemetry-pg"
       toPorts:
         - ports:
             - { port: "5432", protocol: TCP }
-    # Cache egress (shared or owned).
+    # [databases.analytics] (platform contract)
     - toEndpoints:
         - matchLabels:
-            service.identity: telemetry-cache.telemetry-prd
+            cnpg.io/cluster: "telemetry-analytics-pg"
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }
+    # [cache] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: "telemetry-cache"
       toPorts:
         - ports:
             - { port: "6379", protocol: TCP }

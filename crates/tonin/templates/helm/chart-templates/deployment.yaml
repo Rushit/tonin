@@ -26,7 +26,7 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if and .Values.migrations.enabled (eq .Values.migrations.mode "init-container") }}
+      {{- if eq .Values.migrations.mode "init-container" }}
       # DB migrations run to completion before the server starts. For the
       # pre-upgrade Job alternative, set migrations.mode=job (see migration-job.yaml).
       initContainers:
@@ -42,8 +42,8 @@ spec:
             - {{ . | quote }}
             {{- end }}
           env:
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             {{- range .Values.secrets.keys }}
             - name: {{ . }}
               valueFrom:
@@ -51,9 +51,8 @@ spec:
                   name: {{ include "service.name" $ }}-secrets
                   key: {{ . }}
             {{- end }}
-            {{- range $k, $v := .Values.statefulEnv }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
+            {{- with include "service.datastoreEnv" . | trim }}
+            {{- . | nindent 12 }}
             {{- end }}
             {{- range $k, $v := .Values.migrations.env }}
             - name: {{ $k }}
@@ -62,6 +61,10 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with include "service.datastoreVolumeMounts" . | trim }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
       {{- end }}
       containers:
         - name: server
@@ -86,8 +89,8 @@ spec:
             - name: RUST_LOG
               value: "info"
             {{- end }}
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             {{- range .Values.secrets.keys }}
             - name: {{ . }}
               valueFrom:
@@ -95,9 +98,8 @@ spec:
                   name: {{ include "service.name" $ }}-secrets
                   key: {{ . }}
             {{- end }}
-            {{- range $k, $v := .Values.statefulEnv }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
+            {{- with include "service.datastoreEnv" . | trim }}
+            {{- . | nindent 12 }}
             {{- end }}
             {{- range $k, $v := .Values.env }}
             - name: {{ $k }}
@@ -147,6 +149,10 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- with include "service.datastoreVolumeMounts" . | trim }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
         {{- if and .Values.mcp.enabled (eq .Values.mcp.mode "sidecar") }}
         # Sidecar MCP: a separate <name>-mcp binary proxying to the gRPC server.
         # Only valid if the image actually ships that binary.
@@ -198,3 +204,7 @@ spec:
             requests: { cpu: "50m",  memory: "64Mi"  }
             limits:   { cpu: "200m", memory: "128Mi" }
         {{- end }}
+      {{- with include "service.datastoreVolumes" . | trim }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}

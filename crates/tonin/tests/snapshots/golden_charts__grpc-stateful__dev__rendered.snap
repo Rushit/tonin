@@ -71,8 +71,8 @@ spec:
             - "/usr/local/bin/identity"
             - "migrate"
           env:
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -105,8 +105,8 @@ spec:
               value: "service.namespace=platform-dev,service.version=0.3.7"
             - name: RUST_LOG
               value: "info"
-            # Secret-sourced vars first so k8s can expand $(DATABASE_PASSWORD)
-            # inside the DATABASE_URL literal that follows.
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -170,8 +170,8 @@ spec:
 ---
 # Source: identity/templates/networkpolicy.yaml
 # CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
-# (observability, declared dependencies, own DB/cache). mTLS, retries, and
-# circuit breaking stay with the mesh, not this policy.
+# (observability, declared dependencies, the platform contract's databases and
+# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -235,17 +235,17 @@ spec:
         - ports:
             # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
             - { port: "50051", protocol: TCP }
-    # Database egress (shared or owned).
+    # [database] (platform contract)
     - toEndpoints:
         - matchLabels:
-            service.identity: identity-db.platform-dev
+            cnpg.io/cluster: "identity-pg"
       toPorts:
         - ports:
             - { port: "5432", protocol: TCP }
-    # Cache egress (shared or owned).
+    # [cache] (platform contract)
     - toEndpoints:
         - matchLabels:
-            service.identity: identity-cache.platform-dev
+            app.kubernetes.io/name: "identity-cache"
       toPorts:
         - ports:
             - { port: "6379", protocol: TCP }

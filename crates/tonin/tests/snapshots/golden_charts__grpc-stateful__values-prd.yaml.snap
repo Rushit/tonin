@@ -28,46 +28,45 @@ ingress:
   enabled: false
   host: ""
 
-# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
-statefulEnv:
-  DATABASE_URL: "postgres://identity:$(DATABASE_PASSWORD)@identity-db.platform-prd.svc.cluster.local:5432/identity"
-  REDIS_URL: "redis://identity-cache.platform-prd.svc.cluster.local:6379"
-
 # Plain env vars from tonin.toml [env], merged with the [env.prd]
 # overlay and with {env} substituted for this environment.
 env: {}
 
-database:
-  enabled: true
-  shared: false
-  engine: "postgres"
-  name: "identity-db"
-  namespace: "platform-prd"
-  port: 5432
-  image: "postgres:18"
-  storage: "2Gi"
-
-cache:
-  enabled: true
-  shared: false
-  engine: "redis"
-  name: "identity-cache"
-  namespace: "platform-prd"
-  port: 6379
-  storage: "1Gi"
+# Databases and caches of the platform contract, resolved for prd.
+datastores:
+  - name: database
+    env: DATABASE_URL
+    secret:
+      env: TONIN_PG_URI
+      name: identity-pg-app
+      key: uri
+    value: $(TONIN_PG_URI)?sslmode=verify-full&sslrootcert=/etc/pg-ca/ca.crt
+    caMount:
+      volume: pg-ca
+      secret: identity-pg-ca
+      key: ca.crt
+      mountPath: /etc/pg-ca
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: identity-pg
+  - name: cache
+    env: REDIS_URL
+    secret:
+      env: REDIS_URL
+      name: identity-cache
+      key: uri
+    egress:
+      port: 6379
+      labels:
+        app.kubernetes.io/name: identity-cache
 
 secrets:
   keys:
-    - DATABASE_PASSWORD
     - JWT_SECRET
 
 migrations:
-  enabled: true
-  mode: init-container
-  command:
-    - "/usr/local/bin/identity"
-    - "migrate"
-  env: {}
+  mode: job
 
 networkPolicy:
   enabled: true

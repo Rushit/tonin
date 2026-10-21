@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use include_dir::{Dir, include_dir};
 use tera::Tera;
-use tonin_plugin::{McpMode, MigrationRunOn, Plan, SecuritySection, ServiceKind};
+use tonin_plugin::{DatastoreEnv, McpMode, MigrationMode, Plan, SecuritySection, ServiceKind};
 
 static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
 
@@ -17,8 +17,12 @@ static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/hel
 /// (hand-written templates, extra values files) belongs to the user and is
 /// never touched.
 pub(crate) const OBSOLETE_FILES: &[&str] = &[
-    // Nothing yet: every file tonin has shipped is still generated. Add a path
-    // here in the same change that stops generating it.
+    // 0.15: databases and caches are platform-contract references; tonin no
+    // longer renders Postgres/Redis StatefulSets and Services.
+    "templates/db-statefulset.yaml",
+    "templates/db-service.yaml",
+    "templates/cache-statefulset.yaml",
+    "templates/cache-service.yaml",
 ];
 
 /// Implemented by each optional `tonin.toml` section that contributes keys to the Tera context.
@@ -229,48 +233,13 @@ fn build_context(plan: &Plan) -> tera::Context {
         }
     }
 
-    // ---- Database. Always insert every key (with defaults) so the Tera
-    //      templates never hit an undefined variable when [database] is absent.
-    let db_enabled = plan
-        .database
-        .as_ref()
-        .is_some_and(|d| d.engine.as_str() != "none");
-    ctx.insert("db_enabled", &db_enabled);
-    match &plan.database {
-        Some(db) => {
-            ctx.insert("db_engine", db.engine.as_str());
-            ctx.insert("db_shared", &db.shared);
-            ctx.insert("db_name", &db.name);
-            ctx.insert("db_namespace", &db.namespace);
-            ctx.insert("db_port", &db.port());
-            ctx.insert("db_image", &db.image());
-            ctx.insert("db_size", &db.size);
-        }
-        None => insert_no_database(&mut ctx),
-    }
-
-    // ---- Cache. Same always-insert discipline.
-    let cache_enabled = plan
-        .cache
-        .as_ref()
-        .is_some_and(|c| c.engine.as_str() != "none");
-    ctx.insert("cache_enabled", &cache_enabled);
-    match &plan.cache {
-        Some(c) => {
-            ctx.insert("cache_engine", c.engine.as_str());
-            ctx.insert("cache_shared", &c.shared);
-            ctx.insert("cache_name", &c.name);
-            ctx.insert("cache_namespace", &c.namespace);
-            ctx.insert("cache_port", &c.port());
-            ctx.insert("cache_size", &c.size);
-        }
-        None => insert_no_cache(&mut ctx),
-    }
-
-    // ---- Stateful env + secret keys. `emitted_env` already resolves
-    //      DATABASE_URL / REDIS_URL (literals) and the from-secret key list
-    //      (DATABASE_PASSWORD + declared [secrets].required) for this env.
-    ctx.insert("stateful_env_literals", &plan.emitted_env.literals);
+    // ---- Databases and caches: platform-contract references, resolved for
+    //      this env (Secret key or dev url → env var, CA mount, egress).
+    ctx.insert(
+        "datastores_block",
+        &datastores_block(&plan.emitted_env.datastores),
+    );
+    // ---- Keys of the service's own Secret ([secrets].required).
     ctx.insert("secret_keys", &plan.emitted_env.from_secret);
 
     // ---- Plain env vars from [env] (+ [env.<env>] overlay), resolved for
@@ -278,15 +247,13 @@ fn build_context(plan: &Plan) -> tera::Context {
     //      deployment template already injects into the server container.
     ctx.insert("env_vars", &plan.env_vars);
 
-    // ---- Migrations. `enabled` when tonin.toml asks for a managed migration
-    //      step (run_on = init-container). The chart renders either an
-    //      initContainer (default, dev / owned DB) or a pre-upgrade hook Job
-    //      (prod / managed DB) selected by `migrations.mode` at deploy time.
-    let migrations_enabled = plan
+    // ---- Migrations: `[migrations] mode` (+ `[migrations.<env>]`) selects
+    //      the initContainer, the pre-install/pre-upgrade hook Job, or nothing.
+    let migrations_mode = plan
         .migrations
         .as_ref()
-        .is_some_and(|m| matches!(m.run_on, MigrationRunOn::InitContainer));
-    ctx.insert("migrations_enabled", &migrations_enabled);
+        .map_or(MigrationMode::None, |m| m.mode);
+    ctx.insert("migrations_mode", migrations_mode.as_str());
     let migrations_command: Vec<String> = plan
         .migrations
         .as_ref()
@@ -324,37 +291,28 @@ fn base_context(plan: &Plan) -> tera::Context {
     ctx.insert("mcp_mode", McpMode::None.as_str());
     // Derived from [depends_on].
     ctx.insert("needs_proxy", &false);
-    // [database] / [cache] / [secrets] / [env] / [callers] / [depends_on].
-    ctx.insert("db_enabled", &false);
-    insert_no_database(&mut ctx);
-    ctx.insert("cache_enabled", &false);
-    insert_no_cache(&mut ctx);
-    ctx.insert("stateful_env_literals", &Vec::<(String, String)>::new());
+    // [database] / [cache] / [secrets] / [env] / [migrations] mode /
+    // [callers] / [depends_on].
+    ctx.insert("datastores_block", &datastores_block(&[]));
     ctx.insert("secret_keys", &Vec::<String>::new());
     ctx.insert("env_vars", &Vec::<(String, String)>::new());
+    ctx.insert("migrations_mode", MigrationMode::None.as_str());
     ctx.insert("callers", &Vec::<tonin_plugin::ServiceRef>::new());
     ctx.insert("depends_on", &Vec::<tonin_plugin::DependencyRef>::new());
     ctx.insert("env_name", "");
     ctx
 }
 
-fn insert_no_database(ctx: &mut tera::Context) {
-    ctx.insert("db_engine", "none");
-    ctx.insert("db_shared", &false);
-    ctx.insert("db_name", "");
-    ctx.insert("db_namespace", "");
-    ctx.insert("db_port", &5432_u32);
-    ctx.insert("db_image", "");
-    ctx.insert("db_size", "2Gi");
-}
-
-fn insert_no_cache(ctx: &mut tera::Context) {
-    ctx.insert("cache_engine", "none");
-    ctx.insert("cache_shared", &false);
-    ctx.insert("cache_name", "");
-    ctx.insert("cache_namespace", "");
-    ctx.insert("cache_port", &6379_u32);
-    ctx.insert("cache_size", "1Gi");
+/// The `datastores:` values key: `datastores: []`, or the resolved list as
+/// YAML (keys in the order the chart templates read them).
+fn datastores_block(datastores: &[DatastoreEnv]) -> String {
+    if datastores.is_empty() {
+        return "datastores: []".into();
+    }
+    let yaml = serde_yaml::to_string(datastores).unwrap_or_default();
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+    let body: Vec<String> = yaml.lines().map(|l| format!("  {l}")).collect();
+    format!("datastores:\n{}", body.join("\n"))
 }
 
 fn render_tmpl(tmpl_name: &str, ctx: &tera::Context, out_path: &Path) -> Result<()> {
@@ -441,9 +399,9 @@ pub fn resolve_service_dir(explicit: Option<&Path>) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// A `tonin.toml` exercising every stateful surface: owned DB + cache in
-    /// prod, a shared DB in dev, app secrets, callers (with a dev overlay),
-    /// migrations, and the cilium mesh.
+    /// A `tonin.toml` exercising every stateful surface: contract DB + cache
+    /// in prod, literal dev URLs, app secrets, callers (with a dev overlay),
+    /// migrations (a Job in prod), and the cilium mesh.
     const RICH_TOML: &str = r#"
 schema = "v1"
 
@@ -469,23 +427,24 @@ memory = "128Mi"
 engine = "postgres"
 
 [database.dev]
-shared = true
-url    = "postgresql://u:p@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+url = "postgresql://u:p@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
 
 [cache]
 engine = "redis"
 
 [cache.dev]
-shared = true
-url    = "redis://redis.shared-dev.svc.cluster.local:6379"
+url = "redis://redis.shared-dev.svc.cluster.local:6379"
 
 [secrets]
 required = ["JWT_SIGNING_KEY"]
 
 [migrations]
-tool   = "sqlx"
-dir    = "migrations/"
-run_on = "init-container"
+tool = "sqlx"
+dir  = "migrations/"
+mode = "init-container"
+
+[migrations.prod]
+mode = "job"
 
 [callers]
 orders-service = "myapp"
@@ -520,17 +479,18 @@ orders-service = "myapp-dev"
             "deployment.yaml",
             "service.yaml",
             "hpa.yaml",
-            "db-statefulset.yaml",
-            "db-service.yaml",
-            "cache-statefulset.yaml",
-            "cache-service.yaml",
             "secret.yaml",
             "networkpolicy.yaml",
+            "migration-job.yaml",
         ] {
             assert!(
                 out.join("templates").join(f).exists(),
                 "missing template {f}"
             );
+        }
+        // Databases and caches are platform-contract references: nothing renders them.
+        for f in OBSOLETE_FILES {
+            assert!(!out.join(f).exists(), "{f} must not be generated");
         }
         assert!(out.join("values.yaml").exists());
         assert!(out.join("values-dev.yaml").exists());
@@ -646,7 +606,8 @@ orders-service = "myapp-dev"
             "shared-dev",
             "myapp-dev",
             "orders-service",
-            "- DATABASE_PASSWORD",
+            "identity-pg-app",
+            "cnpg.io/cluster",
             "JWT_SIGNING_KEY",
             "io.cilium",
         ] {
@@ -654,7 +615,8 @@ orders-service = "myapp-dev"
         }
         assert!(dev.contains("replicaCount: 1"), "{dev}");
         assert!(dev.contains("mesh: \"none\""), "{dev}");
-        assert!(dev.contains("database:\n  enabled: false"), "{dev}");
+        assert!(dev.contains("\ndatastores: []"), "{dev}");
+        assert!(dev.contains("  mode: none"), "{dev}");
         assert!(dev.contains("networkPolicy:\n  enabled: false"), "{dev}");
 
         // values-<env>.yaml carries the env-specific settings instead.
@@ -662,11 +624,11 @@ orders-service = "myapp-dev"
         assert!(prod_env.contains("replicaCount: 2"), "{prod_env}");
         assert!(prod_env.contains("mesh: \"cilium\""), "{prod_env}");
         assert!(prod_env.contains("mode: in-process"), "{prod_env}");
-        assert!(prod_env.contains("DATABASE_PASSWORD"), "{prod_env}");
+        assert!(prod_env.contains("name: identity-pg-app"), "{prod_env}");
     }
 
     #[test]
-    fn prod_values_own_the_database_and_carry_db_password_secret() {
+    fn prod_values_reference_the_platform_contract() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);
         let out = svc.path().join("chart");
@@ -678,19 +640,27 @@ orders-service = "myapp-dev"
         .unwrap();
 
         let prod = read(&out.join("values-prod.yaml"));
-        // prod has no [database.prod] overlay -> owned (shared:false).
-        assert!(prod.contains("shared: false"), "prod db should be owned");
-        assert!(prod.contains("name: \"identity-db\""));
-        // Owned DB means DATABASE_PASSWORD is a required secret key.
-        assert!(prod.contains("DATABASE_PASSWORD"));
-        assert!(prod.contains("JWT_SIGNING_KEY"));
+        // DATABASE_URL / REDIS_URL come from the contract Secrets' `uri` key.
+        for expected in [
+            "- name: database\n    env: DATABASE_URL\n    secret:\n      env: DATABASE_URL\n      name: identity-pg-app\n      key: uri",
+            "- name: cache\n    env: REDIS_URL\n    secret:\n      env: REDIS_URL\n      name: identity-cache\n      key: uri",
+            "cnpg.io/cluster: identity-pg",
+            "app.kubernetes.io/name: identity-cache",
+            "port: 5432",
+            "port: 6379",
+        ] {
+            assert!(prod.contains(expected), "missing {expected:?}:\n{prod}");
+        }
+        // tonin no longer adds a password key to the service's own Secret.
+        assert!(!prod.contains("DATABASE_PASSWORD"), "{prod}");
+        assert!(prod.contains("- JWT_SIGNING_KEY"));
         // Cilium policy allowlist resolves the base caller namespace.
         assert!(prod.contains("name: orders-service"));
         assert!(prod.contains("namespace: myapp"));
     }
 
     #[test]
-    fn dev_values_use_shared_instances_without_db_password() {
+    fn dev_values_use_literal_urls_instead_of_contract_secrets() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);
         let out = svc.path().join("chart");
@@ -702,40 +672,73 @@ orders-service = "myapp-dev"
         .unwrap();
 
         let dev = read(&out.join("values-dev.yaml"));
-        assert!(dev.contains("shared: true"), "dev db should be shared");
-        // Shared DB (url override) emits no DATABASE_PASSWORD secret key.
         assert!(
-            !dev.contains("DATABASE_PASSWORD"),
-            "shared dev db must not require DATABASE_PASSWORD"
+            dev.contains(
+                "env: DATABASE_URL\n    value: postgresql://u:p@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
+            ),
+            "{dev}"
         );
-        // The shared URL is injected verbatim as stateful env.
-        assert!(dev.contains("postgres.shared-dev.svc.cluster.local"));
+        assert!(
+            dev.contains("value: redis://redis.shared-dev.svc.cluster.local:6379"),
+            "{dev}"
+        );
+        assert!(!dev.contains("identity-pg-app"), "{dev}");
+        assert!(!dev.contains("DATABASE_PASSWORD"), "{dev}");
         // Caller dev overlay applies.
         assert!(dev.contains("namespace: myapp-dev"));
     }
 
     #[test]
-    fn migrations_default_to_init_container_mode_and_ship_job_template() {
+    fn migrations_mode_is_per_env_and_ships_job_template() {
         let svc = tempfile::tempdir().unwrap();
         write_service(svc.path(), RICH_TOML);
         let out = svc.path().join("chart");
         run(GenerateArgs {
             path: Some(svc.path().to_path_buf()),
             out: Some(out.clone()),
-            envs: vec!["prod".into()],
+            envs: vec!["dev".into(), "prod".into()],
         })
         .unwrap();
 
         let values = read(&out.join("values.yaml"));
-        assert!(values.contains("enabled: true")); // [migrations] present
-        assert!(values.contains("mode: init-container")); // default mode
+        assert!(values.contains("  mode: none"), "{values}"); // env-neutral base
+        assert!(values.contains("- \"sqlx\""), "{values}");
         assert!(values.contains("env: {}")); // migration-only env hatch
-        // Both the initContainer (deployment) and the Job hook template ship;
-        // mode selects which renders at deploy time.
-        assert!(out.join("templates").join("migration-job.yaml").exists());
+        let dev = read(&out.join("values-dev.yaml"));
+        assert!(dev.contains("migrations:\n  mode: init-container"), "{dev}");
+        let prod = read(&out.join("values-prod.yaml"));
+        assert!(prod.contains("migrations:\n  mode: job"), "{prod}");
+
         let job = read(&out.join("templates").join("migration-job.yaml"));
         assert!(job.contains("helm.sh/hook\": pre-install,pre-upgrade"));
         assert!(job.contains(r#"eq .Values.migrations.mode "job""#));
+        // The Job's pods are not selected by the Service (`app`), but carry
+        // service.identity so the service's network policy applies.
+        assert!(job.contains("app.kubernetes.io/component: migrate"));
+        assert!(job.contains("service.identity:"));
+        // Its network policy is a hook that runs before the Job.
+        assert!(job.contains("\"helm.sh/hook-weight\": \"-5\""), "{job}");
+    }
+
+    #[test]
+    fn generate_removes_the_db_and_cache_templates_of_earlier_versions() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let out = svc.path().join("chart");
+        let templates = out.join("templates");
+        std::fs::create_dir_all(&templates).unwrap();
+        for f in OBSOLETE_FILES {
+            std::fs::write(out.join(f), "kind: StatefulSet\n").unwrap();
+        }
+        run(GenerateArgs {
+            path: Some(svc.path().to_path_buf()),
+            out: Some(out.clone()),
+            envs: vec!["prod".into()],
+        })
+        .unwrap();
+        for f in OBSOLETE_FILES {
+            assert!(!out.join(f).exists(), "{f} survived regeneration");
+        }
     }
 
     #[test]
@@ -756,15 +759,19 @@ orders-service = "myapp-dev"
         assert!(helpers.contains(".Chart.Name"));
         assert!(!helpers.contains(".Release.Name"));
 
-        // Secret-sourced env (DATABASE_PASSWORD) must precede the statefulEnv
-        // literals (DATABASE_URL) so k8s can expand $(DATABASE_PASSWORD).
+        // Secret-sourced env precedes the datastore env and the plain env, so
+        // their values can use $(VAR) expansion.
         let deployment = read(&out.join("templates").join("deployment.yaml"));
         let secrets_at = deployment.find(".Values.secrets.keys").unwrap();
-        let stateful_at = deployment.find(".Values.statefulEnv").unwrap();
-        assert!(
-            secrets_at < stateful_at,
-            "secrets.keys must be rendered before statefulEnv"
-        );
+        let datastores_at = deployment.find("\"service.datastoreEnv\"").unwrap();
+        let env_at = deployment.find(".Values.env }}").unwrap();
+        assert!(secrets_at < datastores_at && datastores_at < env_at);
+        // Within a datastore, the Secret-sourced (helper) var comes first.
+        let helper = read(&out.join("templates").join("_helpers.tpl"));
+        let def = helper.find("define \"service.datastoreEnv\"").unwrap();
+        let secret_at = def + helper[def..].find("secretKeyRef").unwrap();
+        let value_at = def + helper[def..].find("value: {{ .value").unwrap();
+        assert!(secret_at < value_at);
     }
 
     #[test]
@@ -1048,7 +1055,7 @@ memory = "64Mi"
 
         let values = read(&out.join("values.yaml"));
         assert!(values.contains("enabled: false")); // database/cache off
-        assert!(values.contains("statefulEnv: {}"));
+        assert!(values.contains("datastores: []"));
         assert!(values.contains("keys: []"));
         // mesh=none -> no cilium policy.
         assert!(values.contains("networkPolicy:\n  enabled: false"));

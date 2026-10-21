@@ -1,6 +1,8 @@
 # Golden fixture: HTTP Rust service with a health path, plain env per env,
-# secrets, and structured depends_on, no mesh. Modelled on the zvectorlabs
-# `zvectorlabs-api` service.
+# secrets, and structured depends_on. Modelled on the zvectorlabs
+# `zvectorlabs-api` service. Covers: database/cache env var names overridden
+# (PLATFORM_DATABASE_URL, PLATFORM_REDIS_URL), and migrations as a hook Job in
+# every env.
 schema = "v1"
 
 [image]
@@ -45,12 +47,24 @@ cpu    = "250m"
 memory = "256Mi"
 
 [secrets]
-required = ["PLATFORM_DATABASE_URL", "TELEMETRY_SERVICE_TOKEN"]
+required = ["TELEMETRY_SERVICE_TOKEN"]
+
+[database]
+engine = "postgres"
+env    = "PLATFORM_DATABASE_URL"
+
+[cache]
+engine = "redis"
+env    = "PLATFORM_REDIS_URL"
+
+[migrations]
+tool    = "custom"
+mode    = "job"
+command = ["/usr/local/bin/platform-api", "migrate"]
 
 [env]
 PLATFORM_SERVER_PORT = "7001"
 IDENTITY_GRPC_ADDR   = "http://identity.platform-{env}.svc.cluster.local:50051"
-PLATFORM_REDIS_URL   = "redis://redis.shared-{env}.svc.cluster.local:6379"
 TELEMETRY_URL        = "http://telemetry.telemetry-{env}.svc.cluster.local:8080"
 
 [env.dev]

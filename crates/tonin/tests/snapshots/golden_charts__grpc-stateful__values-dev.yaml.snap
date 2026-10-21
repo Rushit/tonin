@@ -28,45 +28,33 @@ ingress:
   enabled: false
   host: ""
 
-# Stateful env resolves per-env (e.g. dev points at a shared instance URL).
-statefulEnv:
-  DATABASE_URL: "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev"
-  REDIS_URL: "redis://redis.shared-dev.svc.cluster.local:6379"
-
 # Plain env vars from tonin.toml [env], merged with the [env.dev]
 # overlay and with {env} substituted for this environment.
 env: {}
 
-database:
-  enabled: true
-  shared: true
-  engine: "postgres"
-  name: "identity-db"
-  namespace: "platform-dev"
-  port: 5432
-  image: "postgres:18"
-  storage: "2Gi"
-
-cache:
-  enabled: true
-  shared: true
-  engine: "redis"
-  name: "identity-cache"
-  namespace: "platform-dev"
-  port: 6379
-  storage: "1Gi"
+# Databases and caches of the platform contract, resolved for dev.
+datastores:
+  - name: database
+    env: DATABASE_URL
+    value: postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/identity_dev
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: identity-pg
+  - name: cache
+    env: REDIS_URL
+    value: redis://redis.shared-dev.svc.cluster.local:6379
+    egress:
+      port: 6379
+      labels:
+        app.kubernetes.io/name: identity-cache
 
 secrets:
   keys:
     - JWT_SECRET
 
 migrations:
-  enabled: true
   mode: init-container
-  command:
-    - "/usr/local/bin/identity"
-    - "migrate"
-  env: {}
 
 networkPolicy:
   enabled: true

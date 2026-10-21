@@ -45,9 +45,10 @@ pub use plan::{
 
 // Env resolution + resolved stateful types
 pub use stateful::{
-    CacheEngine, CacheSpec, ConfigEngine, ConfigSpec, DatabaseEngine, DatabaseSpec, EmittedEnv,
-    ExternalStore, MigrationRunOn, MigrationTool, MigrationsSpec, SecretProvider, SecretsSpec,
-    select_env,
+    CaMount, CacheEngine, CacheSpec, ConfigEngine, ConfigSpec, DatabaseEngine, DatabaseSpec,
+    DatabaseTls, DatastoreEnv, DatastoreSource, EgressTarget, EmittedEnv, ExternalStore,
+    MigrationMode, MigrationTool, MigrationsSpec, PG_CA_KEY, PG_CA_MOUNT_DIR, SecretEnvRef,
+    SecretProvider, SecretsSpec, select_env,
 };
 
 // Lock store types
