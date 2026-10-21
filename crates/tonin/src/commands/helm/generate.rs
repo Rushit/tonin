@@ -547,6 +547,30 @@ orders-service = "myapp-dev"
     }
 
     #[test]
+    fn every_template_renders_the_image_through_the_helper() {
+        let dir = TEMPLATES.get_dir("chart-templates").unwrap();
+        for file in dir.files() {
+            let name = file.path().file_name().unwrap().to_string_lossy();
+            if name == "_helpers.tpl" {
+                continue;
+            }
+            let src = file.contents_utf8().unwrap();
+            assert!(
+                !src.contains(".Values.image.repository"),
+                "{name} builds the image reference itself; use `include \"service.image\" .`"
+            );
+        }
+        let helpers = dir
+            .files()
+            .find(|f| f.path().ends_with("_helpers.tpl"))
+            .unwrap()
+            .contents_utf8()
+            .unwrap();
+        assert!(helpers.contains(r#"define "service.image""#));
+        assert!(helpers.contains(".Values.image.digest"));
+    }
+
+    #[test]
     fn obsolete_list_never_names_a_shipped_file() {
         let shipped: Vec<String> = TEMPLATES
             .get_dir("chart-templates")

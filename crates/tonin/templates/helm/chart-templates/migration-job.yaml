@@ -31,7 +31,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: migrate
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "service.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             {{- range .Values.migrations.command }}

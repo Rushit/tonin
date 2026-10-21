@@ -68,7 +68,25 @@ const KNOWN_INVALID: &[(&str, &str, &str, &str, &str)] = &[
         "telemetry-cache",
         "duplicate `app` label key",
     ),
+    (
+        "grpc-stateful",
+        "prd-digest",
+        "StatefulSet",
+        "identity-db",
+        "duplicate `app` label key",
+    ),
+    (
+        "grpc-stateful",
+        "prd-digest",
+        "StatefulSet",
+        "identity-cache",
+        "duplicate `app` label key",
+    ),
 ];
+
+/// A digest-pinned image (as `tonin deploy` sets it from the lock).
+const PINNED_DIGEST: &str =
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 macro_rules! golden_fixture {
     ($test:ident, $fixture:literal) => {
@@ -83,6 +101,44 @@ golden_fixture!(grpc_stateful, "grpc-stateful");
 golden_fixture!(http_api, "http-api");
 golden_fixture!(grpc_http_cilium, "grpc-http-cilium");
 golden_fixture!(node_web, "node-web");
+
+/// `image.digest` set: every container running the service image (server,
+/// MCP sidecar, migration initContainer and Job) uses `repository@digest`.
+#[test]
+fn grpc_stateful_digest_pinned() {
+    let fixture = "grpc-stateful";
+    let service_dir = fixture_dir(fixture);
+    let out = tempfile::tempdir().expect("tempdir");
+    let chart = out.path().join("chart");
+    generate_chart(&service_dir, &chart);
+
+    let Some(helm) = tool("helm", "TONIN_TEST_HELM", "version") else {
+        return;
+    };
+    let digest = format!("image.digest={PINNED_DIGEST}");
+    let mut rendered = String::new();
+    for mode in ["init-container", "job"] {
+        let mode = format!("migrations.mode={mode}");
+        rendered.push_str(&helm_template_with(
+            &helm,
+            &service_dir,
+            &chart,
+            "prd",
+            &["--set", &digest, "--set", &mode],
+        ));
+    }
+    assert!(
+        !rendered.contains("ghcr.io/example/identity:"),
+        "a tag-based image reference survived:\n{rendered}"
+    );
+    insta::assert_snapshot!(format!("{fixture}__prd-digest__rendered"), rendered);
+
+    if let Some(kubeconform) = tool("kubeconform", "TONIN_TEST_KUBECONFORM", "-v") {
+        let manifest = out.path().join("rendered-prd-digest.yaml");
+        std::fs::write(&manifest, &rendered).expect("write rendered manifest");
+        check_schemas(&kubeconform, fixture, "prd-digest", &manifest);
+    }
+}
 
 fn fixture_dir(fixture: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -146,6 +202,17 @@ fn generate_chart(service_dir: &Path, chart: &Path) {
 
 /// `helm template`, release name and namespace resolved like `tonin helm template`.
 fn helm_template(helm: &Path, service_dir: &Path, chart: &Path, env: &str) -> String {
+    helm_template_with(helm, service_dir, chart, env, &[])
+}
+
+/// [`helm_template`] with extra helm arguments (e.g. `--set`).
+fn helm_template_with(
+    helm: &Path,
+    service_dir: &Path,
+    chart: &Path,
+    env: &str,
+    extra: &[&str],
+) -> String {
     let plan = tonin_plugin::Plan::load_with_env(&service_dir.join("tonin.toml"), env)
         .unwrap_or_else(|e| panic!("loading plan for env {env}: {e}"));
     let output = Command::new(helm)
@@ -157,6 +224,7 @@ fn helm_template(helm: &Path, service_dir: &Path, chart: &Path, env: &str) -> St
         .arg(chart.join(format!("values-{env}.yaml")))
         .args(["--namespace", &plan.namespace])
         .args(["--kube-version", KUBE_VERSION])
+        .args(extra)
         .output()
         .expect("spawn helm");
     assert!(
