@@ -163,7 +163,7 @@ cpu    = "100m"
 memory = "128Mi"
 
 [placement.prd]
-node_selector = { "zvl.io/role" = "app" }
+node_selector = { "example.com/role" = "app" }
 
 [pdb]
 max_unavailable = "50%"
@@ -194,7 +194,7 @@ args     = ["purge"]
         let pod = ctx_str(&ctx, "pod_block");
         for expected in [
             "imagePullSecrets:\n- name: ghcr-read",
-            "nodeSelector:\n  zvl.io/role: app",
+            "nodeSelector:\n  example.com/role: app",
             "topologySpreadConstraints:\n- maxSkew: 1\n  topologyKey: kubernetes.io/hostname\n  whenUnsatisfiable: ScheduleAnyway",
             "podDisruptionBudget:\n  enabled: true\n  maxUnavailable: 50%",
             "- name: purge\n  schedule: '*/5 * * * *'",

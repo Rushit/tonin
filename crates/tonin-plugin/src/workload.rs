@@ -930,7 +930,7 @@ mod tests {
             numbers: vec![(4317, "service"), (8080, "[service.http]")],
         };
         let ok = resolve_ports(
-            "zradar",
+            "telemetry",
             &[
                 port("otlp-http", 4318, Some("ingest")),
                 port("query", 8081, None),
@@ -951,7 +951,10 @@ mod tests {
             vec![port("x", 9000, Some("Bad_Name"))],
             vec![port("x", 0, None)],
         ] {
-            assert!(resolve_ports("zradar", &bad, &reserved).is_err(), "{bad:?}");
+            assert!(
+                resolve_ports("telemetry", &bad, &reserved).is_err(),
+                "{bad:?}"
+            );
         }
     }
 

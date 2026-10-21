@@ -442,7 +442,7 @@ inventory-service = { namespace = "inventory-{env}", prod = "inventory-shared" }
 audit-sink        = { namespace = "security-{env}", envs = ["prod"] }                      # only egresses in prod
 billing           = { namespace = "@inherit" }                                             # namespace set at deploy time; omitted from the chart
 otel-gateway      = { namespace = "observability-{env}", port = 4317 }                     # non-gRPC / non-default listen port
-zradar-platform   = { namespace = "zradar-{env}", ports = [8080, 8081, 8082] }             # several ports
+telemetry         = { namespace = "telemetry-{env}", ports = [8080, 8081, 8082] }             # several ports
 ```
 
 Resolution rules for an environment `E`:
@@ -515,13 +515,13 @@ ui-shell = "ui"
 [egress]
 fqdns = [
   { name = "api.stripe.com", ports = [443] },   # Cilium toFQDNs matchName
-  { pattern = "*.ovh.us", ports = [443] },      # matchPattern
+  { pattern = "*.example.com", ports = [443] },      # matchPattern
 ]
 cidrs = [{ cidr = "10.0.0.0/8", except = ["10.96.0.0/12"], ports = [5432] }]  # toCIDRSet
 kube_apiserver = true                           # toEntities: [kube-apiserver], ports 443 and 6443
 
 [egress.prd]                                    # per env: each key set here replaces the base value
-fqdns = [{ name = "s3.us-east-va.io.cloud.ovh.us", ports = [443] }]
+fqdns = [{ name = "s3.example-region.example.com", ports = [443] }]
 ```
 
 - Every FQDN and CIDR entry needs `ports`. A FQDN entry has exactly one of
@@ -586,8 +586,8 @@ image_pull_secrets = []                       # Secret names; per env in [deploy
 image_pull_secrets = ["ghcr-read"]
 
 [placement.prd]                               # base [placement] + per-env overlays
-node_selector = { "zvl.io/role" = "app" }
-tolerations   = [{ key = "zvl.io/db", operator = "Equal", value = "identity", effect = "NoSchedule" }]
+node_selector = { "example.com/role" = "app" }
+tolerations   = [{ key = "example.com/db", operator = "Equal", value = "identity", effect = "NoSchedule" }]
 # topology_spread = false                     # default: hostname spread, see below
 # topology_spread = [{ max_skew = 1, topology_key = "topology.kubernetes.io/zone", when_unsatisfiable = "DoNotSchedule" }]
 
@@ -598,7 +598,7 @@ min_available = 1                             # or max_unavailable = 1 / "50%"
 automount_token = false                       # default
 tokens = [                                    # projected, audience-bound, kubelet-rotated
   { audience = "identity" },                  # → /var/run/secrets/tokens/identity, 3600 s
-  { audience = "zradar", path = "/var/run/secrets/tokens/zradar", expiration_seconds = 3600 },
+  { audience = "telemetry", path = "/var/run/secrets/tokens/telemetry", expiration_seconds = 3600 },
 ]
 # token = { audience = "identity" }           # shorthand for a single token
 

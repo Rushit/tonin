@@ -2,7 +2,7 @@
 # `language = "node"`: no Rust command or RUST_LOG, the image's CMD (or an
 # explicit command) runs it, and no outbound proxy sidecar even with a
 # dependency. Read-only root filesystem with emptyDirs for the Next.js cache
-# and /tmp. Modelled on the zvectorlabs `ui-shell` app.
+# and /tmp. Modelled on a web shell app.
 schema = "v1"
 
 [image]

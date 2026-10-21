@@ -91,7 +91,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
       nodeSelector:
-        zvl.io/role: app
+        example.com/role: app
       topologySpreadConstraints:
         - labelSelector:
             matchLabels:
@@ -263,7 +263,7 @@ spec:
             runAsNonRoot: true
             runAsUser: 65532
           nodeSelector:
-            zvl.io/role: app
+            example.com/role: app
           containers:
             - name: purge-expired
               image: "ghcr.io/example/identity:0.3.7"
@@ -366,7 +366,7 @@ spec:
             runAsNonRoot: true
             runAsUser: 65532
           nodeSelector:
-            zvl.io/role: app
+            example.com/role: app
           containers:
             - name: close-impersonation
               image: "ghcr.io/example/identity:0.3.7"
@@ -569,7 +569,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
       nodeSelector:
-        zvl.io/role: app
+        example.com/role: app
       containers:
         - name: migrate
           image: "ghcr.io/example/identity:0.3.7"

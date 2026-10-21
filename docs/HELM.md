@@ -522,26 +522,26 @@ service's namespace:
 | Pods labelled `app.kubernetes.io/name=<svc>-cache`, port 6379 | platform Redis manifest | network-policy egress |
 
 Every name, the key, the env var, the pod labels and their namespace and port are overridable,
-on the table or per environment. `zvectorlabs-api`, whose code reads other variable names:
+on the table or per environment. A service named `api` whose code reads other variable names:
 
 ```toml
 [database]
 engine = "postgres"
-env    = "PLATFORM_DATABASE_URL"   # from zvectorlabs-api-pg-app / uri
+env    = "PLATFORM_DATABASE_URL"   # from api-pg-app / uri
 
 [database.prd]
-tls = "verify-full"                # mounts zvectorlabs-api-pg-ca / ca.crt at /etc/pg-ca
+tls = "verify-full"                # mounts api-pg-ca / ca.crt at /etc/pg-ca
 
 [database.dev]                     # dev cluster without contract Secrets
-url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/zvectorlabs_dev"
+url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/api_dev"
 
 [cache]
 engine = "redis"
-env    = "PLATFORM_REDIS_URL"      # from zvectorlabs-api-cache / uri
+env    = "PLATFORM_REDIS_URL"      # from api-cache / uri
 
 [migrations]
 tool    = "custom"
-command = ["/usr/local/bin/zvectorlabs-api", "migrate"]
+command = ["/usr/local/bin/api", "migrate"]
 mode    = "job"                    # "job" | "init-container" | "none", per env too
 ```
 

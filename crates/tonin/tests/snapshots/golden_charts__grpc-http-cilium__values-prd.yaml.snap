@@ -85,10 +85,10 @@ migrations:
 # Pull secrets, placement, disruption budget and CronJobs for prd.
 imagePullSecrets: []
 nodeSelector:
-  zvl.io/role: db
+  example.com/role: db
 tolerations:
 - effect: NoSchedule
-  key: zvl.io/db
+  key: example.com/db
   operator: Equal
   value: telemetry
 topologySpreadConstraints:
@@ -121,7 +121,7 @@ networkPolicy:
     - 50051
   egress:
     fqdns:
-    - name: s3.us-east-va.io.cloud.ovh.us
+    - name: s3.example-region.example.com
       ports:
       - 443
     cidrs: []

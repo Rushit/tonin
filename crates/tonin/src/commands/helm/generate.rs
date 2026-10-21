@@ -1661,12 +1661,12 @@ port    = 7001
 [deploy]
 replicas  = 1
 mesh      = "cilium"
-namespace = "zvectorlabs-{env}"
+namespace = "platform-{env}"
 [resources]
 cpu    = "100m"
 memory = "128Mi"
 [env]
-IDENTITY_GRPC_URL = "http://identity.zvectorlabs-{env}.svc.cluster.local:50051"
+IDENTITY_GRPC_URL = "http://identity.platform-{env}.svc.cluster.local:50051"
 LOG_FORMAT        = "json"
 [env.dev]
 LOG_FORMAT = "pretty"
@@ -1684,7 +1684,7 @@ LOG_FORMAT = "pretty"
         let dev = read(&out.join("values-dev.yaml"));
         assert!(
             dev.contains(
-                "IDENTITY_GRPC_URL: \"http://identity.zvectorlabs-dev.svc.cluster.local:50051\""
+                "IDENTITY_GRPC_URL: \"http://identity.platform-dev.svc.cluster.local:50051\""
             ),
             "{dev}"
         );
@@ -1692,7 +1692,7 @@ LOG_FORMAT = "pretty"
         let prod = read(&out.join("values-prod.yaml"));
         assert!(
             prod.contains(
-                "IDENTITY_GRPC_URL: \"http://identity.zvectorlabs-prod.svc.cluster.local:50051\""
+                "IDENTITY_GRPC_URL: \"http://identity.platform-prod.svc.cluster.local:50051\""
             ),
             "{prod}"
         );
@@ -1730,20 +1730,20 @@ LOG_FORMAT = "pretty"
             r#"
 schema = "v1"
 [service]
-name    = "zvectorlabs-api"
+name    = "api"
 version = "0.1.0"
 type    = "http"
 port    = 7001
 [deploy]
-namespace = "zvectorlabs-{env}"
+namespace = "platform-{env}"
 replicas  = 1
 mesh      = "cilium"
 [resources]
 cpu    = "100m"
 memory = "256Mi"
 [depends_on]
-identity        = "zvectorlabs-{env}"
-zradar-platform = { namespace = "zradar-{env}", port = 4317 }
+identity        = "platform-{env}"
+telemetry = { namespace = "telemetry-{env}", port = 4317 }
 "#,
         );
         let out = svc.path().join("chart");
@@ -1758,14 +1758,14 @@ zradar-platform = { namespace = "zradar-{env}", port = 4317 }
         // Bare-string form keeps the historical 50051 default.
         assert!(
             prod.contains(
-                "- name: identity\n    namespace: zvectorlabs-prod\n    ports:\n    - 50051"
+                "- name: identity\n    namespace: platform-prod\n    ports:\n    - 50051"
             ),
             "{prod}"
         );
         // Table form carries its declared port.
         assert!(
             prod.contains(
-                "- name: zradar-platform\n    namespace: zradar-prod\n    ports:\n    - 4317"
+                "- name: telemetry\n    namespace: telemetry-prod\n    ports:\n    - 4317"
             ),
             "{prod}"
         );

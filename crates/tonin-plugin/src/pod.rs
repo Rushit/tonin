@@ -765,10 +765,10 @@ mod tests {
     fn placement_env_overlay_replaces_fields() {
         let raw: RawPlacement = parse(
             r#"
-node_selector = { "zvl.io/role" = "app" }
+node_selector = { "example.com/role" = "app" }
 
 [prd]
-tolerations = [{ key = "zvl.io/db", operator = "Equal", value = "identity", effect = "NoSchedule" }]
+tolerations = [{ key = "example.com/db", operator = "Equal", value = "identity", effect = "NoSchedule" }]
 topology_spread = false
 
 [dev]
@@ -776,9 +776,9 @@ node_selector = {}
 "#,
         );
         let prd = resolve_placement(Some(&raw), "prd").unwrap();
-        assert_eq!(prd.node_selector["zvl.io/role"], "app");
+        assert_eq!(prd.node_selector["example.com/role"], "app");
         assert_eq!(prd.tolerations.len(), 1);
-        assert_eq!(prd.tolerations[0]["key"].as_str(), Some("zvl.io/db"));
+        assert_eq!(prd.tolerations[0]["key"].as_str(), Some("example.com/db"));
         assert!(prd.topology_spread.is_empty());
 
         let dev = resolve_placement(Some(&raw), "dev").unwrap();
@@ -908,7 +908,7 @@ enabled = false
             r#"
 tokens = [
   { audience = "identity" },
-  { audience = "zradar", expiration_seconds = 7200 },
+  { audience = "telemetry", expiration_seconds = 7200 },
   { audience = "vault", path = "/etc/vault/token" },
 ]
 "#,
@@ -929,9 +929,9 @@ tokens = [
                     path: "identity".into(),
                 },
                 TokenSource {
-                    audience: "zradar".into(),
+                    audience: "telemetry".into(),
                     expiration_seconds: 7200,
-                    path: "zradar".into(),
+                    path: "telemetry".into(),
                 },
             ]
         );

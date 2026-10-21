@@ -77,7 +77,7 @@ migrations:
 imagePullSecrets:
 - name: ghcr-read
 nodeSelector:
-  zvl.io/role: app
+  example.com/role: app
 tolerations: []
 topologySpreadConstraints:
 - maxSkew: 1

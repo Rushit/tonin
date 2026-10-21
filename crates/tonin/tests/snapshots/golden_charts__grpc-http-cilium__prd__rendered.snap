@@ -73,10 +73,10 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
       nodeSelector:
-        zvl.io/role: db
+        example.com/role: db
       tolerations:
         - effect: NoSchedule
-          key: zvl.io/db
+          key: example.com/db
           operator: Equal
           value: telemetry
       containers:
@@ -288,9 +288,9 @@ spec:
       toPorts:
         - ports:
             - { port: "6379", protocol: TCP }
-    # [egress] s3.us-east-va.io.cloud.ovh.us
+    # [egress] s3.example-region.example.com
     - toFQDNs:
-        - matchName: "s3.us-east-va.io.cloud.ovh.us"
+        - matchName: "s3.example-region.example.com"
       toPorts:
         - ports:
             - { port: "443", protocol: TCP }

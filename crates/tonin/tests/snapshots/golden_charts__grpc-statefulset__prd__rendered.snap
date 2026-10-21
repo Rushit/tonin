@@ -178,7 +178,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
       nodeSelector:
-        zvl.io/role: app
+        example.com/role: app
       topologySpreadConstraints:
         - labelSelector:
             matchLabels:
@@ -345,7 +345,7 @@ spec:
             runAsNonRoot: true
             runAsUser: 65532
           nodeSelector:
-            zvl.io/role: app
+            example.com/role: app
           containers:
             - name: compact
               image: "ghcr.io/example/tracestore:0.2.3"

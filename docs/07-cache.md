@@ -72,12 +72,12 @@ Every field can be overridden on `[cache]` and per environment in `[cache.<env>]
 | `port` | 6379 | egress port |
 | `url` | — | per env only: a literal URL instead of the Secret |
 
-`zvectorlabs-api` reads `PLATFORM_REDIS_URL`:
+A service named `api` that reads `PLATFORM_REDIS_URL`:
 
 ```toml
 [cache]
 engine = "redis"
-env    = "PLATFORM_REDIS_URL"     # Secret zvectorlabs-api-cache, key uri
+env    = "PLATFORM_REDIS_URL"     # Secret api-cache, key uri
 
 [cache.dev]                        # dev cluster without contract Secrets
 url       = "redis://redis.shared-dev.svc.cluster.local:6379"

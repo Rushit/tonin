@@ -269,9 +269,9 @@ spec:
       toPorts:
         - ports:
             - { port: "6379", protocol: TCP }
-    # [egress] *.ovh.us
+    # [egress] *.example.com
     - toFQDNs:
-        - matchPattern: "*.ovh.us"
+        - matchPattern: "*.example.com"
       toPorts:
         - ports:
             - { port: "443", protocol: TCP }

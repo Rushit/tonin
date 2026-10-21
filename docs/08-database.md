@@ -84,13 +84,13 @@ Every field can be set on `[database]` and overridden per environment in `[datab
 Engines other than Postgres default to Secret `<svc>-db` and label
 `app.kubernetes.io/name=<svc>-db`; `sqlite` gets no egress rule.
 
-A service whose code reads a different variable — e.g. `zvectorlabs-api` reads
+A service whose code reads a different variable — e.g. `api` reads
 `PLATFORM_DATABASE_URL` — sets `env`:
 
 ```toml
 [database]
 engine = "postgres"
-env    = "PLATFORM_DATABASE_URL"   # Secret zvectorlabs-api-pg-app, key uri
+env    = "PLATFORM_DATABASE_URL"   # Secret api-pg-app, key uri
 ```
 
 ### TLS (`verify-full`)

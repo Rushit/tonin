@@ -1,5 +1,5 @@
 # Golden fixture: gRPC Rust service with database, cache, secrets, migrations,
-# callers and depends_on on the cilium mesh. Modelled on the zvectorlabs
+# callers and depends_on on the cilium mesh. Modelled on an
 # `identity` service. Covers: contract Secret references (prd), Postgres
 # verify-full with the CA mount (prd), literal dev URLs, and migrations as an
 # initContainer (dev) and a hook Job (prd). Pod hygiene: pull secret, node
@@ -46,7 +46,7 @@ replicas = 1
 image_pull_secrets = ["ghcr-read"]
 
 [placement.prd]
-node_selector = { "zvl.io/role" = "app" }
+node_selector = { "example.com/role" = "app" }
 
 [pdb.prd]
 min_available = 1

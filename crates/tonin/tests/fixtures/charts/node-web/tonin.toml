@@ -1,5 +1,5 @@
 # Golden fixture: non-Rust HTTP frontend (Next.js-style) with a health path
-# and one HTTP dependency. Modelled on the zvectorlabs `ui-shell` app, plus
+# and one HTTP dependency. Modelled on a web shell app, plus
 # `language = "typescript"` so the non-Rust branches (no Rust command, outbound
 # proxy sidecar) are covered.
 schema = "v1"

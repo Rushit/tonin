@@ -7,7 +7,7 @@
 # Pod hygiene: a PDB from the [pdb] defaults (maxUnavailable 1) in prd,
 # tolerations for a dedicated node and a custom zone spread, and placement
 # turned off again in dev.
-# Modelled on the zvectorlabs `zradar-platform` service.
+# Modelled on a trace-ingest service.
 schema = "v1"
 
 [image]
@@ -51,8 +51,8 @@ mesh      = "cilium"
 replicas = 1
 
 [placement]
-node_selector = { "zvl.io/role" = "db" }
-tolerations   = [{ key = "zvl.io/db", operator = "Equal", value = "telemetry", effect = "NoSchedule" }]
+node_selector = { "example.com/role" = "db" }
+tolerations   = [{ key = "example.com/db", operator = "Equal", value = "telemetry", effect = "NoSchedule" }]
 topology_spread = [
   { max_skew = 1, topology_key = "topology.kubernetes.io/zone", when_unsatisfiable = "DoNotSchedule", min_domains = 2 },
 ]
@@ -114,10 +114,10 @@ cloudflared  = { namespace = "edge", labels = { "app.kubernetes.io/name" = "clou
 identity = "platform-{env}"
 
 [egress]
-fqdns = [{ pattern = "*.ovh.us", ports = [443] }]
+fqdns = [{ pattern = "*.example.com", ports = [443] }]
 
 [egress.dev]
 cidrs = [{ cidr = "10.0.0.0/8", except = ["10.96.0.0/12"], ports = [9000] }]
 
 [egress.prd]
-fqdns = [{ name = "s3.us-east-va.io.cloud.ovh.us", ports = [443] }]
+fqdns = [{ name = "s3.example-region.example.com", ports = [443] }]

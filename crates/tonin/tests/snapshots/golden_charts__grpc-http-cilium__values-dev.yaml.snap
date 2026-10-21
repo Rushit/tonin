@@ -101,7 +101,7 @@ networkPolicy:
     - 50051
   egress:
     fqdns:
-    - pattern: '*.ovh.us'
+    - pattern: '*.example.com'
       ports:
       - 443
     cidrs:

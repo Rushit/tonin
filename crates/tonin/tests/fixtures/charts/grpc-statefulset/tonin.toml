@@ -1,5 +1,5 @@
 # Golden fixture: gRPC Rust service run as a StatefulSet with per-pod storage.
-# Modelled on the zvectorlabs `zradar-platform` service in prd: a PVC for its
+# Modelled on a trace-store service in prd: a PVC for its
 # data dir (default StorageClass), emptyDirs for the Parquet cache (nested in
 # the PVC mount) and /tmp, extra ports on extra Services (-ingest for OTLP/HTTP,
 # -internal for the query/admin gRPC ports), separate liveness/readiness paths
@@ -65,7 +65,7 @@ partition = 1
 
 # Pinned to the app nodes in prd; a PDB keeps one of the two pods up.
 [placement.prd]
-node_selector = { "zvl.io/role" = "app" }
+node_selector = { "example.com/role" = "app" }
 
 [pdb]
 

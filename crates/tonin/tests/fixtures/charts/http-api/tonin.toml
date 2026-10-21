@@ -1,6 +1,6 @@
 # Golden fixture: HTTP Rust service with a health path, plain env per env,
-# secrets, and structured depends_on. Modelled on the zvectorlabs
-# `zvectorlabs-api` service. Covers: database/cache env var names overridden
+# secrets, and structured depends_on. Modelled on an API
+# gateway service. Covers: database/cache env var names overridden
 # (PLATFORM_DATABASE_URL, PLATFORM_REDIS_URL), and migrations as a hook Job in
 # every env. Workload: requests/limits apart (no CPU limit), ephemeral
 # storage, a /tmp emptyDir, separate liveness/readiness paths, a startup

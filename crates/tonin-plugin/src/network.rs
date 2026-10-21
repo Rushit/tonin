@@ -655,7 +655,7 @@ cloudflared = { namespace = "edge", labels = { "app.kubernetes.io/name" = "cloud
     fn egress_parses_fqdns_cidrs_and_apiserver() {
         let e = egress(
             r#"[egress]
-fqdns = [{ name = "api.stripe.com", ports = [443] }, { pattern = "*.ovh.us", ports = [443] }]
+fqdns = [{ name = "api.stripe.com", ports = [443] }, { pattern = "*.example.com", ports = [443] }]
 cidrs = [{ cidr = "10.0.0.0/8", except = ["10.96.0.0/12"], ports = [5432] }]
 kube_apiserver = true
 "#,
@@ -664,7 +664,7 @@ kube_apiserver = true
         .unwrap();
         assert_eq!(e.fqdns.len(), 2);
         assert_eq!(e.fqdns[0].name.as_deref(), Some("api.stripe.com"));
-        assert_eq!(e.fqdns[1].pattern.as_deref(), Some("*.ovh.us"));
+        assert_eq!(e.fqdns[1].pattern.as_deref(), Some("*.example.com"));
         assert_eq!(e.cidrs[0].except, vec!["10.96.0.0/12"]);
         assert!(e.kube_apiserver);
     }

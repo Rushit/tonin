@@ -1655,16 +1655,12 @@ mod tests {
     fn depends_on_table_port_is_used() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nzradar-platform = { namespace = \"zradar-{env}\", port = 4317 }\ngateway = { namespace = \"edge-{env}\", port = 7001, prod = \"edge\" }\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\ntelemetry = { namespace = \"telemetry-{env}\", port = 4317 }\ngateway = { namespace = \"edge-{env}\", port = 7001, prod = \"edge\" }\n",
         ]
         .concat();
         let p = try_load_env(&body, "prod").unwrap();
-        let zr = p
-            .depends_on
-            .iter()
-            .find(|d| d.name == "zradar-platform")
-            .unwrap();
-        assert_eq!(zr.namespace, "zradar-prod");
+        let zr = p.depends_on.iter().find(|d| d.name == "telemetry").unwrap();
+        assert_eq!(zr.namespace, "telemetry-prod");
         assert_eq!(zr.ports, vec![4317]);
         let gw = p.depends_on.iter().find(|d| d.name == "gateway").unwrap();
         assert_eq!(gw.namespace, "edge", "per-env override still wins");
@@ -1686,7 +1682,7 @@ mod tests {
     fn depends_on_ports_list_is_used() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\nzradar = { namespace = \"zradar-{env}\", ports = [8080, 8081, 8082] }\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[depends_on]\ntelemetry = { namespace = \"telemetry-{env}\", ports = [8080, 8081, 8082] }\n",
         ]
         .concat();
         let p = try_load_env(&body, "prd").unwrap();
@@ -1841,18 +1837,18 @@ mod tests {
     fn env_base_entries_resolve_with_env_placeholder() {
         let body = [
             SVC,
-            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env]\nIDENTITY_GRPC_URL = \"http://identity.zvectorlabs-{env}.svc.cluster.local:50051\"\nLOG_FORMAT = \"json\"\n",
+            "[deploy]\nreplicas = 1\nnamespace =\"demo\"\n[env]\nIDENTITY_GRPC_URL = \"http://identity.platform-{env}.svc.cluster.local:50051\"\nLOG_FORMAT = \"json\"\n",
         ]
         .concat();
         let dev = try_load_env(&body, "dev").unwrap();
         assert_eq!(
             env_var(&dev, "IDENTITY_GRPC_URL").as_deref(),
-            Some("http://identity.zvectorlabs-dev.svc.cluster.local:50051")
+            Some("http://identity.platform-dev.svc.cluster.local:50051")
         );
         let prod = try_load_env(&body, "prod").unwrap();
         assert_eq!(
             env_var(&prod, "IDENTITY_GRPC_URL").as_deref(),
-            Some("http://identity.zvectorlabs-prod.svc.cluster.local:50051")
+            Some("http://identity.platform-prod.svc.cluster.local:50051")
         );
         assert_eq!(env_var(&prod, "LOG_FORMAT").as_deref(), Some("json"));
     }
