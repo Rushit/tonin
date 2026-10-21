@@ -7,8 +7,8 @@ One `tonin.toml` renders every manifest your service needs to ship.
 - **Every manifest a real service needs**, generated from a single TOML file:
   - `Deployment`, `Service`, `HorizontalPodAutoscaler`
   - `Ingress` when you ask for one
-  - A Postgres `StatefulSet` + headless `Service` + credentials `Secret` when `[database]` is set
-  - A Redis `StatefulSet` + `Service` when `[cache]` is set
+  - `DATABASE_URL` / `REDIS_URL` from the platform's Secrets, plus egress to the database/cache pods, when `[database]` / `[cache]` is set (tonin references databases and caches, it does not run them: see [08-database.md](08-database.md))
+  - A migration initContainer or pre-install/pre-upgrade hook `Job` when `[migrations]` is set
   - Mesh-specific overlays (Cilium `CiliumNetworkPolicy`, Istio `PeerAuthentication`, Linkerd annotations) when `[deploy].mesh` is set
 - **`tonin helm generate`** writes them as a complete Helm chart inside the `./chart/` directory. **`tonin helm upgrade`** ships them. No hand-edited YAML, ever — the next `generate` would overwrite it.
 - **Multi-env overlays.** The same `tonin.toml` describes every environment (`dev`, `prd`, …) — `--env` picks the right block. `--env` is required: tonin has no default environment.
@@ -35,7 +35,6 @@ memory = "128Mi"
 
 [database]
 engine = "postgres"
-size = "10Gi"
 
 [cache]
 engine = "redis"
@@ -91,14 +90,12 @@ The renderer (`crates/tonin/src/codegen/render.rs`) maps `tonin.toml` fields to 
 | `service.yaml` | always |
 | `hpa.yaml` | always (CPU-based; a `[deploy].hpa = false` opt-out is roadmapped, not yet implemented) |
 | `ingress.yaml` | `[deploy].expose = "ingress"` |
-| `db-secret.yaml` | `[database]` present (shared **or** owned — the Deployment's `envFrom` needs it either way) |
-| `db-statefulset.yaml` | `[database]` present and `shared = false` |
-| `db-service.yaml` | `[database]` present and `shared = false` |
-| `cache-statefulset.yaml` | `[cache]` present and `shared = false` |
-| `cache-service.yaml` | `[cache]` present and `shared = false` |
+| `migration-job.yaml` | `[migrations]` with `mode = "job"` for the environment (plus a hook CiliumNetworkPolicy under Cilium) |
 | `mesh/<engine>/*.yaml` | `[deploy].mesh = "cilium" \| "istio" \| "linkerd"` |
 
-`shared = true` on `[database]` or `[cache]` means a backing store already exists in the cluster — the framework wires the env vars (`DATABASE_URL`, `REDIS_URL`) but skips the StatefulSet.
+`[database]` and `[cache]` render no files of their own: they add env vars (from the platform
+contract's Secrets), an optional CA volume and egress rules to the workloads above. Since 0.15
+`generate` deletes the `db-*.yaml` / `cache-*.yaml` templates earlier versions rendered.
 
 ## Service protocol: gRPC, HTTP, or both
 
@@ -230,17 +227,17 @@ Always render with both files: `-f values.yaml -f values-<env>.yaml`
 engine = "postgres"
 
 [database.dev]
-size = "5Gi"
+url = "postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/app_dev"
 
 [database.prd]
-size = "100Gi"
+tls = "verify-full"
 ```
 
 ```bash
-tonin helm generate --env dev --env prd   # values-dev.yaml: 5Gi, values-prd.yaml: 100Gi
+tonin helm generate --env dev --env prd   # dev: literal URL; prd: contract Secret + CA mount
 ```
 
-The same pattern works for `[cache.<env>]`, and for the `[deploy]` fields that differ between environments (replicas, namespace, mesh, `mcp_sidecar`, `expose`).
+The same pattern works for `[cache.<env>]`, `[migrations.<env>] mode`, and for the `[deploy]` fields that differ between environments (replicas, namespace, mesh, `mcp_sidecar`, `expose`).
 
 ### Per-environment namespaces and dependencies
 
@@ -302,8 +299,8 @@ LOG_FORMAT = "pretty"        # merged over the base for dev only
   namespaces. Other `{...}` tokens pass through verbatim — env values may
   legitimately contain braces.
 - Values must be strings (`PORT = "8080"`, not `PORT = 8080`).
-- Keys that collide with env vars tonin already emits (stateful literals like
-  `DATABASE_URL`, or secret-sourced keys) fail generation — duplicate
+- Keys that collide with env vars tonin already emits (`DATABASE_URL` /
+  `REDIS_URL` from `[database]`/`[cache]`, or secret-sourced keys) fail generation — duplicate
   container env names are last-one-wins in Kubernetes, so a collision would
   silently override the resolved value.
 
