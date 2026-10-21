@@ -294,7 +294,7 @@ fn classify_etcd_error(action: &str, key: &str, err: etcd_client::Error) -> Erro
         E::Utf8Error(e) => {
             Error::CapabilityPermanent(format!("etcd {action} '{key}': utf8 error: {e}"))
         }
-        E::InvalidHeaderValue(e) => {
+        E::InvalidMetadataValue(e) => {
             Error::CapabilityPermanent(format!("etcd {action} '{key}': bad header: {e}"))
         }
         other => Error::CapabilityTransient(format!("etcd {action} '{key}': {other}")),
@@ -397,7 +397,7 @@ async fn run_watch_session(
         return Ok(());
     }
 
-    let (_watcher, mut stream) = client.watch(key.as_bytes().to_vec(), None).await?;
+    let mut stream = client.watch(key.as_bytes().to_vec(), None).await?;
 
     loop {
         tokio::select! {

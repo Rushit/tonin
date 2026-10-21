@@ -1,7 +1,7 @@
 """Derive MCP tools from a grpc.aio servicer.
 
 Walks the handlers registered by ``add_<Name>Servicer_to_server`` and
-turns each gRPC method into a FastMCP ``@mcp.tool()``. Tool body invokes
+turns each gRPC method into an MCPServer ``@mcp.tool()``. Tool body invokes
 the matching servicer method with a constructed Request and serializes
 the Reply back to JSON.
 
@@ -47,13 +47,13 @@ def _snake(name: str) -> str:
 from google.protobuf import descriptor as pb_descriptor
 from google.protobuf import json_format
 from google.protobuf.message import Message
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 logger = logging.getLogger(__name__)
 
 
 def expose_servicer_as_tools(
-    mcp: FastMCP,
+    mcp: MCPServer,
     servicer: Any,
     add_to_server: Callable[..., None],
 ) -> int:
@@ -105,7 +105,7 @@ def _capture_handlers(
 
 
 def _register_one(
-    mcp: FastMCP,
+    mcp: MCPServer,
     servicer: Any,
     full_method_path: str,
     handler: Any,
@@ -148,7 +148,7 @@ def _register_one(
         raise AttributeError(f"servicer has no method {method_attr!r}")
     servicer_method = method_obj
 
-    # FastMCP builds its arg validator from the function's signature.
+    # MCPServer builds its arg validator from the function's signature.
     # To make it accept the proto fields by name, we construct a
     # function whose parameters mirror the proto fields exactly, with
     # `Any` type hints so we don't over-constrain (the input_schema
@@ -165,7 +165,7 @@ def _register_one(
         description=description,
         structured_output=False,
     )
-    # FastMCP's add_tool derives an input schema from the function
+    # MCPServer's add_tool derives an input schema from the function
     # signature; since our generated function uses `Any` types, the
     # schema is permissive but field names are right. We overwrite
     # `parameters` with the proto-derived schema for richer client
@@ -186,9 +186,9 @@ def _build_tool_fn(
     """Construct an async function whose signature is one param per
     proto field, each typed ``Any`` and defaulted to ``None``.
 
-    This shape makes FastMCP's pydantic-arg-model accept the same
+    This shape makes MCPServer's pydantic-arg-model accept the same
     kwargs the MCP client sends (one per proto field), without our
-    needing to bypass FastMCP's validation pipeline.
+    needing to bypass MCPServer's validation pipeline.
 
     The function captures ``request_cls`` + ``servicer_method`` in its
     closure and turns the kwargs into a proto request at call time.
@@ -295,9 +295,18 @@ def _message_to_json_schema(desc: pb_descriptor.Descriptor) -> dict[str, Any]:
 
 
 def _field_to_schema(field: pb_descriptor.FieldDescriptor) -> dict[str, Any]:
-    if field.label == pb_descriptor.FieldDescriptor.LABEL_REPEATED:
+    if _is_repeated(field):
         return {"type": "array", "items": _field_inner_schema(field)}
     return _field_inner_schema(field)
+
+
+def _is_repeated(field: pb_descriptor.FieldDescriptor) -> bool:
+    # protobuf 7 removed `FieldDescriptor.label`; `is_repeated` replaces it
+    # (and exists on recent 5.x/6.x too). Fall back for older runtimes.
+    is_repeated = getattr(field, "is_repeated", None)
+    if is_repeated is not None:
+        return bool(is_repeated)
+    return field.label == pb_descriptor.FieldDescriptor.LABEL_REPEATED
 
 
 def _field_inner_schema(field: pb_descriptor.FieldDescriptor) -> dict[str, Any]:

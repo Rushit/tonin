@@ -93,7 +93,7 @@ class Service:
         ``contextvars.CURRENT_AUTH`` and DB/cache/storage pools.
 
         Today this opens an HTTP listener that answers ``GET /health``
-        with 200. The real FastMCP-backed bridge (each gRPC method as
+        with 200. The real MCPServer-backed bridge (each gRPC method as
         an MCP tool, JSON Schema auto-derived) lands in a follow-up.
         """
         self._mcp = McpConfig()
@@ -183,7 +183,7 @@ class Service:
         mcp_task: asyncio.Task | None = None
         if self._mcp is not None:
             try:
-                # Build the FastMCP instance up-front so we can attach
+                # Build the MCPServer instance up-front so we can attach
                 # auto-derived tools BEFORE the listener starts.
                 mcp_inst = build_default_server(self._mcp)
                 for servicer, add_to_server in self._handlers:

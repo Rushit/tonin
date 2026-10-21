@@ -10,7 +10,7 @@
 
 use std::ops::Range;
 
-use toml_edit::{ImDocument, Item, TableLike};
+use toml_edit::{Document, Item, TableLike};
 
 /// What a key's value may be.
 #[derive(Clone, Copy)]
@@ -338,7 +338,7 @@ fn parent_table(path: &str) -> String {
 /// Check `src` against `root`. TOML syntax errors are left to serde, which
 /// reports them with their position.
 pub(crate) fn validate(src: &str, root: &TableSchema) -> Result<Vec<OverlayEnv>, SchemaError> {
-    let Ok(doc) = ImDocument::parse(src) else {
+    let Ok(doc) = Document::parse(src) else {
         return Ok(Vec::new());
     };
     let walker = Walker {
