@@ -78,8 +78,9 @@ capabilities. Each works out of the box and is selected or reconfigured in `toni
   in the mesh.
 - **Cache** — a `Cache` trait with a Redis-backed default and telemetry-wrapped
   operations. Swap the engine in `tonin.toml`.
-- **Database** — a `Database` trait with a Postgres default via `sqlx`, plus a rendered
-  StatefulSet, Service, and injected credentials.
+- **Database** — a `Database` trait with a Postgres default via `sqlx`; the chart injects
+  the connection URL from the platform's Secret (optionally `verify-full` TLS) and runs
+  migrations as a hook Job or initContainer.
 - **Event Bus** — an `EventBus` trait with ack/nack semantics for async, event-driven
   communication. Redis → NATS is a config change, not a rewrite.
 - **Dynamic Config** — load and hot-reload app config from env, etcd, GitHub, or chained
@@ -180,7 +181,7 @@ up to date.
 - **OpenTelemetry** tracing and structured logs, with trace context propagated across calls
 - the **MCP tool server** — every gRPC method exposed as an LLM-callable tool
 - **JWT auth** — bearer extraction, validation, JWKS fetch, and request-scoped identity
-- **StatefulSets** for your Postgres / Redis dependencies, with credentials injected
+- **Postgres / Redis wiring** to the databases and caches your platform runs: URLs from their Secrets, egress policy, migrations
 - **client SDKs** in Rust, Python, or TypeScript from the same proto
 
 The network concerns it deliberately *doesn't* implement — mTLS, retries, circuit breaking,
@@ -325,8 +326,7 @@ code does not change.
 
 ```toml
 [database]
-engine = "postgres"
-size   = "10Gi"
+engine = "postgres"   # DATABASE_URL from the platform's <svc>-pg-app Secret
 
 [cache]
 engine = "redis"

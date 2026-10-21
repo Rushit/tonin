@@ -5,7 +5,7 @@ A KV cache capability your handlers call through a trait — the backend is sele
 ## What you get
 
 - A `Cache` trait you call from handlers (`get`, `set`, `set_nx`, `del`) — no Redis client types leak into your code.
-- A `[cache]` section in `tonin.toml` that picks the implementation and renders the matching templates inside the Helm chart — a Redis `StatefulSet` + headless `Service` for owned mode, or just a `REDIS_URL` env var for shared mode.
+- A `[cache]` section in `tonin.toml` that picks the implementation and references the cache the platform provides: a `REDIS_URL` env var from the platform's Secret and a network-policy egress rule to the cache pods. tonin does not run caches.
 - Automatic telemetry on every call once you wrap your impl in `Instrumented<Cache>`: a `cache.op` span, a duration histogram, and a `WARN` log when an op crosses the slow-op threshold.
 - Swap engines without touching handler code — change `engine = "..."` in `tonin.toml` and the dep in `Cargo.toml`.
 
@@ -42,13 +42,58 @@ Values are raw bytes (`Vec<u8>` / `&[u8]`). Serialize at the call site — the t
 
 ```toml
 [cache]
-engine = "redis"   # only impl shipping in 0.2
-shared = false     # true to point at a cluster-wide Redis instead of a per-service StatefulSet
+engine = "redis"   # only impl shipping today
 ```
 
-`engine` drives both the rendered Helm chart templates and the conceptual contract — once `tonin-redis` ships in 0.2, the same TOML entry will also pick the runtime impl. With `shared = false`, the CLI renders a dedicated Redis `StatefulSet` + `Service` alongside your Deployment and injects a `REDIS_URL` env var. With `shared = true`, no StatefulSet is rendered; the renderer only injects the `REDIS_URL` env var pointing at the conventional in-cluster name, and you bring the Redis yourself.
+`engine` picks the conceptual contract — once `tonin-redis` ships, the same entry will also pick
+the runtime impl. In the Helm chart, `[cache]` is a **reference to the platform contract**: the
+platform layer (a Redis manifest, or a managed Valkey/ElastiCache with OpenTofu-created Secrets)
+provides, in the service's namespace:
 
-See [12-kubernetes-deploy.md](12-kubernetes-deploy.md) for the rendered manifest shape.
+| Contract | Default (`<svc>` = `[service].name`) |
+|---|---|
+| Secret with the connection URL | `<svc>-cache`, key `uri` |
+| Cache pods (for network policy) | label `app.kubernetes.io/name=<svc>-cache`, port 6379 |
+
+`tonin helm generate` renders `REDIS_URL` from `secretKeyRef` `<svc>-cache` / `uri` (on the
+server container and the migration steps) and an egress rule to those pods. It renders no Redis
+StatefulSet or Service; `generate` deletes the `cache-*.yaml` templates earlier versions shipped.
+
+Every field can be overridden on `[cache]` and per environment in `[cache.<env>]`:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `engine` | (required) | `redis`, or `none` (no cache in this env) |
+| `env` | `REDIS_URL` | env var the URL lands in |
+| `secret` | `<svc>-cache` | Secret holding the URL |
+| `key` | `uri` | key of the URL in `secret` |
+| `labels` | `{ "app.kubernetes.io/name" = "<svc>-cache" }` | pods egress is allowed to; `{}` renders no rule |
+| `namespace` | the service's | namespace of those pods (`{env}` is substituted) |
+| `port` | 6379 | egress port |
+| `url` | — | per env only: a literal URL instead of the Secret |
+
+`zvectorlabs-api` reads `PLATFORM_REDIS_URL`:
+
+```toml
+[cache]
+engine = "redis"
+env    = "PLATFORM_REDIS_URL"     # Secret zvectorlabs-api-cache, key uri
+
+[cache.dev]                        # dev cluster without contract Secrets
+url       = "redis://redis.shared-dev.svc.cluster.local:6379"
+namespace = "shared-dev"
+labels    = { "app.kubernetes.io/name" = "redis" }
+```
+
+`[caches.<name>]` takes the same fields, with defaults prefixed by the name: env
+`<NAME>_REDIS_URL`, Secret and pod label `<svc>-<name>-cache`.
+
+Removed in 0.15, with an error naming the replacement: `shared` (every cache is a reference; use
+a per-env `url` for a dev instance), `size` (the platform layer sizes the cache), `name` (use
+`secret` and `labels`), and `url` on the base `[cache]` table.
+
+See [12-kubernetes-deploy.md](12-kubernetes-deploy.md) for the rendered chart and
+[08-database.md](08-database.md) for the database side of the contract.
 
 ## Using it
 
@@ -119,14 +164,14 @@ flowchart LR
 
 The handler only sees the trait. `Instrumented` is invisible at the call site but emits one span and one histogram sample per call.
 
-## Status (0.1)
+## Status (0.15)
 
-- **Ships now** — `Cache` trait, `Instrumented<Cache>` decorator, slow-op thresholds, and metric handles all live in `tonin-core` today. The `[cache]` TOML section is parsed and renders a Redis `StatefulSet` + `Service` via the Helm templates; `REDIS_URL` lands as an env var on the Deployment.
-- **Not yet in 0.1**
+- **Ships now** — `Cache` trait, `Instrumented<Cache>` decorator, slow-op thresholds, and metric handles all live in `tonin-sdk`. The `[cache]` TOML section references the platform's cache: `REDIS_URL` from the contract Secret, egress to the contract pod labels, per-env overrides and a dev `url`.
+- **Not yet**
   - No `tonin-redis` impl crate. Services that need a cache implement `Cache` themselves (a few dozen lines of `redis-rs` glue) and wrap it in `Instrumented::with_defaults(...)`.
   - No `Service::with_cache` / `Service::cache()` accessor. Hold `Arc<dyn Cache>` in your own state struct.
-  - No cache `Secret` is rendered (only `db-secret.yaml` ships for `[database]`). If your Redis requires auth, supply it via your own Secret + env var.
-- **0.2 plan** — `tonin-redis` crate implementing both `Cache` and `EventBus`; builder accessor wires the configured engine.
+  - Redis credentials, if any, are part of the contract Secret's `uri`.
+- **Plan** — `tonin-redis` crate implementing both `Cache` and `EventBus`; builder accessor wires the configured engine.
 
 ## See also
 
