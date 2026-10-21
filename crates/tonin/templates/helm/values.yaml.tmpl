@@ -23,6 +23,10 @@ image:
   # Set to pin the image by digest (e.g. "sha256:…"): the chart then renders
   # repository@digest and ignores tag. `tonin deploy` sets it from the lock.
   digest: ""
+  # Version the release runs: the app.kubernetes.io/version label and the OTEL
+  # service.version (empty = tag). `tonin deploy` sets it from the lock, since
+  # a digest-pinned image carries no tag the chart could read it from.
+  version: ""
   pullPolicy: IfNotPresent
 
 service:

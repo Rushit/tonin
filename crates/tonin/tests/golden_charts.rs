@@ -42,6 +42,9 @@ const KNOWN_INVALID: &[(&str, &str, &str, &str, &str)] = &[];
 const PINNED_DIGEST: &str =
     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+/// The lock's version for [`PINNED_DIGEST`], unlike the fixture's tonin.toml.
+const PINNED_VERSION: &str = "9.9.9";
+
 macro_rules! golden_fixture {
     ($test:ident, $fixture:literal) => {
         #[test]
@@ -59,7 +62,9 @@ golden_fixture!(grpc_statefulset, "grpc-statefulset");
 golden_fixture!(node_app, "node-app");
 
 /// `image.digest` set: every container running the service image (server,
-/// MCP sidecar, migration initContainer and Job) uses `repository@digest`.
+/// MCP sidecar, migration initContainer and Job) uses `repository@digest`,
+/// and the version label / OTEL `service.version` come from `image.version`
+/// (the lock's version, as `tonin deploy` sets it), not the generate-time tag.
 /// Renders prd with both migration modes (prd's own mode is `job`).
 #[test]
 fn grpc_stateful_digest_pinned() {
@@ -73,6 +78,7 @@ fn grpc_stateful_digest_pinned() {
         return;
     };
     let digest = format!("image.digest={PINNED_DIGEST}");
+    let version = format!("image.version={PINNED_VERSION}");
     let mut rendered = String::new();
     for mode in ["init-container", "job"] {
         let mode = format!("migrations.mode={mode}");
@@ -81,12 +87,17 @@ fn grpc_stateful_digest_pinned() {
             &service_dir,
             &chart,
             "prd",
-            &["--set", &digest, "--set", &mode],
+            &["--set", &digest, "--set-string", &version, "--set", &mode],
         ));
     }
     assert!(
         !rendered.contains("ghcr.io/example/identity:"),
         "a tag-based image reference survived:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("app.kubernetes.io/version: \"{PINNED_VERSION}\""))
+            && rendered.contains(&format!("service.version={PINNED_VERSION}\"")),
+        "the lock version is not the version label / OTEL service.version:\n{rendered}"
     );
     insta::assert_snapshot!(format!("{fixture}__prd-digest__rendered"), rendered);
 

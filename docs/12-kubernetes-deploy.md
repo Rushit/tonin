@@ -683,6 +683,7 @@ For each service it runs, with the chart at `<service dir>/chart` (absolute):
 helm upgrade --install <service> <service dir>/chart \
   -f values.yaml -f values-<ENV>.yaml --namespace <namespace> \
   --set-string image.repository=<repo> --set-string image.digest=sha256:… \
+  --set-string image.version=<lock version> \
   --wait --timeout <timeout> --atomic --cleanup-on-fail
 ```
 
@@ -691,6 +692,10 @@ helm upgrade --install <service> <service dir>/chart \
 - The image comes from the lock. A digest-pinned image sets `image.digest`, and
   the chart renders `repository@digest`; no mutable tag is set. `image.tag`
   is only set when the lock image has no digest.
+- `image.version` is the lock's version. The `app.kubernetes.io/version` label and
+  the OTEL `service.version` read it (falling back to `image.tag` when it is
+  empty, as with `tonin helm upgrade`), so a digest-pinned release reports the
+  version it runs, not the version the chart was generated at.
 - A service is skipped when its release already runs the lock image (compared
   by image, not chart version); `--converge` upgrades every selected service.
 - `--affected` uses the same computation as `tonin affected --env <ENV> --base <ref>`.

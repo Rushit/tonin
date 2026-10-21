@@ -64,7 +64,7 @@ spec:
                 - name: OTEL_EXPORTER_OTLP_ENDPOINT
                   value: {{ $.Values.observability.otlpEndpoint | quote }}
                 - name: OTEL_RESOURCE_ATTRIBUTES
-                  value: "service.namespace={{ $.Release.Namespace }},service.version={{ $.Values.image.tag }}"
+                  value: "service.namespace={{ $.Release.Namespace }},service.version={{ include "service.version" $ }}"
                 {{- if $.Values.rustService }}
                 - name: RUST_LOG
                   value: "info"

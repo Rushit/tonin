@@ -12,8 +12,9 @@ pub struct DeployValues {
     /// Image from the environment lock, normally pinned by digest:
     /// "ghcr.io/org/svc@sha256:...".
     pub image: String,
-    /// Service version from the lock. Used as the image tag only when `image`
-    /// carries neither a digest nor a tag.
+    /// Service version from the lock. Set as `image.version` (the
+    /// `app.kubernetes.io/version` label and OTEL `service.version`), and used
+    /// as the image tag when `image` carries neither a digest nor a tag.
     pub version: String,
     /// Helm release name: the service name (`plan.name`), the same release
     /// `tonin helm upgrade` manages.
@@ -65,7 +66,8 @@ impl DeployValues {
     /// Arguments for `helm` (without the binary) that apply this upgrade.
     ///
     /// The image is set from the lock: `image.repository` plus `image.digest`
-    /// for a digest-pinned image (no mutable tag is set), else `image.tag`.
+    /// for a digest-pinned image (no mutable tag is set), else `image.tag`;
+    /// `image.version` is always the lock's version.
     pub fn helm_upgrade_args(&self) -> Vec<String> {
         let mut args: Vec<String> = vec![
             "upgrade".into(),
@@ -93,6 +95,10 @@ impl DeployValues {
             }
             (None, None) => {}
         }
+        args.extend([
+            "--set-string".into(),
+            format!("image.version={}", self.version),
+        ]);
 
         args.extend([
             "--wait".into(),
@@ -362,6 +368,8 @@ mod tests {
                 "image.repository=ghcr.io/myorg/users-service",
                 "--set-string",
                 "image.digest=sha256:abc",
+                "--set-string",
+                "image.version=1.0.0",
                 "--wait",
                 "--timeout",
                 "300s",
@@ -370,6 +378,21 @@ mod tests {
             ]
         );
         assert!(!args.iter().any(|a| a.starts_with("image.tag")));
+    }
+
+    #[test]
+    fn upgrade_args_always_carry_the_lock_version() {
+        for image in [
+            "ghcr.io/myorg/users-service@sha256:abc",
+            "ghcr.io/myorg/users-service:latest",
+            "ghcr.io/myorg/users-service",
+        ] {
+            let args = values(image).helm_upgrade_args();
+            assert!(
+                args.contains(&"image.version=1.0.0".to_string()),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

@@ -15,7 +15,7 @@ Common labels applied to every resource.
 {{- define "service.labels" -}}
 app: {{ include "service.name" . }}
 app.kubernetes.io/name: {{ include "service.name" . }}
-app.kubernetes.io/version: {{ .Values.image.tag | quote }}
+app.kubernetes.io/version: {{ include "service.version" . | replace "+" "_" | trunc 63 | quote }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end }}
 
@@ -24,6 +24,15 @@ Selector labels (stable subset — must not change after first deploy).
 */}}
 {{- define "service.selectorLabels" -}}
 app: {{ include "service.name" . }}
+{{- end }}
+
+{{/*
+The version the release runs, for the `app.kubernetes.io/version` label and the
+OTEL `service.version`: image.version (set by `tonin deploy` from the lock; a
+digest-pinned image has no meaningful tag), else image.tag.
+*/}}
+{{- define "service.version" -}}
+{{- .Values.image.version | default .Values.image.tag | toString -}}
 {{- end }}
 
 {{/*
