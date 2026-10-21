@@ -39,6 +39,7 @@ metadata:
     app.kubernetes.io/version: "0.3.7"
     helm.sh/chart: identity-0.3.7
 spec:
+  replicas: 1
   selector:
     matchLabels:
       app: identity
@@ -139,33 +140,6 @@ spec:
             requests:
               cpu: 100m
               memory: 128Mi
-
----
-# Source: identity/templates/hpa.yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: identity
-  namespace: platform-dev
-  labels:
-    app: identity
-    app.kubernetes.io/name: identity
-    app.kubernetes.io/version: "0.3.7"
-    helm.sh/chart: identity-0.3.7
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: identity
-  minReplicas: 1
-  maxReplicas: 8
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
 
 ---
 # Source: identity/templates/networkpolicy.yaml

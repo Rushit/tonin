@@ -1,0 +1,68 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# dev-specific overrides — generated from the dev overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 1
+
+workload:
+  terminationGracePeriodSeconds: 60
+  strategy: {}
+
+image:
+  tag: "0.2.3"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+
+mesh: "cilium"
+
+mcp:
+  enabled: true
+  mode: in-process
+
+outboundProxy:
+  enabled: false
+
+ingress:
+  enabled: false
+  host: ""
+
+# Plain env vars from tonin.toml [env], merged with the [env.dev]
+# overlay and with {env} substituted for this environment.
+env:
+  IDENTITY_GRPC_URL: "http://identity.platform-dev.svc.cluster.local:50051"
+  TRACESTORE_DATA_DIR: "/home/nonroot/data"
+
+# Databases and caches of the platform contract, resolved for dev.
+datastores:
+  - name: database
+    env: DATABASE_URL
+    value: postgresql://postgres:postgres@postgres.shared-dev.svc.cluster.local:5432/tracestore_dev
+    egress:
+      port: 5432
+      labels:
+        cnpg.io/cluster: tracestore-pg
+
+secrets:
+  keys:
+    - TRACESTORE_SERVICE_TOKEN
+
+migrations:
+  mode: none
+
+networkPolicy:
+  enabled: true
+  port: 4317
+  mcp: true
+  callers:
+    - name: platform-api
+      namespace: platform-dev
+  dependsOn:
+    - name: identity
+      namespace: platform-dev
+      port: 50051

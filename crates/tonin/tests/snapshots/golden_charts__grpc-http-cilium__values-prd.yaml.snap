@@ -7,12 +7,16 @@ expression: read(&chart.join(file))
 
 replicaCount: 2
 
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
 image:
   tag: "0.2.3"
 
 autoscaling:
   enabled: true
-  minReplicas: 2
+  minReplicas: 1
   maxReplicas: 4
 
 mesh: "cilium"

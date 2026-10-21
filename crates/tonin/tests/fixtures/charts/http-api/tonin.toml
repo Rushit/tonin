@@ -2,7 +2,9 @@
 # secrets, and structured depends_on. Modelled on the zvectorlabs
 # `zvectorlabs-api` service. Covers: database/cache env var names overridden
 # (PLATFORM_DATABASE_URL, PLATFORM_REDIS_URL), and migrations as a hook Job in
-# every env.
+# every env. Workload: requests/limits apart (no CPU limit), ephemeral
+# storage, a /tmp emptyDir, separate liveness/readiness paths, a startup
+# probe, a rolling-update strategy and a termination grace period (prd).
 schema = "v1"
 
 [image]
@@ -31,20 +33,45 @@ type    = "http"
 port    = 7001
 
 [service.health]
-path = "/health"
-port = 7001
+path           = "/health"
+port           = 7001
+liveness_path  = "/health/live"
+readiness_path = "/health/ready"
+
+[service.health.startup]
+failure_threshold = 60
+period_seconds    = 5
 
 [deploy]
 namespace   = "platform-{env}"
 replicas    = 1
 mcp_sidecar = false
 
-[deploy.prd]
-replicas = 2
+[deploy.strategy]
+max_surge       = 1
+max_unavailable = 0
 
-[resources]
-cpu    = "250m"
-memory = "256Mi"
+[deploy.prd]
+replicas                         = 2
+termination_grace_period_seconds = 45
+
+[deploy.prd.strategy]
+max_surge = "25%"
+
+[resources.requests]
+cpu               = "250m"
+memory            = "256Mi"
+ephemeral_storage = "256Mi"
+
+[resources.limits]
+memory            = "256Mi"
+ephemeral_storage = "1Gi"
+
+[[volumes]]
+name       = "tmp"
+type       = "empty-dir"
+mount_path = "/tmp"
+size_limit = "512Mi"
 
 [secrets]
 required = ["TELEMETRY_SERVICE_TOKEN"]

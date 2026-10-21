@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use include_dir::{Dir, include_dir};
 use tera::Tera;
-use tonin_plugin::{DatastoreEnv, McpMode, MigrationMode, Plan, SecuritySection, ServiceKind};
+use tonin_plugin::{
+    DatastoreEnv, McpMode, MigrationMode, Plan, ResourcesSpec, SecuritySection, ServiceKind,
+    VolumeSource, VolumeSpec, WorkloadSpec,
+};
 
 static TEMPLATES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/templates/helm");
 
@@ -190,14 +193,22 @@ fn build_context(plan: &Plan) -> tera::Context {
     ctx.insert("version", &plan.version);
     ctx.insert("image_repository", &image_repository(&plan.image));
     ctx.insert("replicas", &plan.replicas);
+    let autoscale = plan.workload.autoscale;
+    ctx.insert(
+        "min_replicas",
+        &autoscale.map_or(plan.replicas, |a| a.min_replicas),
+    );
     ctx.insert("max_replicas", &plan.max_replicas);
-    ctx.insert("has_autoscale", &(plan.max_replicas > plan.replicas));
+    ctx.insert("has_autoscale", &autoscale.is_some());
     ctx.insert("mcp_enabled", &(plan.mcp_mode != McpMode::None));
     ctx.insert("mcp_mode", &plan.mcp_mode.as_str());
     ctx.insert("needs_proxy", &plan.needs_outbound_proxy);
     ctx.insert("proxy_port", &6565_u16);
-    ctx.insert("cpu", &plan.cpu);
-    ctx.insert("memory", &plan.memory);
+    ctx.insert(
+        "resources_block",
+        &resources_block(&plan.workload.resources),
+    );
+    workload_context(&plan.workload, &mut ctx);
     ctx.insert("namespace", &plan.namespace);
     ctx.insert("mesh", plan.mesh.as_str());
     ctx.insert("is_cilium", &(plan.mesh.as_str() == "cilium"));
@@ -281,7 +292,11 @@ fn base_context(plan: &Plan) -> tera::Context {
     let mut ctx = build_context(plan);
     // [deploy] (+ overlays): replicas, autoscaling, mesh, MCP, ingress.
     ctx.insert("replicas", &1_u32);
+    ctx.insert("min_replicas", &1_u32);
     ctx.insert("max_replicas", &1_u32);
+    // [deploy] strategy / termination_grace_period_seconds (+ overlays).
+    ctx.insert("strategy_block", "strategy: {}");
+    ctx.insert("termination_grace_period_seconds", &0_u32);
     ctx.insert("has_autoscale", &false);
     ctx.insert("namespace", "");
     ctx.insert("mesh", "none");
@@ -301,6 +316,156 @@ fn base_context(plan: &Plan) -> tera::Context {
     ctx.insert("depends_on", &Vec::<tonin_plugin::DependencyRef>::new());
     ctx.insert("env_name", "");
     ctx
+}
+
+/// Workload keys: kind, StatefulSet settings, strategy, command/args,
+/// probes, volumes and extra ports.
+fn workload_context(w: &WorkloadSpec, ctx: &mut tera::Context) {
+    ctx.insert("workload_kind", w.kind.as_str());
+    ctx.insert(
+        "pod_management_policy",
+        w.pod_management_policy.as_deref().unwrap_or(""),
+    );
+    ctx.insert("strategy_block", &strategy_block(w));
+    ctx.insert(
+        "termination_grace_period_seconds",
+        &w.termination_grace_period_seconds.unwrap_or(0),
+    );
+    ctx.insert("command_json", &json_list(&w.command));
+    ctx.insert("args_json", &json_list(&w.args));
+    ctx.insert("liveness_path", &w.probes.liveness_path);
+    ctx.insert("readiness_path", &w.probes.readiness_path);
+    ctx.insert("startup_enabled", &w.probes.startup.is_some());
+    let startup = w
+        .probes
+        .startup
+        .clone()
+        .unwrap_or(tonin_plugin::StartupProbeSpec {
+            path: w.probes.liveness_path.clone(),
+            period_seconds: 10,
+            failure_threshold: 30,
+        });
+    ctx.insert("startup_path", &startup.path);
+    ctx.insert("startup_period_seconds", &startup.period_seconds);
+    ctx.insert("startup_failure_threshold", &startup.failure_threshold);
+    ctx.insert("volumes_block", &volumes_block(&w.volumes));
+    ctx.insert(
+        "extra_ports_block",
+        &yaml_list_block("extraPorts", &w.ports),
+    );
+    ctx.insert(
+        "extra_services_block",
+        &yaml_list_block("extraServices", &w.extra_services()),
+    );
+}
+
+/// A JSON array (valid YAML flow sequence) of strings.
+fn json_list(items: &[String]) -> String {
+    serde_json::to_string(items).unwrap_or_else(|_| "[]".into())
+}
+
+/// `key: []` or `key:` followed by the list as indented YAML.
+fn yaml_list_block<T: serde::Serialize>(key: &str, items: &[T]) -> String {
+    if items.is_empty() {
+        return format!("{key}: []");
+    }
+    let yaml = serde_yaml::to_string(items).unwrap_or_default();
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+    let body: Vec<String> = yaml.lines().map(|l| format!("  {l}")).collect();
+    format!("{key}:\n{}", body.join("\n"))
+}
+
+/// `strategy:` values key, in Kubernetes shape (`{}` = the controller's default).
+fn strategy_block(w: &WorkloadSpec) -> String {
+    match &w.strategy {
+        None => "strategy: {}".into(),
+        Some(s) => {
+            let yaml = serde_yaml::to_string(s).unwrap_or_default();
+            let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+            let body: Vec<String> = yaml.lines().map(|l| format!("    {l}")).collect();
+            format!("strategy:\n{}", body.join("\n"))
+        }
+    }
+}
+
+/// The container `resources:` values key.
+fn resources_block(r: &ResourcesSpec) -> String {
+    let mut out = String::from("resources:");
+    for (name, list) in [("requests", &r.requests), ("limits", &r.limits)] {
+        if list.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n  {name}:"));
+        for (k, v) in list {
+            out.push_str(&format!("\n    {k}: \"{v}\""));
+        }
+    }
+    if r.requests.is_empty() && r.limits.is_empty() {
+        out.push_str(" {}");
+    }
+    out
+}
+
+/// The `volumes:` values key ([[volumes]]): `type` selects the pod volume
+/// (`empty-dir`) or the StatefulSet claim template (`pvc`).
+fn volumes_block(volumes: &[VolumeSpec]) -> String {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Entry<'a> {
+        name: &'a str,
+        #[serde(rename = "type")]
+        kind: &'a str,
+        mount_path: &'a str,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        read_only: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        empty_dir: Option<std::collections::BTreeMap<&'a str, &'a str>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        storage_class: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        access_modes: Option<&'a [String]>,
+    }
+    let entries: Vec<Entry<'_>> = volumes
+        .iter()
+        .map(|v| match &v.source {
+            VolumeSource::EmptyDir { size_limit, medium } => {
+                let mut ed = std::collections::BTreeMap::new();
+                if let Some(m) = medium {
+                    ed.insert("medium", m.as_str());
+                }
+                if let Some(l) = size_limit {
+                    ed.insert("sizeLimit", l.as_str());
+                }
+                Entry {
+                    name: &v.name,
+                    kind: "empty-dir",
+                    mount_path: &v.mount_path,
+                    read_only: v.read_only,
+                    empty_dir: Some(ed),
+                    size: None,
+                    storage_class: None,
+                    access_modes: None,
+                }
+            }
+            VolumeSource::Pvc {
+                size,
+                storage_class,
+                access_modes,
+            } => Entry {
+                name: &v.name,
+                kind: "pvc",
+                mount_path: &v.mount_path,
+                read_only: v.read_only,
+                empty_dir: None,
+                size: Some(size),
+                storage_class: storage_class.as_deref(),
+                access_modes: Some(access_modes),
+            },
+        })
+        .collect();
+    yaml_list_block("volumes", &entries)
 }
 
 /// The `datastores:` values key: `datastores: []`, or the resolved list as

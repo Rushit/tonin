@@ -1,0 +1,231 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# Base values — environment-independent settings only.
+# Keys that differ per environment (replicas, autoscaling, mesh, MCP, ingress,
+# env, stateful deps, secret keys, network policy) hold neutral defaults here;
+# values-<env>.yaml sets them. Deploy with both: -f values.yaml -f values-<env>.yaml.
+
+replicaCount: 1
+
+# Workload controller ([deploy] kind = "deployment" | "statefulset"). A
+# StatefulSet gets a headless Service (<name>-headless) and one
+# PersistentVolumeClaim per pod for each `pvc` volume. podManagementPolicy,
+# serviceName and volumeClaimTemplates cannot change after the first install.
+# terminationGracePeriodSeconds (0 = the Kubernetes default) and strategy
+# ({} = the controller's default) are set per environment.
+workload:
+  kind: StatefulSet
+  podManagementPolicy: "Parallel"
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
+image:
+  repository: "ghcr.io/example/tracestore"
+  tag: "0.2.3"
+  # Set to pin the image by digest (e.g. "sha256:…"): the chart then renders
+  # repository@digest and ignores tag. `tonin deploy` sets it from the lock.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 4317
+  portName: grpc
+  # Additional HTTP port for a gRPC backend that also serves HTTP (0 = none).
+  httpPort: 8080
+  mcpPort: 50052
+  # HTTP health probe (httpGet). Rendered only when enabled.
+  health:
+    enabled: true
+    # grpc: true  → native grpc: probe (gRPC Health Protocol v1). Requires k8s ≥ 1.24.
+    # grpc: false → httpGet probe. Only safe when the service exposes an HTTP surface
+    #               (add [service.http] in tonin.toml). Setting grpc: false on a
+    #               gRPC-only service will fail at `helm template` time with a
+    #               clear error — see deployment.yaml.
+    grpc: false
+    path: "/health"
+    port: 8080
+    # httpGet paths per probe ([service.health] liveness_path / readiness_path;
+    # both default to `path`). Ignored by grpc probes.
+    livenessPath: "/health/live"
+    readinessPath: "/health/ready"
+    # startupProbe ([service.health.startup]): liveness and readiness wait
+    # until it succeeds, for slow starts.
+    startup:
+      enabled: true
+      path: "/health"
+      periodSeconds: 10
+      failureThreshold: 30
+
+# Extra named container ports ([[ports]]). `service` empty = on the main
+# Service; otherwise on the extra Service <name>-<service> (one per name in
+# extraServices).
+extraPorts:
+  - name: otlp-http
+    port: 4318
+    protocol: TCP
+    service: ingest
+  - name: query
+    port: 8081
+    protocol: TCP
+    service: internal
+  - name: admin
+    port: 8082
+    protocol: TCP
+    service: internal
+extraServices:
+  - ingest
+  - internal
+
+# Volumes ([[volumes]]): `empty-dir` (pod-lifetime scratch, optional sizeLimit)
+# and `pvc` (StatefulSet only: a claim per pod from the default StorageClass
+# unless storageClass is set). Mounted in the server container (and the
+# migration initContainer); the migration Job gets the empty-dir ones.
+volumes:
+  - name: data
+    type: pvc
+    mountPath: /home/nonroot/data
+    size: 8Gi
+    accessModes:
+    - ReadWriteOnce
+  - name: parquet-cache
+    type: empty-dir
+    mountPath: /home/nonroot/data/parquet-cache
+    emptyDir:
+      sizeLimit: 2Gi
+  - name: tmp
+    type: empty-dir
+    mountPath: /tmp
+    emptyDir:
+      sizeLimit: 256Mi
+
+# MCP tool surface. Derived automatically from [service].language:
+#   in-process → same binary, two ports (Rust — default).
+#   sidecar    → separate <name>-mcp container (Python, TypeScript, …).
+#   none       → disabled (HTTP/web services have no gRPC surface).
+# Override: [deploy] mcp_sidecar = false forces mode to none.
+mcp:
+  enabled: false
+  mode: none
+
+# Outbound proxy sidecar. Auto-injected when language != rust and depends_on is
+# non-empty. Handles singleflight coalescing, TTL cache, retry, and circuit breaking
+# across all worker processes. Override: [client] proxy = false in tonin.toml.
+outboundProxy:
+  enabled: false
+  port: 6565
+  image: "ghcr.io/rushit/tonin-proxy:latest"
+
+# Container resources ([resources]: `cpu`/`memory` set requests = limits;
+# [resources.requests] / [resources.limits] set them apart, CPU limit optional).
+resources:
+  requests:
+    cpu: "200m"
+    ephemeral-storage: "2Gi"
+    memory: "1Gi"
+  limits:
+    ephemeral-storage: "4Gi"
+    memory: "1Gi"
+
+# HorizontalPodAutoscaler ([autoscale], Deployments only).
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+
+
+podSecurityContext:
+  fsGroup: 65532
+  runAsGroup: 65532
+  runAsNonRoot: true
+  runAsUser: 65532
+
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+
+
+ingress:
+  enabled: false
+  host: ""
+
+mesh: "none"
+
+observability:
+  otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
+
+# Container command and args ([service] command / args). Empty command = the
+# image's ENTRYPOINT/CMD. Rust services default to /usr/local/bin/<name>;
+# every other language runs the image as built.
+command: ["/usr/local/bin/tracestore"]
+args: []
+
+# Gate RUST_LOG injection: only meaningful for Rust binaries.
+rustService: true
+
+# Plain (non-secret) runtime env vars from tonin.toml [env] (+ [env.<env>]
+# overlays, {env} substituted). Injected verbatim into the server container.
+env: {}
+
+# Pod annotations. tonin generates none; add your own at deploy time via
+# --set podAnnotations.key=value.
+podAnnotations: {}
+
+# Escape hatches — empty by design so `tonin helm generate` never clobbers them.
+# Supply at DEPLOY time, not by hand-editing this file:
+#   extraEnv:       --set-json 'extraEnv=[{"name":"X","value":"y"}]'  (server + initContainer)
+#   extraManifests: -f extra.yaml  (each entry is a YAML string, run through tpl)
+# For a durable per-service manifest (e.g. a CronJob), prefer a custom template
+# under chart/templates/ — those survive regeneration.
+extraEnv: []
+extraManifests: []
+
+# Databases and caches ([database]/[databases.<name>], [cache]/[caches.<name>]):
+# references to the platform contract, never rendered by this chart. Each entry
+# reads a connection URL from a Secret key (default `<service>-pg-app` /
+# `<service>-cache`, key `uri`; or a literal per-env `url`) into `env`, mounts
+# only `ca.crt` of the Postgres CA Secret for tls = "verify-full", and allows
+# network-policy egress to the datastore's pods. Resolved per environment in
+# values-<env>.yaml.
+datastores: []
+
+# Secrets the service requires ([secrets].required: JWT keys, API tokens, …).
+# create=true templates a Secret from `values` — supply real values at deploy
+# time (`--set secrets.values.KEY=...` or a private values file); NEVER commit
+# them. create=false references an externally-managed Secret named
+# <release>-secrets (e.g. created by ExternalSecrets / Vault / kubectl).
+secrets:
+  create: true
+  keys: []
+  values: {}
+
+# DB migrations ([migrations]). `mode` is set per environment in
+# values-<env>.yaml ([migrations.<env>] mode in tonin.toml):
+#   init-container → runs before the server container in every pod.
+#   job            → a pre-install/pre-upgrade hook Job that Helm gates the
+#                    rollout on. Hooks run before the chart's own resources
+#                    exist: the Job reads the database from the platform
+#                    contract Secrets and its network policy is a hook too.
+#   none           → nothing rendered.
+#   env: extra env for the migration step only (e.g. IDENTITY_MIGRATE_ONLY=1) —
+#        never reaches the server container.
+migrations:
+  mode: none
+  command: []
+  env: {}
+
+# CiliumNetworkPolicy ingress allowlist + egress. Rendered only when mesh=cilium.
+networkPolicy:
+  enabled: false
+  port: 4317
+  mcp: false
+  callers: []
+  dependsOn: []

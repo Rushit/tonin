@@ -9,6 +9,10 @@ use crate::stateful::{
     self, CacheSpec, ConfigSpec, DatabaseSpec, EmittedEnv, MigrationsSpec, RawCache, RawCallers,
     RawConfigBlock, RawDatabase, RawMigrations, RawSecrets, SecretsSpec,
 };
+use crate::workload::{
+    self, RawAutoscale, RawPort, RawResources, RawStartupProbe, RawStrategy, RawVolume,
+    ReservedPorts, WorkloadSpec,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -418,6 +422,10 @@ struct RawConfig {
     security: Option<RawSecurity>,
     #[serde(default)]
     path_rules: Vec<RawPathRule>,
+    #[serde(default)]
+    volumes: Vec<RawVolume>,
+    #[serde(default)]
+    ports: Vec<RawPort>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -444,6 +452,13 @@ struct RawService {
     /// serve HTTP (health/metrics/admin) — the two are not mutually exclusive.
     #[serde(default)]
     http: Option<RawHttpEndpoint>,
+    /// Container command; `[]` = the image's ENTRYPOINT/CMD. Default:
+    /// `/usr/local/bin/<name>` for Rust, the image's for everything else.
+    #[serde(default)]
+    command: Option<Vec<String>>,
+    /// Container args (default none).
+    #[serde(default)]
+    args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,6 +467,15 @@ struct RawHealth {
     path: Option<String>,
     #[serde(default)]
     port: Option<u32>,
+    /// livenessProbe path (default `path`).
+    #[serde(default)]
+    liveness_path: Option<String>,
+    /// readinessProbe path (default `path`).
+    #[serde(default)]
+    readiness_path: Option<String>,
+    /// Optional startupProbe.
+    #[serde(default)]
+    startup: Option<RawStartupProbe>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -473,6 +497,16 @@ struct RawDeploy {
     namespace: String,
     #[serde(default)]
     expose: Option<String>,
+    /// `"deployment"` (default) or `"statefulset"`.
+    #[serde(default)]
+    kind: Option<String>,
+    /// StatefulSet only: `"OrderedReady"` (default) or `"Parallel"`.
+    #[serde(default)]
+    pod_management_policy: Option<String>,
+    #[serde(default)]
+    termination_grace_period_seconds: Option<u32>,
+    #[serde(default)]
+    strategy: Option<RawStrategy>,
     #[serde(default, flatten)]
     envs: std::collections::BTreeMap<String, RawDeployEnv>,
 }
@@ -489,17 +523,10 @@ struct RawDeployEnv {
     mcp_sidecar: Option<bool>,
     #[serde(default)]
     expose: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawResources {
-    cpu: String,
-    memory: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawAutoscale {
-    max_replicas: u32,
+    #[serde(default)]
+    termination_grace_period_seconds: Option<u32>,
+    #[serde(default)]
+    strategy: Option<RawStrategy>,
 }
 
 fn default_true() -> bool {
@@ -700,6 +727,175 @@ pub struct Plan {
     pub selected_env: String,
     pub client: ClientSpec,
     pub path_rules: Vec<PathRule>,
+    /// Workload kind, update strategy, volumes, extra ports, probes,
+    /// resources, command and autoscaling, resolved for `selected_env`.
+    pub workload: WorkloadSpec,
+}
+
+/// Facts about the service [`resolve_workload`] validates against.
+struct WorkloadContext<'a> {
+    env: &'a str,
+    replicas: u32,
+    port: u32,
+    http_port: Option<u32>,
+    health: Option<&'a HealthSpec>,
+    mcp: McpMode,
+    proxy: bool,
+    is_rust: bool,
+}
+
+/// Port of the in-process / sidecar MCP server (`service.mcpPort` in the chart).
+const MCP_PORT: u32 = 50052;
+/// Port of the outbound proxy sidecar (`outboundProxy.port` in the chart).
+const PROXY_PORT: u32 = 6565;
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_workload(
+    service: &RawService,
+    deploy: &RawDeploy,
+    overlay: Option<&RawDeployEnv>,
+    resources: &RawResources,
+    autoscale: Option<&RawAutoscale>,
+    volumes: &[RawVolume],
+    ports: &[RawPort],
+    cx: WorkloadContext<'_>,
+) -> Result<WorkloadSpec, Error> {
+    let kind = workload::parse_kind(deploy.kind.as_deref())?;
+    let pod_management_policy =
+        workload::resolve_pod_management_policy(kind, deploy.pod_management_policy.as_deref())?;
+    let strategy = workload::resolve_strategy(
+        kind,
+        deploy.strategy.as_ref(),
+        overlay.and_then(|o| o.strategy.as_ref()),
+        cx.env,
+    )?;
+    let termination_grace_period_seconds = overlay
+        .and_then(|o| o.termination_grace_period_seconds)
+        .or(deploy.termination_grace_period_seconds);
+    if termination_grace_period_seconds == Some(0) {
+        return Err(Error::InvalidField {
+            field: "[deploy].termination_grace_period_seconds".into(),
+            reason: "must be at least 1 (0 kills the pod without a graceful shutdown)".into(),
+        });
+    }
+
+    // Ports already in the pod: the primary port, [service.http], MCP, proxy.
+    let mut reserved = ReservedPorts {
+        names: vec!["grpc", "http", "mcp", "proxy"],
+        numbers: vec![(cx.port, "[service].port")],
+    };
+    if let Some(p) = cx.http_port {
+        reserved.numbers.push((p, "[service.http]"));
+    }
+    if cx.mcp != McpMode::None {
+        reserved.numbers.push((MCP_PORT, "MCP"));
+    }
+    if cx.proxy {
+        reserved.numbers.push((PROXY_PORT, "outbound proxy"));
+    }
+    let ports = workload::resolve_ports(&service.name, ports, &reserved)?;
+    let volumes = workload::resolve_volumes(kind, volumes)?;
+    let resources = workload::resolve_resources(resources)?;
+    let autoscale = workload::resolve_autoscale(autoscale, kind, cx.replicas, cx.env)?;
+
+    // Probes: separate liveness/readiness paths and an optional startupProbe.
+    let declared = service.health.as_ref();
+    let grpc_probe = cx.health.is_none_or(|h| h.grpc);
+    let mut probes = workload::ProbesSpec::default();
+    if let Some(h) = cx.health {
+        if grpc_probe {
+            for (field, set) in [
+                (
+                    "liveness_path",
+                    declared.and_then(|d| d.liveness_path.as_ref()),
+                ),
+                (
+                    "readiness_path",
+                    declared.and_then(|d| d.readiness_path.as_ref()),
+                ),
+                (
+                    "startup.path",
+                    declared
+                        .and_then(|d| d.startup.as_ref())
+                        .and_then(|s| s.path.as_ref()),
+                ),
+            ] {
+                if set.is_some() {
+                    return Err(Error::InvalidField {
+                        field: format!("[service.health].{field}"),
+                        reason: "this service is probed over gRPC (no HTTP surface); add                                  [service.http] to probe an HTTP path"
+                            .into(),
+                    });
+                }
+            }
+        } else {
+            probes.liveness_path = declared
+                .and_then(|d| d.liveness_path.clone())
+                .unwrap_or_else(|| h.path.clone());
+            probes.readiness_path = declared
+                .and_then(|d| d.readiness_path.clone())
+                .unwrap_or_else(|| h.path.clone());
+        }
+        for (field, path) in [
+            ("liveness_path", &probes.liveness_path),
+            ("readiness_path", &probes.readiness_path),
+        ] {
+            if !path.is_empty() && !path.starts_with('/') {
+                return Err(Error::InvalidField {
+                    field: format!("[service.health].{field}"),
+                    reason: format!("{path:?} must start with '/'"),
+                });
+            }
+        }
+        if let Some(st) = declared.and_then(|d| d.startup.as_ref()) {
+            let path = if grpc_probe {
+                String::new()
+            } else {
+                st.path
+                    .clone()
+                    .unwrap_or_else(|| probes.liveness_path.clone())
+            };
+            if !grpc_probe && !path.starts_with('/') {
+                return Err(Error::InvalidField {
+                    field: "[service.health.startup].path".into(),
+                    reason: format!("{path:?} must start with '/'"),
+                });
+            }
+            let period_seconds = st.period_seconds.unwrap_or(10);
+            let failure_threshold = st.failure_threshold.unwrap_or(30);
+            if period_seconds == 0 || failure_threshold == 0 {
+                return Err(Error::InvalidField {
+                    field: "[service.health.startup]".into(),
+                    reason: "period_seconds and failure_threshold must be at least 1".into(),
+                });
+            }
+            probes.startup = Some(workload::StartupProbeSpec {
+                path,
+                period_seconds,
+                failure_threshold,
+            });
+        }
+    }
+
+    let command = match &service.command {
+        Some(c) => c.clone(),
+        None if cx.is_rust => vec![format!("/usr/local/bin/{}", service.name)],
+        None => Vec::new(),
+    };
+
+    Ok(WorkloadSpec {
+        kind,
+        pod_management_policy,
+        strategy,
+        termination_grace_period_seconds,
+        volumes,
+        ports,
+        probes,
+        resources,
+        command,
+        args: service.args.clone().unwrap_or_default(),
+        autoscale,
+    })
 }
 
 impl Plan {
@@ -736,7 +932,7 @@ impl Plan {
         let deploy_namespace = {
             let raw_ns = deploy_overlay
                 .and_then(|o| o.namespace.clone())
-                .unwrap_or(raw.deploy.namespace);
+                .unwrap_or_else(|| raw.deploy.namespace.clone());
             let ns = apply_env(&raw_ns, env);
             ensure_resolved("deploy.namespace", &ns)?;
             ns
@@ -751,13 +947,7 @@ impl Plan {
             .or(raw.deploy.mcp_sidecar);
         let deploy_expose = deploy_overlay
             .and_then(|o| o.expose.clone())
-            .or(raw.deploy.expose);
-
-        let max_replicas = raw
-            .autoscale
-            .as_ref()
-            .map(|a| a.max_replicas)
-            .unwrap_or(deploy_replicas);
+            .or_else(|| raw.deploy.expose.clone());
 
         let dir = toml_path
             .parent()
@@ -839,6 +1029,9 @@ impl Plan {
         // Resolved language — used for both MCP and proxy derivation.
         let language = raw.service.language.as_deref().unwrap_or("rust");
         let is_rust = language == "rust";
+        // A plain Node.js app (e.g. a Next.js server): no tonin SDK, so no MCP
+        // sidecar binary and no outbound proxy; the image's CMD runs it.
+        let is_node = language == "node";
 
         // McpMode: derived from language + kind. Explicit [deploy] mcp_sidecar=false
         // overrides to None (backward-compat escape hatch); true is a no-op.
@@ -846,6 +1039,7 @@ impl Plan {
             Some(false) => McpMode::None,
             _ => match kind {
                 ServiceKind::Http | ServiceKind::Web => McpMode::None,
+                ServiceKind::Backend if is_node => McpMode::None,
                 ServiceKind::Backend if is_rust => McpMode::InProcess,
                 ServiceKind::Backend => McpMode::Sidecar,
             },
@@ -855,7 +1049,7 @@ impl Plan {
         // calls at least one downstream. [client] proxy=false is an escape hatch.
         let proxy_override = raw.client.as_ref().and_then(|c| c.proxy);
         let needs_outbound_proxy =
-            !is_rust && !depends_on.is_empty() && proxy_override != Some(false);
+            !is_rust && !is_node && !depends_on.is_empty() && proxy_override != Some(false);
 
         let svc_name = raw.service.name.clone();
         let database = match &raw.database {
@@ -950,6 +1144,41 @@ impl Plan {
             }
         }
 
+        let workload = resolve_workload(
+            &raw.service,
+            &raw.deploy,
+            deploy_overlay,
+            &raw.resources,
+            raw.autoscale.as_ref(),
+            &raw.volumes,
+            &raw.ports,
+            WorkloadContext {
+                env,
+                replicas: deploy_replicas,
+                port,
+                http_port,
+                health: health.as_ref(),
+                mcp: mcp_mode,
+                proxy: needs_outbound_proxy,
+                is_rust,
+            },
+        )?;
+        let max_replicas = workload
+            .autoscale
+            .map_or(deploy_replicas, |a| a.max_replicas);
+        let cpu = workload
+            .resources
+            .requests
+            .get("cpu")
+            .cloned()
+            .unwrap_or_default();
+        let memory = workload
+            .resources
+            .requests
+            .get("memory")
+            .cloned()
+            .unwrap_or_default();
+
         Ok(Plan {
             name: raw.service.name,
             version: raw.service.version,
@@ -966,8 +1195,8 @@ impl Plan {
             mcp_mode,
             needs_outbound_proxy,
             expose: deploy_expose,
-            cpu: raw.resources.cpu,
-            memory: raw.resources.memory,
+            cpu,
+            memory,
             image,
             image_registry,
             security,
@@ -985,6 +1214,7 @@ impl Plan {
             emitted_env,
             env_vars,
             selected_env: env.to_string(),
+            workload,
             path_rules: raw
                 .path_rules
                 .into_iter()
@@ -1729,6 +1959,113 @@ allowPrivilegeEscalation = false
         );
     }
 
+    // ---- workload (T3) -------------------------------------------------------
+
+    const SVC_NODE: &str = "[service]\nname = \"shell\"\nversion = \"0.1.0\"\ntype = \"http\"\nlanguage = \"node\"\nport = 7002\n[resources]\ncpu = \"50m\"\nmemory = \"64Mi\"\n";
+
+    #[test]
+    fn node_language_runs_the_image_cmd_without_proxy_or_mcp() {
+        let p = try_load_env(&format!("{SVC_NODE}{DEPLOY_WITH_DEP}"), "prd").unwrap();
+        assert!(p.workload.command.is_empty(), "image CMD runs a node app");
+        assert!(!p.needs_outbound_proxy, "no proxy for plain node");
+        assert_eq!(p.mcp_mode, McpMode::None);
+        // A node gRPC backend gets no MCP sidecar either.
+        let backend = SVC_NODE.replace("type = \"http\"\n", "");
+        let p = try_load_env(&format!("{backend}{DEPLOY_WITH_DEP}"), "prd").unwrap();
+        assert_eq!(p.mcp_mode, McpMode::None);
+    }
+
+    #[test]
+    fn command_and_args_pass_through() {
+        let rust = try_load_env(&format!("{SVC_RUST}{DEPLOY_NO_DEP}"), "prd").unwrap();
+        assert_eq!(rust.workload.command, ["/usr/local/bin/svc"]);
+        let svc = SVC_RUST.replace(
+            "version = \"0.1.0\"\n",
+            "version = \"0.1.0\"\ncommand = []\nargs = [\"serve\", \"--json\"]\n",
+        );
+        let p = try_load_env(&format!("{svc}{DEPLOY_NO_DEP}"), "prd").unwrap();
+        assert!(p.workload.command.is_empty());
+        assert_eq!(p.workload.args, ["serve", "--json"]);
+    }
+
+    #[test]
+    fn statefulset_with_pvc_ports_and_strategy() {
+        let toml = format!(
+            "{SVC_RUST}[deploy]\nreplicas = 2\nnamespace = \"demo\"\nkind = \"statefulset\"\n\
+             [deploy.prd.strategy]\npartition = 1\n\
+             [[volumes]]\nname = \"data\"\ntype = \"pvc\"\nmount_path = \"/data\"\nsize = \"8Gi\"\n\
+             [[ports]]\nname = \"otlp-http\"\nport = 4318\nservice = \"ingest\"\n"
+        );
+        let p = try_load_env(&toml, "prd").unwrap();
+        assert_eq!(p.workload.kind, crate::WorkloadKind::StatefulSet);
+        assert_eq!(p.workload.extra_services(), ["ingest"]);
+        assert_eq!(p.workload.strategy.as_ref().unwrap().kind, "RollingUpdate");
+        let dev = try_load_env(&toml, "dev").unwrap();
+        assert!(dev.workload.strategy.is_none(), "partition is prd-only");
+
+        let with_hpa = format!("{toml}[autoscale]\nmax_replicas = 4\n");
+        assert!(
+            try_load_env(&with_hpa, "prd").is_err(),
+            "no HPA on a StatefulSet"
+        );
+        let deployment = toml.replace("kind = \"statefulset\"\n", "");
+        let err = try_load_env(&deployment, "dev").unwrap_err();
+        assert!(err.to_string().contains("statefulset"), "{err}");
+    }
+
+    #[test]
+    fn extra_ports_must_not_reuse_tonin_ports() {
+        let toml = format!("{SVC_RUST}{DEPLOY_NO_DEP}[[ports]]\nname = \"extra\"\nport = 50052\n");
+        let err = try_load_env(&toml, "prd").unwrap_err();
+        assert!(err.to_string().contains("MCP"), "{err}");
+    }
+
+    #[test]
+    fn autoscale_min_replicas_is_honoured() {
+        let toml = format!(
+            "{SVC_RUST}[deploy]\nreplicas = 1\nnamespace = \"demo\"\n\
+             [autoscale]\nmin_replicas = 2\nmax_replicas = 8\n[autoscale.dev]\nenabled = false\n"
+        );
+        let p = try_load_env(&toml, "prd").unwrap();
+        let a = p.workload.autoscale.unwrap();
+        assert_eq!((a.min_replicas, a.max_replicas), (2, 8));
+        assert_eq!(p.max_replicas, 8);
+        let dev = try_load_env(&toml, "dev").unwrap();
+        assert!(dev.workload.autoscale.is_none());
+        assert_eq!(dev.max_replicas, 1);
+    }
+
+    #[test]
+    fn probe_paths_and_startup() {
+        let http = "[service]\nname = \"svc\"\nversion = \"0.1.0\"\ntype = \"http\"\n\
+                    [service.health]\nliveness_path = \"/live\"\n[service.health.startup]\n\
+                    [resources]\ncpu = \"50m\"\nmemory = \"64Mi\"\n";
+        let p = try_load_env(&format!("{http}{DEPLOY_NO_DEP}"), "prd").unwrap();
+        assert_eq!(p.workload.probes.liveness_path, "/live");
+        assert_eq!(p.workload.probes.readiness_path, "/health");
+        let st = p.workload.probes.startup.unwrap();
+        assert_eq!((st.path.as_str(), st.failure_threshold), ("/live", 30));
+
+        // A gRPC-only service has no HTTP path to probe.
+        let grpc = SVC_RUST.replace(
+            "[resources]",
+            "[service.health]\nreadiness_path = \"/ready\"\n[resources]",
+        );
+        assert!(try_load_env(&format!("{grpc}{DEPLOY_NO_DEP}"), "prd").is_err());
+    }
+
+    #[test]
+    fn resources_requests_and_limits_apart() {
+        let svc = "[service]\nname = \"svc\"\nversion = \"0.1.0\"\n\
+                   [resources.requests]\ncpu = \"250m\"\nmemory = \"512Mi\"\n\
+                   [resources.limits]\nmemory = \"512Mi\"\n";
+        let p = try_load_env(&format!("{svc}{DEPLOY_NO_DEP}"), "prd").unwrap();
+        assert_eq!(p.cpu, "250m");
+        assert!(!p.workload.resources.limits.contains_key("cpu"));
+        let bad = svc.replace("\"250m\"", "\"250 m\"");
+        assert!(try_load_env(&format!("{bad}{DEPLOY_NO_DEP}"), "prd").is_err());
+    }
+
     // ---- wave_groups --------------------------------------------------------
 
     fn make_test_plan(name: &str, depends_on: &[&str]) -> Plan {
@@ -1774,6 +2111,7 @@ allowPrivilegeEscalation = false
             env_vars: Vec::new(),
             selected_env: "prod".to_string(),
             client: ClientSpec::default(),
+            workload: Default::default(),
             path_rules: Vec::new(),
         }
     }

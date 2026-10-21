@@ -3,12 +3,16 @@
 
 replicaCount: {{ replicas }}
 
+workload:
+  terminationGracePeriodSeconds: {{ termination_grace_period_seconds }}
+  {{ strategy_block }}
+
 image:
   tag: "{{ version }}"
 
 autoscaling:
   enabled: {% if has_autoscale %}true{% else %}false{% endif %}
-  minReplicas: {{ replicas }}
+  minReplicas: {{ min_replicas }}
   maxReplicas: {{ max_replicas }}
 
 mesh: "{{ mesh }}"

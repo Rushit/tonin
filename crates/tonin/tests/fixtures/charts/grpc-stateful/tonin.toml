@@ -42,10 +42,13 @@ replicas = 1
 cpu    = "100m"
 memory = "128Mi"
 
-# min_replicas is ignored by tonin 0.14 (T3 adds it); kept to capture that.
+# HPA 2..8 in prd; dev runs one fixed replica.
 [autoscale]
 min_replicas = 2
 max_replicas = 8
+
+[autoscale.dev]
+enabled = false
 
 [database]
 engine = "postgres"

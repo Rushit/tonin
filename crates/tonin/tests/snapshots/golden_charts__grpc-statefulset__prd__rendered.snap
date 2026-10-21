@@ -1,0 +1,321 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: rendered
+---
+---
+# Source: tracestore/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tracestore
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+spec:
+  type: ClusterIP
+  selector:
+    app: tracestore
+  ports:
+    - name: grpc
+      port: 4317
+      targetPort: 4317
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: mcp
+      port: 50052
+      targetPort: 50052
+
+---
+# Source: tracestore/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tracestore-ingest
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+spec:
+  type: ClusterIP
+  selector:
+    app: tracestore
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+      protocol: TCP
+
+---
+# Source: tracestore/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tracestore-internal
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+spec:
+  type: ClusterIP
+  selector:
+    app: tracestore
+  ports:
+    - name: query
+      port: 8081
+      targetPort: query
+      protocol: TCP
+    - name: admin
+      port: 8082
+      targetPort: admin
+      protocol: TCP
+
+---
+# Source: tracestore/templates/service.yaml
+# Headless Service governing the StatefulSet: stable per-pod DNS names
+# (<name>-<ordinal>.<name>-headless.<namespace>.svc).
+apiVersion: v1
+kind: Service
+metadata:
+  name: tracestore-headless
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+spec:
+  clusterIP: None
+  selector:
+    app: tracestore
+  ports:
+    - name: grpc
+      port: 4317
+      targetPort: 4317
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: mcp
+      port: 50052
+      targetPort: 50052
+
+---
+# Source: tracestore/templates/deployment.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tracestore
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+spec:
+  replicas: 2
+  serviceName: tracestore-headless
+  podManagementPolicy: Parallel
+  updateStrategy:
+    rollingUpdate:
+      partition: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: tracestore
+  template:
+    metadata:
+      labels:
+        app: tracestore
+        service.identity: tracestore.tracestore-prd
+    spec:
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: server
+          image: "ghcr.io/example/tracestore:0.2.3"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /usr/local/bin/tracestore
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: "tracestore"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4317"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=tracestore-prd,service.version=0.2.3"
+            - name: RUST_LOG
+              value: "info"
+            # Secret-sourced vars first: datastore URLs may compose from them
+            # with $(VAR), and so may the plain env that follows.
+            - name: TRACESTORE_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: tracestore-secrets
+                  key: TRACESTORE_SERVICE_TOKEN
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tracestore-pg-app
+                  key: uri
+            - name: IDENTITY_GRPC_URL
+              value: "http://identity.platform-prd.svc.cluster.local:50051"
+            - name: TRACESTORE_DATA_DIR
+              value: "/home/nonroot/data"
+          ports:
+            - containerPort: 4317
+              name: grpc
+            - containerPort: 8080
+              name: http
+            # In-process MCP: the same server process also serves MCP on this port.
+            - containerPort: 50052
+              name: mcp
+            - containerPort: 4318
+              name: otlp-http
+              protocol: TCP
+            - containerPort: 8081
+              name: query
+              protocol: TCP
+            - containerPort: 8082
+              name: admin
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: "/health/live"
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: "/health/ready"
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: "/health"
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            limits:
+              ephemeral-storage: 4Gi
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              ephemeral-storage: 2Gi
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /home/nonroot/data
+            - name: parquet-cache
+              mountPath: /home/nonroot/data/parquet-cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: parquet-cache
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: tracestore
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 8Gi
+
+---
+# Source: tracestore/templates/networkpolicy.yaml
+# CiliumNetworkPolicy — ingress allowlist (callers + observability) and egress
+# (observability, declared dependencies, the platform contract's databases and
+# caches). mTLS, retries, and circuit breaking stay with the mesh, not this policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: tracestore-ingress
+  namespace: tracestore-prd
+  labels:
+    app: tracestore
+    app.kubernetes.io/name: tracestore
+    app.kubernetes.io/version: "0.2.3"
+    helm.sh/chart: tracestore-0.2.3
+spec:
+  endpointSelector:
+    matchLabels:
+      service.identity: tracestore.tracestore-prd
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: platform-api.platform-prd
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+            - { port: "8080", protocol: TCP }
+            - { port: "50052", protocol: TCP }
+    # Observability collector scrapes/receives over gRPC (+ MCP if enabled).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+            - { port: "8080", protocol: TCP }
+            - { port: "50052", protocol: TCP }
+  egress:
+    # DNS (kube-dns). Any egress rule makes this policy default-deny for the
+    # pod, which would otherwise silently break service discovery.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: observability
+            app: otel-collector
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
+    - toEndpoints:
+        - matchLabels:
+            service.identity: identity.platform-prd
+      toPorts:
+        - ports:
+            # Per-dependency port from tonin.toml [depends_on]; 50051 when unset.
+            - { port: "50051", protocol: TCP }
+    # [database] (platform contract)
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: "tracestore-pg"
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }

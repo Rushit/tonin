@@ -55,6 +55,8 @@ golden_fixture!(grpc_stateful, "grpc-stateful");
 golden_fixture!(http_api, "http-api");
 golden_fixture!(grpc_http_cilium, "grpc-http-cilium");
 golden_fixture!(node_web, "node-web");
+golden_fixture!(grpc_statefulset, "grpc-statefulset");
+golden_fixture!(node_app, "node-app");
 
 /// `image.digest` set: every container running the service image (server,
 /// MCP sidecar, migration initContainer and Job) uses `repository@digest`.

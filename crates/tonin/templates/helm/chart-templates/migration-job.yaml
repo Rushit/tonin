@@ -131,11 +131,11 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with include "service.datastoreVolumeMounts" . | trim }}
+          {{- with include "service.volumeMounts" (dict "root" . "pvc" false) | trim }}
           volumeMounts:
             {{- . | nindent 12 }}
           {{- end }}
-      {{- with include "service.datastoreVolumes" . | trim }}
+      {{- with include "service.podVolumes" . | trim }}
       volumes:
         {{- . | nindent 8 }}
       {{- end }}

@@ -1,0 +1,57 @@
+---
+source: crates/tonin/tests/golden_charts.rs
+expression: read(&chart.join(file))
+---
+# dev-specific overrides — generated from the dev overlay
+# in tonin.toml. Helm deep-merges this over values.yaml (these values win).
+
+replicaCount: 1
+
+workload:
+  terminationGracePeriodSeconds: 0
+  strategy: {}
+
+image:
+  tag: "0.1.1"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+
+mesh: "cilium"
+
+mcp:
+  enabled: false
+  mode: none
+
+outboundProxy:
+  enabled: false
+
+ingress:
+  enabled: false
+  host: ""
+
+# Plain env vars from tonin.toml [env], merged with the [env.dev]
+# overlay and with {env} substituted for this environment.
+env:
+  NODE_ENV: "production"
+
+# Databases and caches of the platform contract, resolved for dev.
+datastores: []
+
+secrets:
+  keys: []
+
+migrations:
+  mode: none
+
+networkPolicy:
+  enabled: true
+  port: 7002
+  mcp: false
+  callers: []
+  dependsOn:
+    - name: platform-api
+      namespace: platform-dev
+      port: 7001

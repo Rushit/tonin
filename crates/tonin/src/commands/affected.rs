@@ -506,6 +506,7 @@ mod tests {
             env_vars: Vec::new(),
             selected_env: "dev".to_string(),
             client: ClientSpec::default(),
+            workload: Default::default(),
             path_rules,
         }
     }
