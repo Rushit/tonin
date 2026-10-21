@@ -22,6 +22,8 @@ pub enum Error {
     Io(PathBuf, #[source] std::io::Error),
     #[error("parsing {0}: {1}")]
     Toml(PathBuf, #[source] toml::de::Error),
+    #[error("{0}: {1}")]
+    Schema(PathBuf, Box<crate::schema::SchemaError>),
     #[error(
         "{path}: schema = {found:?} is not supported by this CLI. \
          Supported schemas: {supported:?}. \
@@ -367,7 +369,12 @@ pub const SUPPORTED_SCHEMAS: &[&str] = &["v1"];
 ///
 /// 0.14.0: `[env]` / `[env.<env>]` plain env-var tables (older CLIs silently
 /// ignore them) and the `port` field in the `[depends_on]` table form.
-pub const RECOMMENDED_CLI_MIN: &str = "0.14.0";
+///
+/// 0.15.0: databases/caches as platform-contract references, StatefulSets,
+/// `[[volumes]]`, `[[ports]]`, network-policy callers/`[egress]`, pod hygiene
+/// (`[placement]`, `[pdb]`, `[service_account]`, `[[cronjobs]]`) and the
+/// strict schema: an older CLI ignores or misreads all of them.
+pub const RECOMMENDED_CLI_MIN: &str = "0.15.0";
 
 #[derive(Debug, Deserialize)]
 struct RawImage {
@@ -947,6 +954,8 @@ impl Plan {
     pub fn load_with_env(toml_path: &Path, env: &str) -> Result<Self, Error> {
         let raw_str = std::fs::read_to_string(toml_path)
             .map_err(|e| Error::Io(toml_path.to_path_buf(), e))?;
+        crate::schema::validate(&raw_str, &crate::schema::TONIN_TOML)
+            .map_err(|e| Error::Schema(toml_path.to_path_buf(), Box::new(e)))?;
         let raw: RawConfig =
             toml::from_str(&raw_str).map_err(|e| Error::Toml(toml_path.to_path_buf(), e))?;
 

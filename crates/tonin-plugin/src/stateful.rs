@@ -206,6 +206,17 @@ pub enum DatabaseEngine {
 }
 
 impl DatabaseEngine {
+    /// Engine names `[database] engine` accepts.
+    pub const NAMES: &'static [&'static str] =
+        &["postgres", "mysql", "sqlite", "clickhouse", "none"];
+
+    /// `None` for a name not in [`Self::NAMES`].
+    pub fn try_parse(s: &str) -> Option<Self> {
+        Self::NAMES.contains(&s).then(|| Self::parse(s))
+    }
+
+    /// Lenient parse: an unknown name is `None` (the engine). `tonin.toml`
+    /// loading uses [`Self::try_parse`] and rejects unknown names.
     pub fn parse(s: &str) -> Self {
         match s {
             "postgres" => Self::Postgres,
@@ -242,6 +253,16 @@ pub enum CacheEngine {
 }
 
 impl CacheEngine {
+    /// Engine names `[cache] engine` accepts.
+    pub const NAMES: &'static [&'static str] = &["redis", "none"];
+
+    /// `None` for a name not in [`Self::NAMES`].
+    pub fn try_parse(s: &str) -> Option<Self> {
+        Self::NAMES.contains(&s).then(|| Self::parse(s))
+    }
+
+    /// Lenient parse: an unknown name is `None` (the engine). `tonin.toml`
+    /// loading uses [`Self::try_parse`] and rejects unknown names.
     pub fn parse(s: &str) -> Self {
         match s {
             "redis" => Self::Redis,
@@ -507,6 +528,20 @@ fn env_prefix(variant: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+fn unknown_engine(section: &str, env: Option<&str>, name: &str, allowed: &[&str]) -> Error {
+    Error::InvalidField {
+        field: format!("{}.engine", table_name(section, env)),
+        reason: format!(
+            "unknown engine {name:?}; allowed: {}",
+            allowed
+                .iter()
+                .map(|n| format!("{n:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn removed(table: &str, field: &str, hint: &str) -> Error {
     Error::RemovedField {
         field: format!("{table}.{field}"),
@@ -635,6 +670,15 @@ pub(crate) fn resolve_database(
         reject_removed_db(&section, Some(e), overlay)?;
     }
 
+    for (e, fields) in std::iter::once((None, &raw.base))
+        .chain(raw.envs.iter().map(|(e, f)| (Some(e.as_str()), f)))
+    {
+        if let Some(name) = fields.engine.as_deref()
+            && DatabaseEngine::try_parse(name).is_none()
+        {
+            return Err(unknown_engine(&section, e, name, DatabaseEngine::NAMES));
+        }
+    }
     let f = merge_db(&raw.base, raw.envs.get(env));
     let engine = DatabaseEngine::parse(f.engine.as_deref().ok_or_else(|| Error::InvalidField {
         field: format!("[{section}].engine"),
@@ -734,6 +778,15 @@ pub(crate) fn resolve_cache(
         reject_removed_cache(&section, Some(e), overlay)?;
     }
 
+    for (e, fields) in std::iter::once((None, &raw.base))
+        .chain(raw.envs.iter().map(|(e, f)| (Some(e.as_str()), f)))
+    {
+        if let Some(name) = fields.engine.as_deref()
+            && CacheEngine::try_parse(name).is_none()
+        {
+            return Err(unknown_engine(&section, e, name, CacheEngine::NAMES));
+        }
+    }
     let f = merge_cache(&raw.base, raw.envs.get(env));
     let engine = CacheEngine::parse(f.engine.as_deref().ok_or_else(|| Error::InvalidField {
         field: format!("[{section}].engine"),

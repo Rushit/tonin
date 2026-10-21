@@ -33,6 +33,7 @@ pub mod plan;
 pub mod platform;
 pub mod pod;
 pub mod run_backend;
+pub mod schema;
 pub(crate) mod stateful;
 pub mod workload;
 

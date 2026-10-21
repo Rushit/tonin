@@ -3240,3 +3240,50 @@ fn print_workspace_next_steps(name: &str, extras: &[ClientLang]) {
         }
     }
 }
+
+#[cfg(test)]
+mod scaffold_schema_tests {
+    use super::*;
+
+    fn vars(language: &str, service_type: &str) -> Vars {
+        Vars {
+            service_name: "demo".into(),
+            service_name_snake: "demo".into(),
+            service_camel: "Demo".into(),
+            service_proto_module: "demo".into(),
+            language: language.into(),
+            service_type: service_type.into(),
+        }
+    }
+
+    fn load(dir: &Path) {
+        for env in ["dev", "prd"] {
+            tonin_plugin::Plan::load_with_env(&dir.join("tonin.toml"), env)
+                .unwrap_or_else(|e| panic!("scaffolded tonin.toml fails the schema ({env}): {e}"));
+        }
+    }
+
+    /// Every `tonin.toml` `tonin new` writes passes the strict schema.
+    #[test]
+    fn scaffolded_tonin_toml_files_pass_the_schema() {
+        for (lang, st, wm) in [
+            ("rust", ServiceType::Backend, None),
+            ("python", ServiceType::Backend, None),
+            ("typescript", ServiceType::Web, Some(WebMode::Spa)),
+            ("typescript", ServiceType::Web, Some(WebMode::Bff)),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let kind = if st == ServiceType::Web {
+                "web"
+            } else {
+                "backend"
+            };
+            write_service_toml(dir.path(), &vars(lang, kind), st, wm).unwrap();
+            emit_storage_block_in_micro_toml(dir.path(), StorageKind::S3).unwrap();
+            load(dir.path());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tonin.toml"), server_tonin_toml("demo")).unwrap();
+        load(dir.path());
+    }
+}

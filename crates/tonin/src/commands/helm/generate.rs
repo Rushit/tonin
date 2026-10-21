@@ -153,6 +153,10 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     let base_plan = Plan::load_with_env(&toml_path, &args.envs[0])
         .with_context(|| format!("loading {}", toml_path.display()))?;
 
+    for warning in unrendered_overlays(&toml_path, &args.envs)? {
+        eprintln!("warning: {warning}");
+    }
+
     let chart_dir = args.out.unwrap_or_else(|| service_dir.join("chart"));
     let templates_dir = chart_dir.join("templates");
     std::fs::create_dir_all(&templates_dir)
@@ -188,6 +192,31 @@ pub fn run(args: GenerateArgs) -> Result<()> {
 
     println!("chart generated at {}", chart_dir.display());
     Ok(())
+}
+
+/// Overlays naming an environment that is not being generated: most likely
+/// a misspelt or stale environment name, whose settings would never apply.
+fn unrendered_overlays(toml_path: &Path, envs: &[String]) -> Result<Vec<String>> {
+    let src = std::fs::read_to_string(toml_path)
+        .with_context(|| format!("reading {}", toml_path.display()))?;
+    let overlays = tonin_plugin::schema::overlay_envs(&src)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", toml_path.display()))?;
+    Ok(overlays
+        .into_iter()
+        .filter(|o| !envs.contains(&o.env))
+        .map(|o| {
+            format!(
+                "{}:{}: {} names environment {:?}, which is not being generated ({}); \
+                 it never applies unless you pass --env {}",
+                toml_path.display(),
+                o.line,
+                o.location,
+                o.env,
+                envs.join(", "),
+                o.env
+            )
+        })
+        .collect())
 }
 
 fn build_context(plan: &Plan) -> tera::Context {
@@ -737,6 +766,18 @@ orders-service = "myapp-dev"
 
     fn read(p: &Path) -> String {
         std::fs::read_to_string(p).unwrap()
+    }
+
+    #[test]
+    fn overlays_for_environments_not_generated_are_reported() {
+        let svc = tempfile::tempdir().unwrap();
+        write_service(svc.path(), RICH_TOML);
+        let toml = svc.path().join("tonin.toml");
+        let all = unrendered_overlays(&toml, &["dev".into(), "prod".into()]).unwrap();
+        assert!(all.is_empty(), "{all:?}");
+        let warnings = unrendered_overlays(&toml, &["dev".into(), "prd".into()]).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("[migrations.prod]"), "{warnings:?}");
     }
 
     #[test]
