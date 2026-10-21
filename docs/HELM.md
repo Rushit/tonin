@@ -475,7 +475,7 @@ Render with both (`-f values.yaml -f values-<env>.yaml`). The keys added in 0.15
 | `workload.podManagementPolicy` | base | `[deploy] pod_management_policy` (StatefulSet) |
 | `workload.terminationGracePeriodSeconds` | env | `[deploy] termination_grace_period_seconds` (0 = Kubernetes default) |
 | `workload.strategy` | env | `[deploy.strategy]`; `strategy` on a Deployment, `updateStrategy` (with `partition`) on a StatefulSet |
-| `volumes` | base | `[[volumes]]`: `type` `empty-dir` (`emptyDir`) or `pvc` (`size`, `accessModes`, `storageClass`; StatefulSet `volumeClaimTemplates`) |
+| `volumes` | base | `[[volumes]]`: `type` `empty-dir` (`emptyDir`) or `pvc` (`size`, `accessModes`, `storageClass`; StatefulSet `volumeClaimTemplates`; the migration Job and CronJobs get the `empty-dir` ones only) |
 | `extraPorts`, `extraServices` | base | `[[ports]]`: named container ports; `service` puts a port on Service `<name>-<service>` |
 | `service.health.livenessPath`, `readinessPath`, `startup` | base | `[service.health]` paths and `[service.health.startup]` |
 | `resources` | base | `[resources]` or `[resources.requests]` / `[resources.limits]` (CPU limit optional, `ephemeral-storage`) |

@@ -243,9 +243,11 @@ size_limit = "2Gi"                 # optional; the kubelet evicts the pod above 
 ```
 
 Volumes are mounted in the server container in mount-path order (a volume nested inside another
-mount works) and in the migration initContainer; the migration Job, which is not part of the
-StatefulSet, gets the `empty-dir` volumes only. With a read-only root filesystem, every
-directory the app writes to (`/tmp`, caches) needs one. Names starting with `pg-ca` are reserved.
+mount works) and in the migration initContainer. The migration Job and the `[[cronjobs]]`, which
+are not part of the StatefulSet, get the `empty-dir` volumes only (each pod its own, empty), never
+the StatefulSet's `pvc` claims: a CronJob cannot read or write a replica's persistent data. With a
+read-only root filesystem, every directory the app writes to (`/tmp`, caches) needs one. Names
+starting with `pg-ca` are reserved.
 
 ### Extra ports and Services
 

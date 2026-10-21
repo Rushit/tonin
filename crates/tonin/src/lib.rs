@@ -37,7 +37,7 @@
 //! cargo run
 //!
 //! # 3. Generate Helm chart templates based on tonin.toml
-//! tonin helm generate
+//! tonin helm generate --env dev --env prod
 //!
 //! # 4. Deploy to Kubernetes (performs 'helm upgrade --install')
 //! tonin helm upgrade --env prod

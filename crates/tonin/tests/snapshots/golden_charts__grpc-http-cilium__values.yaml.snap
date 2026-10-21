@@ -72,7 +72,8 @@ extraServices: []
 # Volumes ([[volumes]]): `empty-dir` (pod-lifetime scratch, optional sizeLimit)
 # and `pvc` (StatefulSet only: a claim per pod from the default StorageClass
 # unless storageClass is set). Mounted in the server container (and the
-# migration initContainer); the migration Job gets the empty-dir ones.
+# migration initContainer); the migration Job and CronJobs get the empty-dir
+# ones only, never the StatefulSet's claims.
 volumes: []
 
 # MCP tool surface. Derived automatically from [service].language:
