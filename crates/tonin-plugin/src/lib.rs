@@ -71,7 +71,7 @@ pub use pod::{
 };
 
 // Lock store types
-pub use lock::{EnvLock, EnvironmentLock, GitLockStore, LockStore, ServiceLock};
+pub use lock::{EnvLock, EnvironmentLock, GitLockStore, LockStore, ServiceLock, WriteOutcome};
 
 // Build backend types
 pub use build_backend::{

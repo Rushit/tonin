@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Args;
-use tonin_plugin::lock::{EnvLock, GitLockStore, LockStore, ServiceLock};
+use tonin_plugin::lock::{EnvLock, GitLockStore, LockStore, ServiceLock, WriteOutcome};
 
 #[derive(Args)]
 pub struct ReleaseArgs {
@@ -90,7 +90,13 @@ pub fn run(args: ReleaseArgs) -> Result<()> {
             git_sha: git_sha_ref,
         },
     );
-    store.write(&lock)?;
+    if store.write_if_changed(&lock)? == WriteOutcome::Unchanged {
+        println!(
+            "= environments/{}/lock.toml: {} {} unchanged",
+            args.env, args.service, args.version
+        );
+        return Ok(());
+    }
 
     match prev {
         Some(v) => println!(
@@ -133,6 +139,32 @@ mod tests {
             "ghcr.io/myorg/users-service@sha256:abc123456789"
         );
         assert_eq!(lock.services["users-service"].git_sha, "HEAD");
+    }
+
+    #[test]
+    fn re_releasing_the_same_entry_leaves_the_lock_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = |service: &str, digest: &str| ReleaseArgs {
+            service: service.into(),
+            version: "1.4.0".into(),
+            image: None,
+            git_sha: Some("deadbeef".into()),
+            digest: Some(digest.into()),
+            registry: None,
+            env: "staging".into(),
+            workspace: Some(tmp.path().to_path_buf()),
+        };
+        run(args("users-service", "aaa")).unwrap();
+        run(args("orders-service", "bbb")).unwrap();
+        let path = tmp.path().join("environments/staging/lock.toml");
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            before.find("[services.orders-service]").unwrap()
+                < before.find("[services.users-service]").unwrap()
+        );
+
+        run(args("users-service", "aaa")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]

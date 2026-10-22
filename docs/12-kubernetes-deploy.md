@@ -673,8 +673,13 @@ envs                      = ["prd"]           # default: every environment
 ## Fleet deploys from a lock (`tonin deploy`)
 
 `tonin release --env <ENV>` records a service's version and digest-pinned image
-in `environments/<ENV>/lock.toml`; `tonin deploy --env <ENV>` reconciles the
-cluster to that lock in dependency-wave order:
+in `environments/<ENV>/lock.toml`. The lock is edited in place: `[services.*]`
+tables stay sorted by name, only the released service's table changes, and
+re-releasing an identical entry leaves the file untouched (the command prints
+`unchanged`), so there is nothing to commit.
+
+`tonin deploy --env <ENV>` reconciles the cluster to that lock in
+dependency-wave order:
 
 ```bash
 tonin deploy --env prd                              # every service in the lock
