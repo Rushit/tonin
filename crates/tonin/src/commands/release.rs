@@ -75,11 +75,22 @@ pub fn run(args: ReleaseArgs) -> Result<()> {
     let root = super::workspace_or_cwd(args.workspace)?;
     let store = GitLockStore::new(&root);
 
-    let mut lock = store.read(&args.env).unwrap_or_else(|_| EnvLock {
-        schema: "v1".into(),
-        env: args.env.clone(),
-        services: Default::default(),
-    });
+    // Start empty only when there is no lock yet. A lock that exists but can't
+    // be read or parsed is an error: starting over would drop every other
+    // service from it.
+    let mut lock = store
+        .read_if_exists(&args.env)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "cannot update environments/{}/lock.toml: {e:#}; fix or remove the file and retry",
+                args.env
+            )
+        })?
+        .unwrap_or_else(|| EnvLock {
+            schema: "v1".into(),
+            env: args.env.clone(),
+            services: Default::default(),
+        });
 
     let prev = lock.services.get(&args.service).map(|s| s.version.clone());
     lock.services.insert(
@@ -165,6 +176,35 @@ mod tests {
 
         run(args("users-service", "aaa")).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn release_refuses_to_overwrite_an_unparseable_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("environments/staging/lock.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Valid TOML, but orders-service is missing git_sha.
+        let broken = "schema = \"v1\"\nenv = \"staging\"\n\n\
+            [services.orders-service]\nversion = \"1.2.0\"\nimage = \"ghcr.io/myorg/orders-service@sha256:def\"\n\n\
+            [services.users-service]\nversion = \"1.4.0\"\nimage = \"ghcr.io/myorg/users-service@sha256:abc\"\ngit_sha = \"deadbeef\"\n";
+        std::fs::write(&path, broken).unwrap();
+
+        let err = run(ReleaseArgs {
+            service: "users-service".into(),
+            version: "1.5.0".into(),
+            image: None,
+            git_sha: Some("cafebabe".into()),
+            digest: Some("abd".into()),
+            registry: None,
+            env: "staging".into(),
+            workspace: Some(tmp.path().to_path_buf()),
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("environments/staging/lock.toml"), "{err}");
+        assert!(err.contains("git_sha"), "{err}");
+        // The file is left exactly as it was.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
     }
 
     #[test]

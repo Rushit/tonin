@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize, Serializer};
@@ -41,6 +42,7 @@ fn serialize_sorted<S: Serializer>(
 
 /// What a lock write did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WriteOutcome {
     /// The stored lock changed.
     Written,
@@ -62,6 +64,10 @@ pub trait LockStore: Send + Sync {
 
     /// Write `lock` only when it differs from the stored state, and report
     /// whether anything changed (callers can skip committing when it didn't).
+    ///
+    /// The default implementation compares against [`LockStore::read`]; if
+    /// that read fails (no lock yet, or one that can't be read), the lock is
+    /// written anyway and the outcome is [`WriteOutcome::Written`].
     fn write_if_changed(&self, lock: &EnvironmentLock) -> Result<WriteOutcome> {
         if self.read(&lock.env).ok().as_ref() == Some(lock) {
             return Ok(WriteOutcome::Unchanged);
@@ -72,12 +78,15 @@ pub trait LockStore: Send + Sync {
 }
 
 /// Default: reads/writes `environments/<ENV>/lock.toml` relative to workspace root.
-/// Write is atomic — writes to a `.tmp` file then renames to avoid partial writes.
+/// Write is atomic — writes to a uniquely named `.tmp` file then renames to
+/// avoid partial writes.
 ///
 /// Writes are minimal: an existing file is edited in place (comments and
 /// formatting kept, only changed entries touched), `[services.*]` tables are
 /// kept sorted by name, and a file that already holds the same state is left
-/// untouched.
+/// untouched. Only `[services.<name>]` tables are supported as a layout: other
+/// spellings (dotted keys, inline tables) are normalised to that form the next
+/// time the file is written.
 pub struct GitLockStore {
     pub workspace_root: PathBuf,
 }
@@ -95,15 +104,37 @@ impl GitLockStore {
             .join(env)
             .join("lock.toml")
     }
+
+    /// Read the lock for `env`, or `None` when no lock file exists yet. Any
+    /// other failure (I/O error, invalid TOML, a malformed entry) is an error.
+    pub fn read_if_exists(&self, env: &str) -> Result<Option<EnvironmentLock>> {
+        let path = self.lock_path(env);
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => anyhow::bail!("reading {}: {e}", path.display()),
+        };
+        toml::from_str(&contents)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
+    }
+}
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A temp path next to `path`, unique per process and per write.
+fn tmp_path(path: &Path) -> PathBuf {
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.{n}.tmp", std::process::id()));
+    path.with_file_name(name)
 }
 
 impl LockStore for GitLockStore {
     fn read(&self, env: &str) -> Result<EnvironmentLock> {
-        let path = self.lock_path(env);
-        let contents = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
-        toml::from_str(&contents)
-            .map_err(|e| anyhow::anyhow!("parsing lock.toml for env={env}: {e}"))
+        self.read_if_exists(env)?.ok_or_else(|| {
+            anyhow::anyhow!("reading {}: no such file", self.lock_path(env).display())
+        })
     }
 
     fn write(&self, lock: &EnvironmentLock) -> Result<()> {
@@ -129,9 +160,12 @@ impl LockStore for GitLockStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("toml.tmp");
+        let tmp = tmp_path(&path);
         std::fs::write(&tmp, &contents)?;
-        std::fs::rename(&tmp, &path)?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
         Ok(WriteOutcome::Written)
     }
 }
@@ -147,10 +181,10 @@ fn render_lock(existing: Option<&str>, lock: &EnvironmentLock) -> String {
     set_str(root, "schema", &lock.schema);
     set_str(root, "env", &lock.env);
 
-    if !root.get("services").is_some_and(Item::is_table) {
-        let mut table = Table::new();
-        table.set_implicit(true);
-        root.insert("services", Item::Table(table));
+    if normalise_table(root.entry("services").or_insert(Item::None), true)
+        && let Some(mut key) = root.key_mut("services")
+    {
+        key.fmt();
     }
     let services = root
         .get_mut("services")
@@ -167,13 +201,15 @@ fn render_lock(existing: Option<&str>, lock: &EnvironmentLock) -> String {
     }
 
     for (name, svc) in &lock.services {
-        let entry = services
-            .entry(name)
-            .or_insert_with(|| Item::Table(Table::new()));
-        if entry.as_table_like().is_none() {
-            *entry = Item::Table(Table::new());
+        if normalise_table(services.entry(name).or_insert(Item::None), false)
+            && let Some(mut key) = services.key_mut(name)
+        {
+            key.fmt();
         }
-        let table = entry.as_table_like_mut().expect("service entry is a table");
+        let table = services
+            .get_mut(name)
+            .and_then(Item::as_table_mut)
+            .expect("service entry is a table");
         set_str(table, "version", &svc.version);
         set_str(table, "image", &svc.image);
         set_str(table, "git_sha", &svc.git_sha);
@@ -196,6 +232,21 @@ fn render_lock(existing: Option<&str>, lock: &EnvironmentLock) -> String {
     }
 
     doc.to_string()
+}
+
+/// Make `item` a standard `[header]` table: inline tables and dotted-key
+/// tables are converted, anything else that isn't a table is replaced by an
+/// empty one. A standard table is left untouched (its bytes are kept).
+/// Returns whether `item` was changed.
+fn normalise_table(item: &mut Item, implicit: bool) -> bool {
+    if matches!(item, Item::Table(t) if !t.is_dotted()) {
+        return false;
+    }
+    let mut table = std::mem::take(item).into_table().unwrap_or_default();
+    table.set_dotted(false);
+    table.set_implicit(implicit);
+    *item = Item::Table(table);
+    true
 }
 
 /// Set a string key, leaving it (and its formatting) alone when already equal.
@@ -252,9 +303,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = GitLockStore::new(tmp.path());
         store.write(&sample_lock("dev")).unwrap();
-        // tmp file must be gone after successful write
-        assert!(!tmp.path().join("environments/dev/lock.toml.tmp").exists());
-        assert!(tmp.path().join("environments/dev/lock.toml").exists());
+        // no tmp file may be left behind after a successful write
+        let names: Vec<String> = std::fs::read_dir(tmp.path().join("environments/dev"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["lock.toml"]);
     }
 
     #[test]
@@ -545,5 +599,115 @@ git_sha = "c3"
             store.write_if_changed(&lock).unwrap(),
             WriteOutcome::Unchanged
         );
+    }
+
+    /// A store that only implements `read`/`write`, to exercise the default
+    /// `write_if_changed`.
+    #[derive(Default)]
+    struct MemStore {
+        lock: std::sync::Mutex<Option<EnvLock>>,
+        writes: std::sync::atomic::AtomicUsize,
+        fail_reads: bool,
+    }
+
+    impl LockStore for MemStore {
+        fn read(&self, env: &str) -> Result<EnvironmentLock> {
+            anyhow::ensure!(!self.fail_reads, "backend unavailable");
+            self.lock
+                .lock()
+                .unwrap()
+                .clone()
+                .filter(|l| l.env == env)
+                .ok_or_else(|| anyhow::anyhow!("no lock for {env}"))
+        }
+
+        fn write(&self, lock: &EnvironmentLock) -> Result<()> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            *self.lock.lock().unwrap() = Some(lock.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_write_if_changed_skips_identical_and_writes_changes() {
+        let store = MemStore::default();
+        let mut lock = golden_lock();
+        // nothing stored yet: read fails → written
+        assert_eq!(
+            store.write_if_changed(&lock).unwrap(),
+            WriteOutcome::Written
+        );
+        assert_eq!(store.writes.load(Ordering::SeqCst), 1);
+        // identical → unchanged, no write
+        assert_eq!(
+            store.write_if_changed(&lock).unwrap(),
+            WriteOutcome::Unchanged
+        );
+        assert_eq!(store.writes.load(Ordering::SeqCst), 1);
+        // changed → written
+        lock.services.get_mut("alpha").unwrap().version = "1.0.1".into();
+        assert_eq!(
+            store.write_if_changed(&lock).unwrap(),
+            WriteOutcome::Written
+        );
+        assert_eq!(store.writes.load(Ordering::SeqCst), 2);
+        assert_eq!(store.read("prd").unwrap(), lock);
+    }
+
+    #[test]
+    fn default_write_if_changed_writes_when_read_fails() {
+        let store = MemStore {
+            fail_reads: true,
+            ..Default::default()
+        };
+        let lock = golden_lock();
+        *store.lock.lock().unwrap() = Some(lock.clone());
+        assert_eq!(
+            store.write_if_changed(&lock).unwrap(),
+            WriteOutcome::Written
+        );
+        assert_eq!(store.writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn read_if_exists_distinguishes_missing_from_malformed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = GitLockStore::new(tmp.path());
+        assert!(store.read_if_exists("prd").unwrap().is_none());
+
+        let path = lock_file(tmp.path(), "prd");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // valid TOML, but bravo is missing git_sha
+        let malformed = GOLDEN.replace("git_sha = \"b2\"\n", "");
+        std::fs::write(&path, &malformed).unwrap();
+        let err = store.read_if_exists("prd").unwrap_err().to_string();
+        assert!(err.contains("environments/prd/lock.toml"), "{err}");
+        assert!(err.contains("git_sha"), "{err}");
+    }
+
+    #[test]
+    fn dotted_and_inline_layouts_are_normalised_on_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = GitLockStore::new(tmp.path());
+        let path = lock_file(tmp.path(), "prd");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let odd = "schema = \"v1\"\nenv = \"prd\"\n\
+            services.charlie = { version = \"3.0.0\", image = \"ghcr.io/acme/charlie@sha256:ccc\", git_sha = \"c3\" }\n\
+            services.alpha.version = \"1.0.0\"\n\
+            services.alpha.image = \"ghcr.io/acme/alpha@sha256:aaa\"\n\
+            services.alpha.git_sha = \"a1\"\n";
+        std::fs::write(&path, odd).unwrap();
+
+        // Unchanged content is still left alone.
+        let mut lock = store.read("prd").unwrap();
+        assert!(store.write_if_changed(&lock).unwrap().is_unchanged());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), odd);
+
+        lock.services.insert(
+            "bravo".into(),
+            svc("2.0.0", "ghcr.io/acme/bravo@sha256:bbb", "b2"),
+        );
+        store.write(&lock).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), GOLDEN);
     }
 }

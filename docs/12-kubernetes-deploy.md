@@ -676,7 +676,11 @@ envs                      = ["prd"]           # default: every environment
 in `environments/<ENV>/lock.toml`. The lock is edited in place: `[services.*]`
 tables stay sorted by name, only the released service's table changes, and
 re-releasing an identical entry leaves the file untouched (the command prints
-`unchanged`), so there is nothing to commit.
+`unchanged`), so there is nothing to commit. Only `[services.<name>]` tables
+are supported; entries written as dotted keys or inline tables are normalised
+to that form the next time the file changes. A lock that exists but can't be
+parsed (for example, an entry missing `git_sha`) makes `tonin release` fail
+instead of starting a new lock.
 
 `tonin deploy --env <ENV>` reconciles the cluster to that lock in
 dependency-wave order:
