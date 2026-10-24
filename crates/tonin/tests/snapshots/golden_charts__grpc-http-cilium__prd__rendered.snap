@@ -202,6 +202,9 @@ spec:
 # mTLS, retries, and circuit breaking stay with the mesh, not this policy.
 # The migration Job has its own policy (migration-job.yaml), so it is
 # excluded here.
+# Cilium scopes a peer selector without the k8s:io.kubernetes.pod.namespace
+# label to the policy's own namespace, so a peer in another namespace needs
+# that label (service.identity alone would match nothing there).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -230,12 +233,20 @@ spec:
     # caller: platform-api
     - fromEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform-prd
             service.identity: platform-api.platform-prd
       toPorts:
         - ports:
             - { port: "4317", protocol: TCP }
             - { port: "8080", protocol: TCP }
             - { port: "50052", protocol: TCP }
+    # caller: worker
+    - fromEndpoints:
+        - matchLabels:
+            service.identity: worker.telemetry-prd
+      toPorts:
+        - ports:
+            - { port: "4317", protocol: TCP }
   egress:
     # DNS (kube-dns). Any egress rule makes this policy default-deny for the
     # pod, which would otherwise silently break service discovery.
@@ -263,10 +274,18 @@ spec:
     # [depends_on] identity
     - toEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform-prd
             service.identity: identity.platform-prd
       toPorts:
         - ports:
             - { port: "50051", protocol: TCP }
+    # [depends_on] ledger
+    - toEndpoints:
+        - matchLabels:
+            service.identity: ledger.telemetry-prd
+      toPorts:
+        - ports:
+            - { port: "7001", protocol: TCP }
     # [database] (platform contract)
     - toEndpoints:
         - matchLabels:

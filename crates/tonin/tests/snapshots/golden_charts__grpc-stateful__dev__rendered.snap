@@ -265,6 +265,9 @@ spec:
 # mTLS, retries, and circuit breaking stay with the mesh, not this policy.
 # The migration Job has its own policy (migration-job.yaml), so it is
 # excluded here.
+# Cilium scopes a peer selector without the k8s:io.kubernetes.pod.namespace
+# label to the policy's own namespace, so a peer in another namespace needs
+# that label (service.identity alone would match nothing there).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -293,6 +296,7 @@ spec:
     # caller: telemetry
     - fromEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: telemetry-dev
             service.identity: telemetry.telemetry-dev
       toPorts:
         - ports:
