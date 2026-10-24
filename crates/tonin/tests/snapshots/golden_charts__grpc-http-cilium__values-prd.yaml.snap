@@ -114,11 +114,19 @@ networkPolicy:
     - 4318
   - name: platform-api
     namespace: platform-prd
+  - name: worker
+    namespace: telemetry-prd
+    ports:
+    - 4317
   dependsOn:
   - name: identity
     namespace: platform-prd
     ports:
     - 50051
+  - name: ledger
+    namespace: telemetry-prd
+    ports:
+    - 7001
   egress:
     fqdns:
     - name: s3.example-region.example.com

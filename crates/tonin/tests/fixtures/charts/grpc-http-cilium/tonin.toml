@@ -3,7 +3,8 @@
 # egress overridden to them), a named database, per-env env, and an autoscale
 # range. Network policy: cloudflared may call only the OTLP/HTTP port; S3
 # egress by FQDN (a pattern in dev, the exact prd endpoint in prd) and a dev
-# CIDR with an exception.
+# CIDR with an exception. Peer services both in another namespace
+# (platform-api, identity) and in the service's own (worker, ledger).
 # Pod hygiene: a PDB from the [pdb] defaults (maxUnavailable 1) in prd,
 # tolerations for a dedicated node and a custom zone spread, and placement
 # turned off again in dev.
@@ -109,9 +110,11 @@ required = ["TELEMETRY_SERVICE_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_K
 [callers]
 platform-api = "platform-{env}"
 cloudflared  = { namespace = "edge", labels = { "app.kubernetes.io/name" = "cloudflared" }, ports = [4318] }
+worker       = { namespace = "telemetry-{env}", ports = [4317] }
 
 [depends_on]
 identity = "platform-{env}"
+ledger   = { namespace = "telemetry-{env}", ports = [7001] }
 
 [egress]
 fqdns = [{ pattern = "*.example.com", ports = [443] }]

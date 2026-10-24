@@ -558,7 +558,8 @@ struct NetworkPolicyValues {
 }
 
 /// One ingress rule. A service caller is matched by
-/// `service.identity: <name>.<namespace>`; a caller with `labels` by those
+/// `service.identity: <name>.<namespace>` (plus the namespace label when it
+/// is in another namespace); a caller with `labels` by those
 /// pod labels (in `namespace`, or the release namespace when absent).
 /// Empty `ports` means the default set (main + HTTP + MCP port).
 #[derive(Serialize)]
@@ -591,7 +592,8 @@ impl From<&Caller> for CallerValues {
     }
 }
 
-/// One egress rule to another tonin service (`service.identity`).
+/// One egress rule to another tonin service (`service.identity`, plus the
+/// namespace label when it is in another namespace).
 #[derive(Serialize)]
 struct DependencyValues {
     name: String,

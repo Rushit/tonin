@@ -94,11 +94,19 @@ networkPolicy:
     - 4318
   - name: platform-api
     namespace: platform-dev
+  - name: worker
+    namespace: telemetry-dev
+    ports:
+    - 4317
   dependsOn:
   - name: identity
     namespace: platform-dev
     ports:
     - 50051
+  - name: ledger
+    namespace: telemetry-dev
+    ports:
+    - 7001
   egress:
     fqdns:
     - pattern: '*.example.com'

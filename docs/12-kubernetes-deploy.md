@@ -512,7 +512,10 @@ ui-shell = "ui"
 - `ports` (non-empty, 1-65535) replaces the default set: the main port, the
   `[service.http]` port, and the MCP port when MCP is on.
 - Service callers are matched by `service.identity: <name>.<namespace>`;
-  label callers by their labels plus the namespace label.
+  label callers by their labels plus the namespace label. A service caller
+  or `[depends_on]` service in another namespace also gets the namespace
+  label (`k8s:io.kubernetes.pod.namespace`): Cilium scopes a selector
+  without it to the policy's own namespace.
 - Only service callers take part in `tonin affected` propagation (and
   workspace loading adds service callers derived from other services'
   `[depends_on]`; an explicit entry for the same service wins).

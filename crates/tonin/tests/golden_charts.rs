@@ -108,6 +108,172 @@ fn grpc_stateful_digest_pinned() {
     }
 }
 
+/// Cilium scopes a peer selector without `k8s:io.kubernetes.pod.namespace`
+/// to the policy's own namespace. So a `[callers]` / `[depends_on]` service
+/// in another namespace must carry that label, one in the service's own
+/// namespace keeps the bare `service.identity` selector, and the fixed rules
+/// (DNS, otel-collector, kube-apiserver) stay as they are. Checked on the
+/// parsed policy for both ingress and egress, in every env.
+#[test]
+fn cilium_peers_select_their_namespace() {
+    let fixture = "grpc-http-cilium";
+    let service_dir = fixture_dir(fixture);
+    let out = tempfile::tempdir().expect("tempdir");
+    let chart = out.path().join("chart");
+    generate_chart(&service_dir, &chart);
+
+    let Some(helm) = tool("helm", "TONIN_TEST_HELM", "version") else {
+        return;
+    };
+    for env in ENVS {
+        let rendered = helm_template_with(
+            &helm,
+            &service_dir,
+            &chart,
+            env,
+            &["--set", "networkPolicy.egress.kubeApiserver=true"],
+        );
+        let policy = cilium_policy(&rendered, "telemetry-ingress");
+        let ns = format!("telemetry-{env}");
+        let platform = format!("platform-{env}");
+
+        let ingress = peer_selectors(&policy, "ingress", "fromEndpoints");
+        let egress = peer_selectors(&policy, "egress", "toEndpoints");
+
+        // Cross-namespace service peers: the namespace label is added.
+        assert_eq!(
+            find_peer(&ingress, &format!("platform-api.{platform}")),
+            labels(&[
+                ("k8s:io.kubernetes.pod.namespace", &platform),
+                ("service.identity", &format!("platform-api.{platform}")),
+            ]),
+            "ingress from platform-api ({env})"
+        );
+        assert_eq!(
+            find_peer(&egress, &format!("identity.{platform}")),
+            labels(&[
+                ("k8s:io.kubernetes.pod.namespace", &platform),
+                ("service.identity", &format!("identity.{platform}")),
+            ]),
+            "egress to identity ({env})"
+        );
+        // Same-namespace service peers: unchanged, service.identity only.
+        assert_eq!(
+            find_peer(&ingress, &format!("worker.{ns}")),
+            labels(&[("service.identity", &format!("worker.{ns}"))]),
+            "ingress from worker ({env})"
+        );
+        assert_eq!(
+            find_peer(&egress, &format!("ledger.{ns}")),
+            labels(&[("service.identity", &format!("ledger.{ns}"))]),
+            "egress to ledger ({env})"
+        );
+        // Every service peer outside the policy's namespace names its namespace.
+        for sel in ingress.iter().chain(&egress) {
+            let Some(identity) = sel.get("service.identity") else {
+                continue;
+            };
+            let (_, peer_ns) = identity.split_once('.').expect("<name>.<namespace>");
+            let label = sel.get("k8s:io.kubernetes.pod.namespace");
+            if peer_ns == ns {
+                assert_eq!(label, None, "{identity} ({env})");
+            } else {
+                assert_eq!(
+                    label.map(String::as_str),
+                    Some(peer_ns),
+                    "{identity} ({env})"
+                );
+            }
+        }
+
+        // Label caller: its namespace label as before.
+        assert!(
+            ingress.contains(&labels(&[
+                ("k8s:io.kubernetes.pod.namespace", "edge"),
+                ("app.kubernetes.io/name", "cloudflared"),
+            ])),
+            "ingress from cloudflared ({env}): {ingress:?}"
+        );
+        // Fixed egress rules: untouched.
+        assert!(
+            egress.contains(&labels(&[
+                ("k8s:io.kubernetes.pod.namespace", "kube-system"),
+                ("k8s-app", "kube-dns"),
+            ])),
+            "DNS egress ({env}): {egress:?}"
+        );
+        assert!(
+            egress.contains(&labels(&[
+                ("k8s:io.kubernetes.pod.namespace", "observability"),
+                ("app", "otel-collector"),
+            ])),
+            "otel-collector egress ({env}): {egress:?}"
+        );
+        let apiserver: Vec<&serde_yaml::Value> = policy["spec"]["egress"]
+            .as_sequence()
+            .expect("egress rules")
+            .iter()
+            .filter(|r| r.get("toEntities").is_some())
+            .collect();
+        assert_eq!(apiserver.len(), 1, "one kube-apiserver rule ({env})");
+        assert_eq!(
+            apiserver[0]["toEntities"],
+            serde_yaml::from_str::<serde_yaml::Value>("[kube-apiserver]").unwrap(),
+        );
+        assert_eq!(
+            apiserver[0]["toPorts"],
+            serde_yaml::from_str::<serde_yaml::Value>(
+                r#"[{ports: [{port: "443", protocol: TCP}, {port: "6443", protocol: TCP}]}]"#
+            )
+            .unwrap(),
+            "kube-apiserver ports ({env})"
+        );
+    }
+}
+
+type Labels = std::collections::BTreeMap<String, String>;
+
+fn labels(pairs: &[(&str, &str)]) -> Labels {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect()
+}
+
+/// The rendered CiliumNetworkPolicy called `name`.
+fn cilium_policy(rendered: &str, name: &str) -> serde_yaml::Value {
+    use serde::Deserialize;
+    serde_yaml::Deserializer::from_str(rendered)
+        .map(|doc| serde_yaml::Value::deserialize(doc).expect("rendered YAML"))
+        .find(|doc| {
+            doc["kind"].as_str() == Some("CiliumNetworkPolicy")
+                && doc["metadata"]["name"].as_str() == Some(name)
+        })
+        .unwrap_or_else(|| panic!("no CiliumNetworkPolicy {name} in:\n{rendered}"))
+}
+
+/// The `matchLabels` of every endpoint selector under `spec.<dir>[].<field>`.
+fn peer_selectors(policy: &serde_yaml::Value, dir: &str, field: &str) -> Vec<Labels> {
+    policy["spec"][dir]
+        .as_sequence()
+        .unwrap_or_else(|| panic!("spec.{dir} is not a list"))
+        .iter()
+        .filter_map(|rule| rule.get(field))
+        .flat_map(|sels| sels.as_sequence().expect("selector list").iter())
+        .map(|sel| serde_yaml::from_value(sel["matchLabels"].clone()).expect("matchLabels"))
+        .collect()
+}
+
+/// The one selector for `service.identity: <identity>`.
+fn find_peer(selectors: &[Labels], identity: &str) -> Labels {
+    let found: Vec<&Labels> = selectors
+        .iter()
+        .filter(|s| s.get("service.identity").map(String::as_str) == Some(identity))
+        .collect();
+    assert_eq!(found.len(), 1, "one selector for {identity}: {selectors:?}");
+    found[0].clone()
+}
+
 fn fixture_dir(fixture: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/charts")
