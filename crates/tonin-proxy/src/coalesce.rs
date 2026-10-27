@@ -18,7 +18,9 @@ use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, Shared};
 use tracing::Instrument;
 
-type Flight = Shared<BoxFuture<'static, Result<Bytes, String>>>;
+use crate::status::UpstreamError;
+
+type Flight = Shared<BoxFuture<'static, Result<Bytes, UpstreamError>>>;
 
 #[derive(Clone, PartialEq, Eq)]
 struct FlightKey(Vec<u8>);
@@ -58,9 +60,9 @@ impl Singleflight {
 
     /// Drive `f` for `key`, or join an existing in-flight call.
     /// `path` is only used for the tracing span name.
-    pub async fn run<F>(&self, key: Vec<u8>, path: &str, f: F) -> Result<Bytes, String>
+    pub async fn run<F>(&self, key: Vec<u8>, path: &str, f: F) -> Result<Bytes, UpstreamError>
     where
-        F: std::future::Future<Output = Result<Bytes, String>> + Send + 'static,
+        F: std::future::Future<Output = Result<Bytes, UpstreamError>> + Send + 'static,
     {
         let fkey = FlightKey(key.clone());
         let hash = key_hash_hex(&key);
@@ -134,7 +136,7 @@ mod tests {
                 sf.run(b"key".to_vec(), "/pkg.Svc/Method", async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(20)).await;
-                    Ok::<Bytes, String>(Bytes::from("result"))
+                    Ok::<Bytes, UpstreamError>(Bytes::from("result"))
                 })
                 .await
             }));
@@ -162,7 +164,7 @@ mod tests {
                 sf.run(key, "/svc/m", async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                    Ok::<Bytes, String>(Bytes::from(vec![i]))
+                    Ok::<Bytes, UpstreamError>(Bytes::from(vec![i]))
                 })
                 .await
             }));
@@ -185,7 +187,7 @@ mod tests {
                 sf.run(b"k".to_vec(), "/s/m", async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(5)).await;
-                    Err::<Bytes, String>("boom".into())
+                    Err::<Bytes, UpstreamError>(UpstreamError::unavailable("boom"))
                 })
                 .await
             }));
@@ -201,7 +203,7 @@ mod tests {
         let result = sf
             .run(b"k".to_vec(), "/s/m", async move {
                 c2.fetch_add(1, Ordering::SeqCst);
-                Ok::<Bytes, String>(Bytes::from("ok"))
+                Ok::<Bytes, UpstreamError>(Bytes::from("ok"))
             })
             .await;
         assert_eq!(counter.load(Ordering::SeqCst), 2);

@@ -1,179 +1,412 @@
 //! HTTP/2 connection pool with keep-alives and round-robin load balancing.
 //!
-//! This module provides persistent HTTP/2 channel pooling to avoid the overhead
-//! of TCP connection and HTTP/2 handshake on every request. Channels are
-//! reused across requests, with HTTP/2 PING keep-alives every 30s to prevent
-//! idle-connection pruning in Cilium/K8s.
+//! The pool holds up to `size` persistent HTTP/2 connections to the
+//! upstream. Each request picks the next slot round-robin and multiplexes a
+//! new stream onto that slot's connection; a cloned `SendRequest` is used,
+//! so no lock is held while a request is in flight.
+//!
+//! Slots fill lazily. A slot whose connection has closed (upstream restart,
+//! idle pruning by Cilium/conntrack, keep-alive timeout) is reconnected on
+//! its next use. HTTP/2 PING keep-alives run on every connection, including
+//! idle ones, so a silently dropped connection is detected and closed
+//! instead of hanging the next request.
+//!
+//! Connection failures are reported as gRPC UNAVAILABLE, which `retry.rs`
+//! retries — the retry lands on a freshly reconnected slot.
 
-use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
-use anyhow::anyhow;
 use bytes::Bytes;
-use http::{Request, StatusCode};
+use http::{HeaderMap, Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http2::{self, SendRequest};
-use hyper_util::rt::TokioExecutor;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
-use tokio::time::interval;
 use tracing::{debug, warn};
+
+use crate::status::UpstreamError;
+
+type Sender = SendRequest<Full<Bytes>>;
+
+/// Pool tuning. Defaults come from `Config`.
+#[derive(Clone, Debug)]
+pub struct PoolOptions {
+    /// Number of HTTP/2 connections to keep to the upstream (at least 1).
+    pub size: usize,
+    /// Upper bound on TCP connect + HTTP/2 handshake.
+    pub connect_timeout: Duration,
+    /// Interval between HTTP/2 PINGs. `None` disables keep-alives.
+    pub keepalive_interval: Option<Duration>,
+    /// How long to wait for a PING ack before closing the connection.
+    pub keepalive_timeout: Duration,
+}
 
 /// Manages a pool of HTTP/2 connections to a single upstream.
 pub struct ConnectionPool {
-    upstream: Arc<str>,
-    channels: Arc<Mutex<Vec<PooledChannel>>>,
-    round_robin: AtomicUsize,
-}
-
-struct PooledChannel {
-    sender: SendRequest<Full<Bytes>>,
+    upstream: String,
+    host: String,
+    port: u16,
+    opts: PoolOptions,
+    slots: Box<[Mutex<Option<Sender>>]>,
+    next: AtomicUsize,
 }
 
 impl ConnectionPool {
-    /// Create a new connection pool for the given upstream.
-    pub fn new(upstream: Arc<str>) -> Self {
-        Self {
-            upstream,
-            channels: Arc::new(Mutex::new(Vec::new())),
-            round_robin: AtomicUsize::new(0),
-        }
-    }
-
-    /// Create a single HTTP/2 channel with keep-alive task.
-    async fn create_channel(&self) -> anyhow::Result<PooledChannel> {
-        let (host, port) = self.parse_upstream()?;
-
-        let stream = TcpStream::connect((host.as_str(), port)).await?;
-        let io = TokioIo::new(stream);
-        let (sender, conn) = http2::handshake(TokioExecutor::new(), io).await?;
-
-        // Spawn the connection task to drive the HTTP/2 connection.
-        tokio::spawn(async move {
-            if let Err(e) = conn.await {
-                warn!("upstream H2 connection error: {e}");
-            }
-        });
-
-        let channel = PooledChannel {
-            sender: sender.clone(),
-        };
-
-        // Spawn keep-alive task for this channel.
-        let keep_alive_sender = channel.sender.clone();
-        tokio::spawn(Self::keep_alive_task(keep_alive_sender));
-
-        Ok(channel)
-    }
-
-    /// Parse the upstream URI into (host, port).
-    /// Upstream is expected to be in format: http://host:port or http://host
-    fn parse_upstream(&self) -> anyhow::Result<(String, u16)> {
-        let uri: hyper::Uri = self.upstream.parse()?;
+    /// Create a pool for `upstream` (`http://host:port`). No connection is
+    /// opened until the first request.
+    pub fn new(upstream: &str, opts: PoolOptions) -> anyhow::Result<Self> {
+        let uri: hyper::Uri = upstream.parse()?;
         let host = uri
             .host()
-            .ok_or_else(|| anyhow!("no host in upstream {}", self.upstream))?
+            .ok_or_else(|| anyhow::anyhow!("no host in upstream {upstream}"))?
             .to_owned();
         let port = uri.port_u16().unwrap_or(80);
-        Ok((host, port))
+        let slots = (0..opts.size.max(1)).map(|_| Mutex::new(None)).collect();
+        Ok(Self {
+            upstream: upstream.trim_end_matches('/').to_owned(),
+            host,
+            port,
+            opts,
+            slots,
+            next: AtomicUsize::new(0),
+        })
     }
 
-    /// Keep-alive task that monitors connection health.
-    /// HTTP/2 connections are kept alive by the underlying connection task.
-    /// This task is a placeholder for potential future health monitoring.
-    async fn keep_alive_task(_sender: SendRequest<Full<Bytes>>) {
-        // HTTP/2 connections are maintained by the connection task spawned in create_channel().
-        // Idle connections may be pruned by load balancers (e.g., Cilium), but the connection
-        // task automatically recovers by reconnecting on next request. Keep-alive PING frames
-        // are managed at the HTTP/2 protocol level by hyper, not application-level.
-        let mut ticker = interval(std::time::Duration::from_secs(30));
-        loop {
-            ticker.tick().await;
-            // Future: add explicit connection health monitoring here if needed
-            debug!("connection pool health check (noop)");
+    /// Open one HTTP/2 connection with keep-alives enabled.
+    async fn connect(&self) -> Result<Sender, UpstreamError> {
+        let handshake = async {
+            let stream = TcpStream::connect((self.host.as_str(), self.port)).await?;
+            stream.set_nodelay(true)?;
+            let mut builder = http2::Builder::new(TokioExecutor::new());
+            builder.timer(TokioTimer::new());
+            if let Some(interval) = self.opts.keepalive_interval {
+                builder
+                    .keep_alive_interval(interval)
+                    .keep_alive_timeout(self.opts.keepalive_timeout)
+                    .keep_alive_while_idle(true);
+            }
+            let (sender, conn) = builder.handshake(TokioIo::new(stream)).await?;
+            anyhow::Ok((sender, conn))
+        };
+
+        let (sender, conn) = tokio::time::timeout(self.opts.connect_timeout, handshake)
+            .await
+            .map_err(|_| {
+                UpstreamError::unavailable(format!(
+                    "timed out connecting to upstream {}",
+                    self.upstream
+                ))
+            })?
+            .map_err(|e| {
+                UpstreamError::unavailable(format!(
+                    "failed to connect to upstream {}: {e}",
+                    self.upstream
+                ))
+            })?;
+
+        // Drives the connection; ends when the peer closes, a keep-alive
+        // PING goes unacknowledged, or every `Sender` clone is dropped.
+        let upstream = self.upstream.clone();
+        tokio::spawn(async move {
+            if let Err(e) = conn.await {
+                warn!(%upstream, "upstream H2 connection closed: {e}");
+            }
+        });
+        debug!(upstream = %self.upstream, "opened upstream connection");
+        Ok(sender)
+    }
+
+    /// Return a live sender for the next slot, reconnecting it if needed.
+    async fn sender(&self) -> Result<Sender, UpstreamError> {
+        let slot = &self.slots[self.next.fetch_add(1, Ordering::Relaxed) % self.slots.len()];
+        if let Some(s) = lock(slot).as_ref().filter(|s| !s.is_closed()) {
+            return Ok(s.clone());
+        }
+
+        // Connect without holding the slot lock. If another request filled
+        // the slot meanwhile, use its connection and drop ours.
+        let fresh = self.connect().await?;
+        let mut guard = lock(slot);
+        match guard.as_ref().filter(|s| !s.is_closed()) {
+            Some(existing) => Ok(existing.clone()),
+            None => {
+                *guard = Some(fresh.clone());
+                Ok(fresh)
+            }
         }
     }
 
-    /// Send a request through the pool, creating channels on-demand.
+    /// Send one unary gRPC request and return the response body.
+    ///
+    /// A non-zero `grpc-status` from the upstream is returned as an
+    /// [`UpstreamError`] carrying the upstream's code and message.
     pub async fn send_request(
         &self,
         method: http::Method,
-        path: String,
-        headers: http::HeaderMap,
+        path: &str,
+        headers: &HeaderMap,
         body: Bytes,
-    ) -> anyhow::Result<Bytes> {
-        let mut channels = self.channels.lock().await;
-
-        // Lazily create a channel if the pool is empty.
-        if channels.is_empty() {
-            debug!(
-                "creating first channel in pool on-demand for {}",
-                self.upstream
-            );
-            match self.create_channel().await {
-                Ok(channel) => channels.push(channel),
-                Err(e) => {
-                    return Err(anyhow!("failed to create upstream connection: {e}"));
-                }
-            }
-        }
-
-        // Round-robin selection across existing channels.
-        let idx = self.round_robin.fetch_add(1, Ordering::Relaxed) % channels.len();
-        let channel = &mut channels[idx];
-
-        // Build URI from upstream + path. Upstream already includes scheme (e.g., http://host:port).
-        let full_uri: hyper::Uri = format!("{}{}", self.upstream, path).parse()?;
-
+    ) -> Result<Bytes, UpstreamError> {
         let mut builder = Request::builder()
             .method(method)
-            .uri(&full_uri)
+            .uri(format!("{}{path}", self.upstream))
             .version(http::Version::HTTP_2);
 
         // Forward all headers except host (hyper sets it from the URI).
-        for (name, value) in &headers {
+        for (name, value) in headers {
             if name == http::header::HOST {
                 continue;
             }
             builder = builder.header(name, value);
         }
+        let req = builder
+            .body(Full::new(body))
+            .map_err(|e| UpstreamError::internal(format!("invalid upstream request: {e}")))?;
 
-        let req = builder.body(Full::new(body))?;
-        let resp = channel.sender.send_request(req).await?;
+        let mut sender = self.sender().await?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| UpstreamError::unavailable(format!("upstream request failed: {e}")))?;
 
-        // Handle non-200 responses as errors from upstream.
-        if resp.status() != StatusCode::OK {
-            return Err(anyhow!(
-                "upstream returned {}: {}",
-                resp.status(),
-                resp.status().canonical_reason().unwrap_or("unknown")
-            ));
+        let (parts, body) = resp.into_parts();
+        if parts.status != StatusCode::OK {
+            return Err(UpstreamError::from_http_status(parts.status));
+        }
+        // Trailers-only responses carry grpc-status in the headers.
+        if let Some(status) = UpstreamError::from_grpc_headers(&parts.headers) {
+            return status.map(|()| Bytes::new());
         }
 
-        let resp_bytes = resp.into_body().collect().await?.to_bytes();
-        Ok(resp_bytes)
+        let collected = body.collect().await.map_err(|e| {
+            UpstreamError::unavailable(format!("upstream response body failed: {e}"))
+        })?;
+        let status = collected
+            .trailers()
+            .and_then(UpstreamError::from_grpc_headers)
+            .unwrap_or_else(|| {
+                Err(UpstreamError::internal(
+                    "upstream response ended without grpc-status",
+                ))
+            });
+        status.map(|()| collected.to_bytes())
     }
+}
+
+/// Lock a slot. The guarded value is a plain `Option`, so a poisoned lock
+/// is still consistent and safe to reuse.
+fn lock(slot: &Mutex<Option<Sender>>) -> std::sync::MutexGuard<'_, Option<Sender>> {
+    slot.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::status::UNAVAILABLE;
+    use crate::test_support::{Relay, Upstream, UpstreamBehavior};
+    use std::sync::Arc;
+    use std::time::Instant;
 
-    #[test]
-    fn test_pool_creation() {
-        let pool = ConnectionPool::new(Arc::from("localhost:8080"));
-        assert_eq!(pool.round_robin.load(Ordering::Relaxed), 0);
+    fn opts(size: usize) -> PoolOptions {
+        PoolOptions {
+            size,
+            connect_timeout: Duration::from_secs(2),
+            keepalive_interval: Some(Duration::from_millis(100)),
+            keepalive_timeout: Duration::from_millis(100),
+        }
+    }
+
+    fn pool(addr: std::net::SocketAddr, opts: PoolOptions) -> ConnectionPool {
+        ConnectionPool::new(&format!("http://{addr}"), opts).unwrap()
+    }
+
+    async fn call(pool: &ConnectionPool) -> Result<Bytes, UpstreamError> {
+        pool.send_request(
+            http::Method::POST,
+            "/pkg.Svc/Method",
+            &HeaderMap::new(),
+            Bytes::from_static(b"req"),
+        )
+        .await
     }
 
     #[test]
-    fn test_round_robin_calculation() {
-        let pool_size = 8;
+    fn rejects_upstream_without_host() {
+        assert!(ConnectionPool::new("/just/a/path", opts(1)).is_err());
+    }
 
-        // Simulate round-robin selection across pool size.
-        for (counter, expected_idx) in (0..pool_size * 2).enumerate() {
-            let idx = counter % pool_size;
-            assert_eq!(idx, expected_idx % pool_size);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_requests_are_not_serialized() {
+        let up = Upstream::start(UpstreamBehavior::ok().delay(Duration::from_millis(300))).await;
+        let pool = Arc::new(pool(up.addr, opts(1)));
+
+        let start = Instant::now();
+        let calls: Vec<_> = (0..8)
+            .map(|_| {
+                let pool = pool.clone();
+                tokio::spawn(async move { call(&pool).await })
+            })
+            .collect();
+        for c in calls {
+            assert_eq!(c.await.unwrap().unwrap(), Bytes::from_static(b"hello"));
         }
+        // Serialized, 8 × 300 ms would be ≥ 2.4 s.
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_millis(1_000), "took {elapsed:?}");
+        assert_eq!(up.requests(), 8);
+    }
+
+    #[tokio::test]
+    async fn reuses_connections_up_to_pool_size() {
+        let up = Upstream::start(UpstreamBehavior::ok()).await;
+        let pool = pool(up.addr, opts(3));
+        for _ in 0..30 {
+            call(&pool).await.unwrap();
+        }
+        assert_eq!(up.requests(), 30);
+        assert_eq!(up.connections(), 3, "one connection per slot, then reuse");
+    }
+
+    #[tokio::test]
+    async fn reconnects_after_upstream_drops_connections() {
+        let up = Upstream::start(UpstreamBehavior::ok()).await;
+        let pool = pool(up.addr, opts(1));
+        call(&pool).await.unwrap();
+
+        up.drop_connections();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        for _ in 0..3 {
+            call(&pool).await.unwrap();
+        }
+        assert_eq!(up.connections(), 2, "exactly one reconnect");
+    }
+
+    #[tokio::test]
+    async fn recovers_after_upstream_restart() {
+        let up = Upstream::start(UpstreamBehavior::ok()).await;
+        let addr = up.addr;
+        let pool = pool(addr, opts(1));
+        call(&pool).await.unwrap();
+
+        drop(up);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let err = call(&pool).await.unwrap_err();
+        assert_eq!(err.code, UNAVAILABLE, "{err}");
+
+        let _up = Upstream::start_on(addr, UpstreamBehavior::ok()).await;
+        assert_eq!(call(&pool).await.unwrap(), Bytes::from_static(b"hello"));
+    }
+
+    #[tokio::test]
+    async fn sends_keepalive_pings_while_idle() {
+        let up = Upstream::start(UpstreamBehavior::ok()).await;
+        let relay = Relay::start(up.addr).await;
+        let pool = pool(relay.addr, opts(1));
+        call(&pool).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        let pings = relay.pings();
+        assert!(
+            pings >= 3,
+            "expected ≥3 PINGs in 550 ms at 100 ms, got {pings}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_pings_when_keepalive_disabled() {
+        let up = Upstream::start(UpstreamBehavior::ok()).await;
+        let relay = Relay::start(up.addr).await;
+        let pool = pool(
+            relay.addr,
+            PoolOptions {
+                keepalive_interval: None,
+                ..opts(1)
+            },
+        );
+        call(&pool).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert_eq!(relay.pings(), 0);
+    }
+
+    #[tokio::test]
+    async fn keepalive_detects_blackholed_connection() {
+        // The relay stops forwarding on the existing connection without
+        // closing it — what a pruned conntrack entry looks like to the
+        // client. New connections through the relay still work.
+        let up = Upstream::start(UpstreamBehavior::ok()).await;
+        let relay = Relay::start(up.addr).await;
+        let pool = pool(relay.addr, opts(1));
+        call(&pool).await.unwrap();
+
+        relay.blackhole_existing();
+        // interval (100 ms) + ack timeout (100 ms), with slack.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let res = tokio::time::timeout(Duration::from_secs(2), call(&pool))
+            .await
+            .expect("request on a blackholed connection must not hang");
+        assert_eq!(res.unwrap(), Bytes::from_static(b"hello"));
+        assert_eq!(relay.connections(), 2);
+    }
+
+    #[tokio::test]
+    async fn in_flight_request_on_blackholed_connection_fails_fast() {
+        let up = Upstream::start(UpstreamBehavior::ok().delay(Duration::from_millis(200))).await;
+        let relay = Relay::start(up.addr).await;
+        let pool = Arc::new(pool(relay.addr, opts(1)));
+        call(&pool).await.unwrap();
+
+        let in_flight = {
+            let pool = pool.clone();
+            tokio::spawn(async move { call(&pool).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        relay.blackhole_existing();
+
+        let res = tokio::time::timeout(Duration::from_secs(2), in_flight)
+            .await
+            .expect("keep-alive must fail the stuck request")
+            .unwrap();
+        assert_eq!(res.unwrap_err().code, UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn upstream_grpc_error_is_returned_not_masked() {
+        let up = Upstream::start(UpstreamBehavior::status(5, "no%20such%20key")).await;
+        let pool = pool(up.addr, opts(1));
+        let err = call(&pool).await.unwrap_err();
+        assert_eq!(err.code, 5);
+        assert_eq!(err.message, "no%20such%20key");
+    }
+
+    #[tokio::test]
+    async fn trailers_only_grpc_error_is_returned() {
+        let up = Upstream::start(UpstreamBehavior::trailers_only(7, "denied")).await;
+        let pool = pool(up.addr, opts(1));
+        let err = call(&pool).await.unwrap_err();
+        assert_eq!((err.code, err.message.as_str()), (7, "denied"));
+    }
+
+    #[tokio::test]
+    async fn missing_grpc_status_is_internal() {
+        let up = Upstream::start(UpstreamBehavior::no_trailers()).await;
+        let pool = pool(up.addr, opts(1));
+        assert_eq!(call(&pool).await.unwrap_err().code, crate::status::INTERNAL);
+    }
+
+    #[tokio::test]
+    async fn dropping_pool_closes_upstream_connections() {
+        let up = Upstream::start(UpstreamBehavior::ok()).await;
+        let pool = pool(up.addr, opts(2));
+        call(&pool).await.unwrap();
+        call(&pool).await.unwrap();
+        assert_eq!(up.open_connections(), 2);
+
+        drop(pool);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(up.open_connections(), 0);
     }
 }

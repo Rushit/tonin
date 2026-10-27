@@ -17,7 +17,7 @@ path = "src/main.rs"
 tokio          = { workspace = true }
 http           = { workspace = true }
 hyper          = { workspace = true, features = ["full"] }
-hyper-util     = { version = "0.1", features = ["tokio", "server-auto", "client-legacy"] }
+hyper-util     = { version = "0.1", features = ["tokio", "server-auto", "server-graceful", "client-legacy"] }
 http-body-util = { workspace = true }
 bytes          = "1"
 dashmap        = { workspace = true }
