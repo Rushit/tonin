@@ -5,6 +5,9 @@ mod config;
 mod pool;
 mod proxy;
 mod retry;
+mod status;
+#[cfg(test)]
+mod test_support;
 
 use anyhow::Result;
 use tracing::Level;

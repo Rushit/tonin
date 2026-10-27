@@ -2,18 +2,16 @@
 //!
 //! Retries only on gRPC status codes that are safe to retry (Unavailable
 //! and DeadlineExceeded). Any other error code — including Internal — is
-//! returned immediately to avoid duplicating side-effecting RPCs.
+//! returned immediately to avoid duplicating side-effecting RPCs. Upstream
+//! connection failures surface as Unavailable, so they are retried on a
+//! fresh connection.
 
 use std::future::Future;
 use std::time::Duration;
 
 use tracing::warn;
 
-/// Which gRPC-style error strings warrant a retry.
-/// We match the raw status code names that tonic embeds in its `Status`.
-fn is_retryable(err: &str) -> bool {
-    err.contains("Unavailable") || err.contains("DeadlineExceeded")
-}
+use crate::status::UpstreamError;
 
 /// Attempt `f` up to `max_attempts` times with exponential backoff starting
 /// at 50 ms (cap 2 s). Returns the last error if all attempts fail.
@@ -21,17 +19,17 @@ pub async fn with_retry<F, Fut>(
     max_attempts: u32,
     path: &str,
     mut f: F,
-) -> Result<bytes::Bytes, String>
+) -> Result<bytes::Bytes, UpstreamError>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = Result<bytes::Bytes, String>>,
+    Fut: Future<Output = Result<bytes::Bytes, UpstreamError>>,
 {
     let mut backoff_ms = 50u64;
     for attempt in 1..=max_attempts {
         match f().await {
             Ok(b) => return Ok(b),
             Err(e) => {
-                if attempt == max_attempts || !is_retryable(&e) {
+                if attempt == max_attempts || !e.is_retryable() {
                     return Err(e);
                 }
                 warn!(
@@ -49,6 +47,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::status::{PERMISSION_DENIED, UpstreamError};
     use bytes::Bytes;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -61,7 +60,7 @@ mod tests {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Ok::<Bytes, String>(Bytes::from("ok"))
+                Ok::<Bytes, UpstreamError>(Bytes::from("ok"))
             }
         })
         .await;
@@ -78,7 +77,7 @@ mod tests {
             async move {
                 let n = c.fetch_add(1, Ordering::SeqCst);
                 if n < 2 {
-                    Err::<Bytes, String>("status: Unavailable".into())
+                    Err::<Bytes, UpstreamError>(UpstreamError::unavailable("down"))
                 } else {
                     Ok(Bytes::from("ok"))
                 }
@@ -97,7 +96,7 @@ mod tests {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err::<Bytes, String>("status: PermissionDenied".into())
+                Err::<Bytes, UpstreamError>(UpstreamError::new(PERMISSION_DENIED, "no"))
             }
         })
         .await;
@@ -113,7 +112,7 @@ mod tests {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err::<Bytes, String>("status: Unavailable".into())
+                Err::<Bytes, UpstreamError>(UpstreamError::unavailable("down"))
             }
         })
         .await;
